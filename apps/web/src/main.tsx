@@ -3535,7 +3535,7 @@ function SettingsView({ api }: { api: ApiClient }) {
     <div className="grid gap-5">
       <section className="grid gap-5 lg:grid-cols-2">
         <ConnectorPanel api={api} connectorId="einvoice" title="電子發票" />
-        <ConnectorPanel api={api} connectorId="tdcc" title="集保 e存摺" />
+        <ConnectorPanel api={api} connectorId="tdcc" title="集保e存摺" />
         <ConnectorPanel api={api} connectorId="esun" title="玉山銀行" />
         <ExchangeRatesPanel api={api} />
         <ClassificationRulesPanel api={api} />
@@ -3676,26 +3676,26 @@ function ConnectorPanel({
               : "尚未設定"}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <IconButton label="儲存設定" icon={<Save />} busy={save.isPending} onClick={() => save.mutate()} />
           {connectorId === "tdcc" ? (
             <>
               <IconButton
                 label="同步投資"
                 icon={<WalletCards />}
-                busy={sync.isPending}
+                busy={sync.isPending && pendingSyncTarget === "investments"}
                 onClick={() => sync.mutate("investments")}
               />
               <IconButton
                 label="同步銀行"
                 icon={<CreditCard />}
-                busy={sync.isPending}
+                busy={sync.isPending && pendingSyncTarget === "bank"}
                 onClick={() => sync.mutate("bank")}
               />
               <IconButton
                 label="同步交易"
                 icon={<Database />}
-                busy={sync.isPending}
+                busy={sync.isPending && pendingSyncTarget === "trades"}
                 onClick={() => sync.mutate("trades")}
               />
             </>
@@ -3712,6 +3712,21 @@ function ConnectorPanel({
           )}
         </div>
       </div>
+      {connectorId === "tdcc" && (
+        <details className="mt-3 rounded-md border border-ink/10 bg-paper text-sm text-ink/70" open>
+          <summary className="cursor-pointer select-none px-3 py-2 font-medium text-ink/80">使用說明</summary>
+          <ol className="list-decimal space-y-1.5 px-3 pb-3 pt-1 pl-8">
+            <li>在手機下載並登入「集保e存摺」，確認可看到股票與基金資料；若需連結銀行，請先在手機完成授權。</li>
+            <li>在下方填入身分證字號與集保App密碼，按「儲存設定」後，再按「同步投資」。</li>
+            <li>首次同步需驗證碼認證，請查看手機簡訊或電子信箱，在出現的輸入欄填入驗證碼並送出。</li>
+            <li>完成後即可看到股票與基金持倉。日後同步不需重新輸入驗證碼。</li>
+            <li>
+              <span className="font-medium text-ink/85">注意：</span>
+              集保App採單一裝置綁定。認證後手機App將無法使用；若在手機再次登入，本平台的認證會失效，下次同步需重新走驗證碼流程。
+            </li>
+          </ol>
+        </details>
+      )}
       <div className="mt-4 grid gap-3">
         {fields.map((field) =>
           field.type === "checkbox" ? (
