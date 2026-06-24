@@ -239,7 +239,7 @@ function App() {
           </header>
 
           <main className="mx-auto max-w-7xl px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
-            <ApiProvider view={view} />
+            <ApiProvider view={view} onNavigate={setView} />
           </main>
 
           <footer className="mx-auto max-w-7xl border-t border-ink/8 px-4 py-6 sm:px-6 lg:px-8">
@@ -266,11 +266,11 @@ function App() {
   );
 }
 
-function ApiProvider({ view }: { view: View }) {
+function ApiProvider({ view, onNavigate }: { view: View; onNavigate: (v: View) => void }) {
   const api = useMemo(() => createApiClient(), []);
 
   if (view === "dashboard") {
-    return <Dashboard api={api} />;
+    return <Dashboard api={api} onNavigate={onNavigate} />;
   }
 
   if (view === "invoices") {
@@ -286,7 +286,7 @@ function ApiProvider({ view }: { view: View }) {
   }
 
   if (view === "bank") {
-    return <Bank api={api} />;
+    return <Bank api={api} onNavigate={onNavigate} />;
   }
 
   if (view === "assets") {
@@ -300,7 +300,7 @@ function ApiProvider({ view }: { view: View }) {
   return <SettingsView api={api} />;
 }
 
-function Dashboard({ api }: { api: ApiClient }) {
+function Dashboard({ api, onNavigate }: { api: ApiClient; onNavigate: (v: View) => void }) {
   const summary = useQuery({ queryKey: ["summary"], queryFn: () => api.get<Summary>("/api/summary") });
   const bank = useQuery({ queryKey: ["bank"], queryFn: () => api.get<BankData>("/api/bank") });
   const investments = useQuery({ queryKey: ["investments"], queryFn: () => api.get<InvestmentRow[]>("/api/investments") });
@@ -363,8 +363,16 @@ function Dashboard({ api }: { api: ApiClient }) {
     })
     .slice(0, 5);
 
+  const missingRateCurrencies = [...new Set(depositAccounts.map(a => a.currency).filter(c => c && c !== "TWD" && !rateMap[c]))] as string[];
+
   return (
     <div className="grid gap-6">
+      {missingRateCurrencies.length > 0 && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <span>帳戶含外幣（{missingRateCurrencies.join("、")}）尚未設定匯率，TWD 總額可能不準確。</span>
+          <button onClick={() => onNavigate("settings")} className="shrink-0 font-medium underline underline-offset-2 hover:text-amber-900">前往設定</button>
+        </div>
+      )}
       <NetWorthHero
         depositAccounts={depositAccounts}
         totalDeposits={totalDeposits}
@@ -2289,7 +2297,7 @@ function Cards({ api }: { api: ApiClient }) {
   );
 }
 
-function Bank({ api }: { api: ApiClient }) {
+function Bank({ api, onNavigate }: { api: ApiClient; onNavigate: (v: View) => void }) {
   const [search, setSearch] = useState("");
   const [accountFilter, setAccountFilter] = useState("all");
   const [flowFilter, setFlowFilter] = useState<"all" | "inflow" | "outflow">("all");
@@ -2358,8 +2366,16 @@ function Bank({ api }: { api: ApiClient }) {
     return account.asOfAt && account.asOfAt > latest ? account.asOfAt : latest;
   }, "");
 
+  const missingRateCurrencies = [...new Set(bankAccounts.map(a => a.currency).filter(c => c && c !== "TWD" && !rateMap[c]))] as string[];
+
   return (
     <section className="grid gap-5">
+      {missingRateCurrencies.length > 0 && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <span>帳戶含外幣（{missingRateCurrencies.join("、")}）尚未設定匯率，TWD 金額可能不準確。</span>
+          <button onClick={() => onNavigate("settings")} className="shrink-0 font-medium underline underline-offset-2 hover:text-amber-900">前往設定</button>
+        </div>
+      )}
       <section className="grid gap-4 rounded-xl border border-ink/10 bg-white p-5 shadow-sm lg:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-ink/50">
@@ -3311,13 +3327,18 @@ function ExchangeRatesPanel({ api }: { api: ApiClient }) {
           </div>
         ))}
       </div>
-      <button
-        onClick={() => save.mutate()}
-        disabled={save.isPending}
-        className="mt-4 rounded-lg bg-blue-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-600 disabled:opacity-50"
-      >
-        {saved ? "已儲存" : save.isPending ? "儲存中…" : "儲存"}
-      </button>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <button
+          onClick={() => save.mutate()}
+          disabled={save.isPending}
+          className="rounded-lg bg-blue-500 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-600 disabled:opacity-50"
+        >
+          {saved ? "已儲存" : save.isPending ? "儲存中…" : "儲存"}
+        </button>
+        {fxRates.data && fxRates.data.length === 0 && (
+          <p className="text-xs text-amber-600">首次使用請按下儲存，匯率才會套用至系統。</p>
+        )}
+      </div>
       {fxRates.data && fxRates.data.length > 0 && (
         <p className="mt-2 text-xs text-ink/35">
           上次更新：{new Date(fxRates.data[0]!.updatedAt).toLocaleString("zh-TW")}
