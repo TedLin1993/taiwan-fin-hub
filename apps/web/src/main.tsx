@@ -3751,6 +3751,9 @@ function ConnectorPanel({
           </ol>
         </details>
       )}
+      {connectorId !== "tdcc" && (
+        <p className="mt-3 text-xs text-ink/55">輸入完帳號密碼後，請先按「儲存設定」，再按「同步」。</p>
+      )}
       <div className="mt-4 grid gap-3">
         {fields.map((field) =>
           field.type === "checkbox" ? (
