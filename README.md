@@ -61,7 +61,7 @@
 
 3. 切換後會彈出「This Worker URL requires Access sign-in」對話框，記下以下兩個值：
    - **Audience (aud)**：一串 hex 字串，對應 `POLICY_AUD`
-   - **JWKs URL**：格式為 `https://xxxxxxxx.cloudflareaccess.com/cdn-cgi/access/certs`，其中網域部分即 `TEAM_DOMAIN`
+   - **JWKs URL**：格式為 `https://xxxxxxxx.cloudflareaccess.com/cdn-cgi/access/certs`，其中 `https://xxxxxxxx.cloudflareaccess.com` 即 `TEAM_DOMAIN`
 4. 前往 **Settings → Variables and secrets**，對以下兩個 Secret 點選 **Rotate** 填入對應值：
 
 <img src="images/deploy-secrets.png" width="700">
