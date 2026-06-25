@@ -41,6 +41,7 @@ interface Env {
   CONFIG_ENCRYPTION_KEY?: string;
   TEAM_DOMAIN?: string;
   POLICY_AUD?: string;
+  POLICY_AUDS?: string;
   DEMO_MODE?: string | boolean;
 }
 
@@ -82,9 +83,9 @@ function jsonError(code: string, message: string, status = 400) {
   );
 }
 
-function requireAccessSecrets(env: Env): asserts env is Env & { TEAM_DOMAIN: string; POLICY_AUD: string } {
-  if (!env.TEAM_DOMAIN || !env.POLICY_AUD) {
-    throw new Error("TEAM_DOMAIN and POLICY_AUD are required unless DEMO_MODE is enabled.");
+function requireAccessSecrets(env: Env): asserts env is Env & { TEAM_DOMAIN: string } {
+  if (!env.TEAM_DOMAIN || (!env.POLICY_AUD && !env.POLICY_AUDS)) {
+    throw new Error("TEAM_DOMAIN and POLICY_AUD or POLICY_AUDS are required unless DEMO_MODE is enabled.");
   }
 }
 
