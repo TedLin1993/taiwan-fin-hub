@@ -36,10 +36,10 @@ interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
   BROWSER: Fetcher;
-  CONFIG_ENCRYPTION_KEY: string;
-  TEAM_DOMAIN: string;
-  POLICY_AUD: string;
-  DEMO_MODE?: string;
+  CONFIG_ENCRYPTION_KEY?: string;
+  TEAM_DOMAIN?: string;
+  POLICY_AUD?: string;
+  DEMO_MODE?: string | boolean;
 }
 
 type Variables = {
@@ -80,14 +80,25 @@ function jsonError(code: string, message: string, status = 400) {
   );
 }
 
-function requireSecrets(env: Env) {
-  if (!env.CONFIG_ENCRYPTION_KEY || !env.TEAM_DOMAIN || !env.POLICY_AUD) {
-    throw new Error("CONFIG_ENCRYPTION_KEY, TEAM_DOMAIN, and POLICY_AUD are required.");
+function requireAccessSecrets(env: Env): asserts env is Env & { TEAM_DOMAIN: string; POLICY_AUD: string } {
+  if (!env.TEAM_DOMAIN || !env.POLICY_AUD) {
+    throw new Error("TEAM_DOMAIN and POLICY_AUD are required unless DEMO_MODE is enabled.");
   }
 }
 
+function configEncryptionKey(env: Env) {
+  if (!env.CONFIG_ENCRYPTION_KEY) {
+    throw new Error("CONFIG_ENCRYPTION_KEY is required for connector settings and sync.");
+  }
+
+  return env.CONFIG_ENCRYPTION_KEY;
+}
+
 function isDemoMode(env: Env) {
-  return env.DEMO_MODE === "true";
+  if (env.DEMO_MODE === true) return true;
+  if (typeof env.DEMO_MODE !== "string") return false;
+
+  return ["1", "true", "yes", "on"].includes(env.DEMO_MODE.trim().toLowerCase());
 }
 
 api.use("*", async (c, next) => {
@@ -96,7 +107,7 @@ api.use("*", async (c, next) => {
     return;
   }
 
-  requireSecrets(c.env);
+  requireAccessSecrets(c.env);
 
   const identity = await verifyAccessIdentity(c.req.raw, c.env);
   if (!identity.ok) {
@@ -832,7 +843,8 @@ api.put("/connectors/:connectorId/settings", async (c) => {
   }
 
   const now = new Date().toISOString();
-  const encryptedConfig = await encryptJson(parsedConfig, c.env.CONFIG_ENCRYPTION_KEY);
+  const encryptionKey = configEncryptionKey(c.env);
+  const encryptedConfig = await encryptJson(parsedConfig, encryptionKey);
   await upsertConnectorSettings(c.env.DB, {
     id: crypto.randomUUID(),
     connectorId,
@@ -862,7 +874,8 @@ api.post("/connectors/einvoice/sync", async (c) => {
     );
   }
 
-  const config = await decryptJson<unknown>(settings.encrypted_config, c.env.CONFIG_ENCRYPTION_KEY);
+  const encryptionKey = configEncryptionKey(c.env);
+  const config = await decryptJson<unknown>(settings.encrypted_config, encryptionKey);
   const overrides = einvoiceSyncBodySchema.parse(await c.req.json().catch(() => ({})));
   const parsedConfig = parseInvoiceConfig({ ...(config as Record<string, unknown>), ...overrides });
   const originalInvoiceConfig = invoiceConfigSnapshot(config as { fetchDetails?: boolean; userToken?: string; mobileBarcode?: string });
@@ -928,7 +941,7 @@ api.post("/connectors/einvoice/sync", async (c) => {
         `UPDATE connector_settings
         SET encrypted_config = ?, updated_at = ?
         WHERE connector_id = ?`
-      ).bind(await encryptJson(parsedConfig, c.env.CONFIG_ENCRYPTION_KEY), now, "einvoice")
+      ).bind(await encryptJson(parsedConfig, encryptionKey), now, "einvoice")
     );
   }
 
@@ -973,7 +986,8 @@ api.post("/connectors/esun/sync", async (c) => {
     );
   }
 
-  const stored = await decryptJson<unknown>(settings.encrypted_config, c.env.CONFIG_ENCRYPTION_KEY);
+  const encryptionKey = configEncryptionKey(c.env);
+  const stored = await decryptJson<unknown>(settings.encrypted_config, encryptionKey);
   const config = parseEsunConfig(stored);
 
   console.log(`[sync] esun: starting (cursor=${settings.sync_cursor ?? "none"})`);
@@ -997,7 +1011,7 @@ api.post("/connectors/esun/sync", async (c) => {
     const updatedConfig = { ...config, ...JSON.parse(result.cursor) };
     statements.push(
       c.env.DB.prepare(`UPDATE connector_settings SET encrypted_config = ?, sync_cursor = ?, updated_at = ? WHERE connector_id = ?`)
-        .bind(await encryptJson(updatedConfig, c.env.CONFIG_ENCRYPTION_KEY), result.cursor, now, "esun")
+        .bind(await encryptJson(updatedConfig, encryptionKey), result.cursor, now, "esun")
     );
   }
 
@@ -1040,7 +1054,8 @@ async function syncTdccRecords<TConfig>(
     );
   }
 
-  const config = await decryptJson<unknown>(settings.encrypted_config, c.env.CONFIG_ENCRYPTION_KEY);
+  const encryptionKey = configEncryptionKey(c.env);
+  const config = await decryptJson<unknown>(settings.encrypted_config, encryptionKey);
   // The web UI never gets stored secrets back, so submitting an OTP only sends
   // the code itself — merge it onto the stored config instead of requiring a
   // full credentials resend.
@@ -1060,7 +1075,7 @@ async function syncTdccRecords<TConfig>(
       await upsertConnectorSettings(c.env.DB, {
         id: settings.id,
         connectorId,
-        encryptedConfig: await encryptJson(configWithoutOtp, c.env.CONFIG_ENCRYPTION_KEY),
+        encryptedConfig: await encryptJson(configWithoutOtp, encryptionKey),
         now: new Date().toISOString()
       });
       console.log(`[sync] ${connectorId}/${syncScope}: cleared expired otp from config`);
@@ -1128,7 +1143,8 @@ async function syncTdccTradeRecords(c: Context<{ Bindings: Env; Variables: Varia
     );
   }
 
-  const config = await decryptJson<unknown>(settings.encrypted_config, c.env.CONFIG_ENCRYPTION_KEY);
+  const encryptionKey = configEncryptionKey(c.env);
+  const config = await decryptJson<unknown>(settings.encrypted_config, encryptionKey);
   const overrides = tdccSyncBodySchema.parse(await c.req.json().catch(() => ({})));
   const mergedConfig = { ...(config as Record<string, unknown>), ...overrides };
   const parsedConfig = parseTdccConfig(mergedConfig);
@@ -1143,7 +1159,7 @@ async function syncTdccTradeRecords(c: Context<{ Bindings: Env; Variables: Varia
       await upsertConnectorSettings(c.env.DB, {
         id: settings.id,
         connectorId,
-        encryptedConfig: await encryptJson(configWithoutOtp, c.env.CONFIG_ENCRYPTION_KEY),
+        encryptedConfig: await encryptJson(configWithoutOtp, encryptionKey),
         now: new Date().toISOString()
       });
       console.log("[sync] tdcc/trades: cleared expired otp from config");

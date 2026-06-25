@@ -26,6 +26,9 @@
       "POLICY_AUD": {
         "description": "Cloudflare Access 自架應用程式的 AUD Tag。**部署時可先留空**，待將存取模式切換為「Restricted」並建立 Access 應用程式後再填入。"
       },
+      "DEMO_MODE": {
+        "description": "設為 `true`、`1`、`yes` 或 `on` 可啟用公開唯讀 Demo 模式；Demo 模式不需要 `TEAM_DOMAIN`、`POLICY_AUD` 或 `CONFIG_ENCRYPTION_KEY`。"
+      },
       "DB": {
         "description": "儲存連接器設定、同步金融資料及資料庫遷移紀錄的 D1 資料庫。"
       },
