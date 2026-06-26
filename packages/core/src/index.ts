@@ -116,6 +116,7 @@ export interface BankBalanceSnapshot {
   availableBalance?: number;
   statementBalance?: number;
   paymentDueDate?: string;
+  statementClosingDate?: string;
   noPaymentNeeded?: boolean;
   currency: string;
   asOfAt: string;

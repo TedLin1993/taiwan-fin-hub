@@ -133,6 +133,8 @@ interface BankAccountRow {
   accountLast4?: string;
   balance?: number;
   availableBalance?: number;
+  paymentDueDate?: string;
+  statementClosingDate?: string;
   asOfAt?: string;
 }
 
@@ -2303,7 +2305,7 @@ function Cards({ api }: { api: ApiClient }) {
       <div>
         <h2 className="mb-3 text-lg font-semibold">信用卡</h2>
         <Table
-          columns={["機構", "卡片", "餘額", "可用額度", "截至時間"]}
+          columns={["機構", "卡片", "餘額", "可用額度", "繳款截止日", "帳單截止日", "截至時間"]}
           rows={cards.map((card) => [
             card.institutionName ?? "-",
             card.accountName ?? card.sourceId,
@@ -2311,6 +2313,8 @@ function Cards({ api }: { api: ApiClient }) {
             card.availableBalance === undefined || card.availableBalance === null
               ? "-"
               : formatCurrency(card.availableBalance, card.currency),
+            card.paymentDueDate ?? "-",
+            card.statementClosingDate ?? "-",
             card.asOfAt ? formatDateTime(card.asOfAt) : "-"
           ])}
           empty="尚無信用卡資料。"

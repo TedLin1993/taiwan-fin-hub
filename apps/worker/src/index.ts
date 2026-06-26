@@ -609,6 +609,8 @@ api.get("/bank", async (c) => {
         account.account_last4 AS accountLast4,
         balance.balance AS balance,
         balance.available_balance AS availableBalance,
+        balance.payment_due_date AS paymentDueDate,
+        balance.statement_closing_date AS statementClosingDate,
         balance.as_of_at AS asOfAt
       FROM bank_accounts account
       LEFT JOIN bank_balance_snapshots balance
@@ -1572,18 +1574,20 @@ function bankBalanceSnapshotStatement(
         available_balance,
         statement_balance,
         payment_due_date,
+        statement_closing_date,
         no_payment_needed,
         currency,
         as_of_at,
         raw_payload,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(connector_id, account_id, source_id) DO UPDATE SET
         balance = excluded.balance,
         available_balance = excluded.available_balance,
         statement_balance = excluded.statement_balance,
         payment_due_date = excluded.payment_due_date,
+        statement_closing_date = excluded.statement_closing_date,
         no_payment_needed = excluded.no_payment_needed,
         currency = excluded.currency,
         as_of_at = excluded.as_of_at,
@@ -1599,6 +1603,7 @@ function bankBalanceSnapshotStatement(
       snapshot.availableBalance ?? null,
       snapshot.statementBalance ?? null,
       snapshot.paymentDueDate ?? null,
+      snapshot.statementClosingDate ?? null,
       snapshot.noPaymentNeeded == null ? null : (snapshot.noPaymentNeeded ? 1 : 0),
       snapshot.currency || "TWD",
       snapshot.asOfAt,

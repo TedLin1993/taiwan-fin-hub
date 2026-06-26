@@ -230,12 +230,12 @@ interface EsunCardDetailData {
 }
 
 interface EsunCardOverviewData {
-  trsam?: number | null;   // total credit limit
-  useam?: number | null;   // used credit amount
-  tamt?: number | null;    // current statement total amount
+  trsam?: number | null;   // total credit limit (永久信用額度)
+  useam?: number | null;   // usable/available credit remaining (可用額度)
+  tamt?: number | null;    // current statement total amount (本期帳單)
   mimpy?: number | null;   // minimum payment
-  paydt?: string | null;   // payment due date, format "0YYYMMDD" (民國)
-  intdt?: string | null;   // statement date, format "0YYYMMDD"
+  paydt?: string | null;   // payment due date (繳款截止日), format "0YYYMMDD" (民國)
+  intdt?: string | null;   // statement closing date (帳單截止日), format "0YYYMMDD"
   lstym?: number | null;   // latest billing period yymm
   bills?: Array<{
     bym6?: number | null;  // billing period (e.g. 11505 = 民國115年05月)
@@ -297,22 +297,24 @@ async function scrapeCreditCards(client: EsunHttpClient, lookbackMonths: number)
   const mainSourceId = "credit:esun:main";
   accountIds.add(mainSourceId);
 
-  // overview: trsam=total credit limit, useam=used amount, tamt=current statement total
-  // detail.balance is null for the overview request; derive balance from bills instead
+  // overview fields:
+  //   trsam = total credit limit (永久信用額度)
+  //   useam = usable/available amount remaining (可用額度) — NOT "used" despite the name
+  //   tamt  = current statement total (本期帳單)
+  //   intdt = statement closing date (帳單截止日), format "0YYYMMDD"
+  //   paydt = payment due date (繳款截止日), format "0YYYMMDD"
   const creditLimit = overview.trsam ?? undefined;
-  const availableCredit = overview.trsam != null && overview.useam != null
-    ? Math.max(0, overview.trsam - overview.useam)
-    : undefined;
+  const availableCredit = overview.useam ?? undefined;
+  const outstanding = overview.trsam != null && overview.useam != null
+    ? overview.trsam - overview.useam   // total charges outstanding across all cards
+    : 0;
   const paymentDueDate = parseEsunCompactDate(overview.paydt) ?? undefined;
+  const statementClosingDate = parseEsunCompactDate(overview.intdt) ?? undefined;
   const currentBill = overview.bills?.[0];
   const statementBalance = currentBill?.tamt ?? overview.tamt ?? undefined;
-  // unpaid = statement total minus amount already paid this cycle
-  const unpaidBalance = currentBill != null
-    ? Math.max(0, (currentBill.tamt ?? 0) - (currentBill.payam ?? 0))
-    : (overview.tamt ?? 0);
-  const noPaymentNeeded = unpaidBalance === 0;
+  const noPaymentNeeded = outstanding === 0;
 
-  console.log(`[esun debug] creditLimit=${creditLimit} availableCredit=${availableCredit} unpaidBalance=${unpaidBalance} statementBalance=${statementBalance} paymentDueDate=${paymentDueDate}`);
+  console.log(`[esun debug] creditLimit=${creditLimit} availableCredit=${availableCredit} outstanding=${outstanding} statementBalance=${statementBalance} paymentDueDate=${paymentDueDate} statementClosingDate=${statementClosingDate}`);
 
   const cardBySourceId = new Map(cards.map((card) => [creditCardSourceId(card.cardNo), card]));
   const bankAccounts: Scraped["bankAccounts"] = Array.from(accountIds).map((sourceId) => {
@@ -331,10 +333,11 @@ async function scrapeCreditCards(client: EsunHttpClient, lookbackMonths: number)
   const bankBalanceSnapshots: Scraped["bankBalanceSnapshots"] = [{
     accountId: mainSourceId,
     sourceId: `${mainSourceId}:${asOfAt}`,
-    balance: -unpaidBalance,
+    balance: -outstanding,
     availableBalance: availableCredit,
     statementBalance,
     paymentDueDate,
+    statementClosingDate,
     noPaymentNeeded,
     currency: "TWD",
     asOfAt,
