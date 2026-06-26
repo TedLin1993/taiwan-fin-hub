@@ -297,22 +297,22 @@ async function scrapeCreditCards(client: EsunHttpClient, lookbackMonths: number)
   const mainSourceId = "credit:esun:main";
   accountIds.add(mainSourceId);
 
-  // detail endpoint has the actual credit limit and available credit fields
-  // overview.trsam/useam appear to be statement amounts, not limit/available
-  const creditLimit = detail.creditLimit ? parseTwd(detail.creditLimit) : undefined;
-  const availableCredit = detail.availCreditAmt
-    ? parseTwd(detail.availCreditAmt)
-    : detail.availableAmt
-      ? parseTwd(detail.availableAmt)
-      : undefined;
+  // overview: trsam=total credit limit, useam=used amount, tamt=current statement total
+  // detail.balance is null for the overview request; derive balance from bills instead
+  const creditLimit = overview.trsam ?? undefined;
+  const availableCredit = overview.trsam != null && overview.useam != null
+    ? Math.max(0, overview.trsam - overview.useam)
+    : undefined;
   const paymentDueDate = parseEsunCompactDate(overview.paydt) ?? undefined;
   const currentBill = overview.bills?.[0];
   const statementBalance = currentBill?.tamt ?? overview.tamt ?? undefined;
-  const noPaymentNeeded = statementBalance === 0;
+  // unpaid = statement total minus amount already paid this cycle
+  const unpaidBalance = currentBill != null
+    ? Math.max(0, (currentBill.tamt ?? 0) - (currentBill.payam ?? 0))
+    : (overview.tamt ?? 0);
+  const noPaymentNeeded = unpaidBalance === 0;
 
-  console.log(`[esun debug] creditLimit=${creditLimit} availableCredit=${availableCredit} statementBalance=${statementBalance} paymentDueDate=${paymentDueDate}`);
-  console.log(`[esun debug] detail={creditLimit:${detail.creditLimit},availCreditAmt:${detail.availCreditAmt},availableAmt:${detail.availableAmt},balance:${detail.balance}}`);
-  console.log(`[esun debug] overview={trsam:${overview.trsam},useam:${overview.useam},tamt:${overview.tamt}}`);
+  console.log(`[esun debug] creditLimit=${creditLimit} availableCredit=${availableCredit} unpaidBalance=${unpaidBalance} statementBalance=${statementBalance} paymentDueDate=${paymentDueDate}`);
 
   const cardBySourceId = new Map(cards.map((card) => [creditCardSourceId(card.cardNo), card]));
   const bankAccounts: Scraped["bankAccounts"] = Array.from(accountIds).map((sourceId) => {
@@ -328,12 +328,10 @@ async function scrapeCreditCards(client: EsunHttpClient, lookbackMonths: number)
     };
   });
 
-  // Always create snapshot — even if outstanding is 0, available credit still needs to show
-  const outstanding = readOutstandingBalance(detail);
   const bankBalanceSnapshots: Scraped["bankBalanceSnapshots"] = [{
     accountId: mainSourceId,
     sourceId: `${mainSourceId}:${asOfAt}`,
-    balance: -(outstanding ?? 0),
+    balance: -unpaidBalance,
     availableBalance: availableCredit,
     statementBalance,
     paymentDueDate,
