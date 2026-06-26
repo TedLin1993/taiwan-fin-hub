@@ -1,5 +1,5 @@
 import puppeteer, { type Page } from "@cloudflare/puppeteer";
-import type { BankAccount, BankBalanceSnapshot, BankTransaction, SyncResult } from "@taiwan-fin-hub/core";
+import type { BankAccount, BankBalanceSnapshot, BankTransaction, CreditCardBill, SyncResult } from "@taiwan-fin-hub/core";
 import type { CathaybkConfig } from "@taiwan-fin-hub/connectors";
 
 const LOGIN_URL = "https://www.cathaybk.com.tw/MyBank/";
@@ -13,6 +13,7 @@ type Scraped = {
   bankAccounts: Array<Omit<BankAccount, "id" | "connectorId">>;
   bankBalanceSnapshots: Array<Omit<BankBalanceSnapshot, "id" | "connectorId">>;
   bankTransactions: Array<Omit<BankTransaction, "id" | "connectorId">>;
+  creditCardBills: Array<Omit<CreditCardBill, "id" | "connectorId">>;
 };
 
 export function createCathaybkConnector(browser?: Fetcher) {
@@ -29,7 +30,7 @@ export function createCathaybkConnector(browser?: Fetcher) {
         throw new Error("Cathay United Bank requires the BROWSER binding.");
       }
 
-      const { bankAccounts, bankBalanceSnapshots, bankTransactions, freshCookies } =
+      const { bankAccounts, bankBalanceSnapshots, bankTransactions, creditCardBills, freshCookies } =
         await scrapeWithBrowser(browser, config);
 
       const expiresAt = new Date(Date.now() + 8 * 60 * 1000).toISOString();
@@ -39,6 +40,7 @@ export function createCathaybkConnector(browser?: Fetcher) {
         bankAccounts,
         bankBalanceSnapshots,
         bankTransactions,
+        creditCardBills,
         cursor: JSON.stringify({
           sessionCookies: freshCookies,
           sessionExpiresAt: expiresAt,
@@ -73,6 +75,7 @@ async function scrapeWithBrowser(browserBinding: Fetcher, config: CathaybkConfig
       bankAccounts: [...deposits.bankAccounts, ...cards.bankAccounts],
       bankBalanceSnapshots: [...deposits.bankBalanceSnapshots, ...cards.bankBalanceSnapshots],
       bankTransactions: [...deposits.bankTransactions, ...cards.bankTransactions],
+      creditCardBills: cards.creditCardBills,
       freshCookies
     };
   } catch (error) {
@@ -369,7 +372,7 @@ async function scrapeDeposits(page: Page, lookbackDays: number): Promise<Scraped
     ).catch(() => null);
   }
 
-  return { bankAccounts, bankBalanceSnapshots, bankTransactions };
+  return { bankAccounts, bankBalanceSnapshots, bankTransactions, creditCardBills: [] };
 }
 
 function appendDepositTransactions(
@@ -437,6 +440,18 @@ async function scrapeCreditCards(page: Page): Promise<Scraped> {
       : null;
     const unpaidAmount = noPaymentNeeded ? 0 : parseAmt(unpaidMatch?.[1]);
 
+    // Scrape all historical bill rows: "YYYY年MM月 ... -TWD X,XXX"
+    const billRows: Array<{ billingPeriod: string; statementAmount: number }> = [];
+    const seen = new Set<string>();
+    const billRegex = /(\d{4})年(\d{2})月[\s\S]{0,100}?(-?TWD\s*[\d,]+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = billRegex.exec(text)) !== null) {
+      const period = `${m[1]}-${m[2]}`;
+      if (seen.has(period)) continue;
+      seen.add(period);
+      billRows.push({ billingPeriod: period, statementAmount: parseAmt(m[3]) });
+    }
+
     return {
       last4: last4Match?.[1] ?? "",
       cardName: last4Match ? `國泰信用卡 末四碼 ${last4Match[1]}` : (cardNameMatch?.[1]?.trim() ?? "國泰信用卡"),
@@ -445,7 +460,8 @@ async function scrapeCreditCards(page: Page): Promise<Scraped> {
       statementBalance,    // 帳單金額（負數 = 消費；正數 = 退刷回沖）
       unpaidAmount,         // 未繳餘額（0 = 無需繳費）
       paymentDueDate: dueDateMatch?.[1]?.replace(/\//g, "-") ?? null,
-      noPaymentNeeded
+      noPaymentNeeded,
+      billRows
     };
   });
 
@@ -518,7 +534,24 @@ async function scrapeCreditCards(page: Page): Promise<Scraped> {
     });
   }
 
-  return { bankAccounts, bankBalanceSnapshots, bankTransactions };
+  // Build credit card bills from the scraped overview bill rows
+  const firstPeriod = cardOverview.billRows[0]?.billingPeriod;
+  const creditCardBills: Scraped["creditCardBills"] = cardOverview.billRows.map((row) => {
+    const isCurrent = row.billingPeriod === firstPeriod;
+    return {
+      accountId: sourceId,
+      sourceId: `${sourceId}:bill:${row.billingPeriod}`,
+      billingPeriod: row.billingPeriod,
+      statementAmount: row.statementAmount || undefined,
+      paymentDueDate: isCurrent ? (cardOverview.paymentDueDate ?? undefined) : undefined,
+      isPaid: isCurrent ? cardOverview.noPaymentNeeded : true,
+      currency: "TWD",
+      raw: row
+    };
+  });
+  console.log(`[cathaybk] credit card bills: ${creditCardBills.length}`);
+
+  return { bankAccounts, bankBalanceSnapshots, bankTransactions, creditCardBills };
 }
 
 // ---- Utilities ----

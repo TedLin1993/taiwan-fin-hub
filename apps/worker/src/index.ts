@@ -17,6 +17,7 @@ import {
   type BankTransaction,
   type Connector,
   type ConnectorId,
+  type CreditCardBill,
   type InvestmentPosition,
   type InvestmentTransaction,
   type InvoiceLineItem,
@@ -670,6 +671,29 @@ api.get("/bank", async (c) => {
   });
 });
 
+api.get("/bank/bills", async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT
+      b.id,
+      b.connector_id AS connectorId,
+      b.account_id AS accountId,
+      a.source_id AS accountSourceId,
+      b.source_id AS sourceId,
+      b.billing_period AS billingPeriod,
+      b.statement_amount AS statementAmount,
+      b.minimum_payment AS minimumPayment,
+      b.paid_amount AS paidAmount,
+      b.is_paid AS isPaid,
+      b.payment_due_date AS paymentDueDate,
+      b.statement_closing_date AS statementClosingDate,
+      b.currency
+    FROM credit_card_bills b
+    JOIN bank_accounts a ON a.id = b.account_id
+    ORDER BY b.billing_period DESC, b.account_id ASC`
+  ).all();
+  return c.json(rows.results);
+});
+
 api.get("/history/net-worth", async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT date, net_worth AS netWorth, asset_type AS assetType, source FROM net_worth_history ORDER BY date ASC`
@@ -1033,13 +1057,15 @@ api.post("/connectors/esun/sync", async (c) => {
   const bankAccounts = result.bankAccounts ?? [];
   const bankBalanceSnapshots = result.bankBalanceSnapshots ?? [];
   const bankTransactions = result.bankTransactions ?? [];
-  console.log(`[sync] esun: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length}`);
+  const creditCardBills = result.creditCardBills ?? [];
+  console.log(`[sync] esun: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} bills=${creditCardBills.length}`);
 
   const now = new Date().toISOString();
   const statements: D1PreparedStatement[] = [
     ...bankAccounts.map((a) => bankAccountStatement(c.env.DB, "esun", a, now)),
     ...bankBalanceSnapshots.map((s) => bankBalanceSnapshotStatement(c.env.DB, "esun", s, now)),
     ...bankTransactions.map((t) => bankTransactionStatement(c.env.DB, "esun", t, now)),
+    ...creditCardBills.map((b) => creditCardBillStatement(c.env.DB, "esun", b, now)),
     ...(bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(c.env.DB)] : [])
   ];
 
@@ -1087,13 +1113,15 @@ api.post("/connectors/cathaybk/sync", async (c) => {
   const bankAccounts = result.bankAccounts ?? [];
   const bankBalanceSnapshots = result.bankBalanceSnapshots ?? [];
   const bankTransactions = result.bankTransactions ?? [];
-  console.log(`[sync] cathaybk: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length}`);
+  const creditCardBills = result.creditCardBills ?? [];
+  console.log(`[sync] cathaybk: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} bills=${creditCardBills.length}`);
 
   const now = new Date().toISOString();
   const statements: D1PreparedStatement[] = [
     ...bankAccounts.map((a) => bankAccountStatement(c.env.DB, "cathaybk", a, now)),
     ...bankBalanceSnapshots.map((s) => bankBalanceSnapshotStatement(c.env.DB, "cathaybk", s, now)),
     ...bankTransactions.map((t) => bankTransactionStatement(c.env.DB, "cathaybk", t, now)),
+    ...creditCardBills.map((b) => creditCardBillStatement(c.env.DB, "cathaybk", b, now)),
     ...(bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(c.env.DB)] : [])
   ];
 
@@ -1659,6 +1687,63 @@ function bankTransactionStatement(
       transaction.description ?? null,
       transaction.counterparty ?? null,
       JSON.stringify(transaction.raw ?? transaction),
+      now,
+      now
+    );
+}
+
+function creditCardBillStatement(
+  db: D1Database,
+  connectorId: ConnectorId,
+  bill: Omit<CreditCardBill, "id" | "connectorId">,
+  now: string
+) {
+  const accountId = stableId(connectorId, bill.accountId);
+  return db
+    .prepare(
+      `INSERT INTO credit_card_bills (
+        id,
+        connector_id,
+        account_id,
+        source_id,
+        billing_period,
+        statement_amount,
+        minimum_payment,
+        paid_amount,
+        is_paid,
+        payment_due_date,
+        statement_closing_date,
+        currency,
+        raw_payload,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(connector_id, account_id, billing_period) DO UPDATE SET
+        source_id = excluded.source_id,
+        statement_amount = excluded.statement_amount,
+        minimum_payment = excluded.minimum_payment,
+        paid_amount = excluded.paid_amount,
+        is_paid = excluded.is_paid,
+        payment_due_date = excluded.payment_due_date,
+        statement_closing_date = excluded.statement_closing_date,
+        currency = excluded.currency,
+        raw_payload = excluded.raw_payload,
+        updated_at = excluded.updated_at`
+    )
+    .bind(
+      stableId(connectorId, bill.accountId, bill.billingPeriod),
+      connectorId,
+      accountId,
+      bill.sourceId,
+      bill.billingPeriod,
+      bill.statementAmount ?? null,
+      bill.minimumPayment ?? null,
+      bill.paidAmount ?? null,
+      bill.isPaid == null ? null : (bill.isPaid ? 1 : 0),
+      bill.paymentDueDate ?? null,
+      bill.statementClosingDate ?? null,
+      bill.currency || "TWD",
+      JSON.stringify(bill.raw ?? bill),
       now,
       now
     );

@@ -1,5 +1,5 @@
 import puppeteer, { type Page } from "@cloudflare/puppeteer";
-import type { BankAccount, BankBalanceSnapshot, BankTransaction, SyncResult } from "@taiwan-fin-hub/core";
+import type { BankAccount, BankBalanceSnapshot, BankTransaction, CreditCardBill, SyncResult } from "@taiwan-fin-hub/core";
 import type { EsunConfig } from "@taiwan-fin-hub/connectors";
 
 const HOME_URL = "https://ebank.esunbank.com.tw/indexMobile.jsp";
@@ -48,6 +48,7 @@ export function createEsunConnector(browser?: Fetcher) {
         bankAccounts: [...creditCards.bankAccounts, ...deposits.bankAccounts],
         bankBalanceSnapshots: [...creditCards.bankBalanceSnapshots, ...deposits.bankBalanceSnapshots],
         bankTransactions: [...creditCards.bankTransactions, ...deposits.bankTransactions],
+        creditCardBills: creditCards.creditCardBills,
         cursor: JSON.stringify({
           ...cursorState,
           sessionCookies: freshCookies,
@@ -166,6 +167,7 @@ type Scraped = {
   bankAccounts: Array<Omit<BankAccount, "id" | "connectorId">>;
   bankBalanceSnapshots: Array<Omit<BankBalanceSnapshot, "id" | "connectorId">>;
   bankTransactions: Array<Omit<BankTransaction, "id" | "connectorId">>;
+  creditCardBills: Array<Omit<CreditCardBill, "id" | "connectorId">>;
 };
 
 interface EsunApiResponse<T> {
@@ -344,27 +346,31 @@ async function scrapeCreditCards(client: EsunHttpClient, lookbackMonths: number)
     raw: { detail, overview }
   }];
 
-  // Historical bill snapshots for lookbackMonths > 1
-  const historicalBills = (overview.bills ?? []).slice(1, lookbackMonths);
-  for (const bill of historicalBills) {
-    if (!bill.bym6) continue;
-    const billsData = await client.postJson<EsunCardOverviewBillsData>(CREDIT_CARD_BILLS_URL, { yymm: `0${bill.bym6}` });
-    const billPayDT = parseEsunCompactDate(billsData.payDT) ?? undefined;
-    const billAt = parseEsunBym6ToDate(bill.bym6);
-    bankBalanceSnapshots.push({
+  // Build credit card bills from overview.bills (all periods available)
+  const creditCardBills: Scraped["creditCardBills"] = (overview.bills ?? []).map((bill) => {
+    const bym6 = bill.bym6 ?? 0;
+    const year = Math.floor(bym6 / 100) + 1911;
+    const month = bym6 % 100;
+    const billingPeriod = `${year}-${String(month).padStart(2, "0")}`;
+    const tamt = bill.tamt ?? 0;
+    const payam = bill.payam ?? 0;
+    const isCurrentPeriod = bym6 === (overview.lstym ?? 0);
+    return {
       accountId: mainSourceId,
-      sourceId: `${mainSourceId}:bill:${bill.bym6}`,
-      balance: -(bill.tamt ?? 0),
-      statementBalance: bill.tamt ?? undefined,
-      paymentDueDate: billPayDT,
-      noPaymentNeeded: (bill.tamt ?? 0) === 0,
+      sourceId: `${mainSourceId}:bill:${billingPeriod}`,
+      billingPeriod,
+      statementAmount: tamt || undefined,
+      minimumPayment: bill.mimpy ?? undefined,
+      paidAmount: payam || undefined,
+      isPaid: tamt > 0 && payam >= tamt,
+      paymentDueDate: isCurrentPeriod ? paymentDueDate : undefined,
+      statementClosingDate: isCurrentPeriod ? statementClosingDate : undefined,
       currency: bill.cucid?.trim() || "TWD",
-      asOfAt: billAt,
-      raw: { bill, billsData }
-    });
-  }
+      raw: bill
+    };
+  });
 
-  return { bankAccounts, bankBalanceSnapshots, bankTransactions };
+  return { bankAccounts, bankBalanceSnapshots, bankTransactions, creditCardBills };
 }
 
 interface EsunCardOverviewBillsData {
@@ -602,7 +608,7 @@ async function scrapeDepositAccounts(
     newWatermarks[account] = rows[0] ? txDateTimeKey(rows[0]) : watermarks[account];
   }
 
-  return { bankAccounts, bankBalanceSnapshots, bankTransactions, watermarks: newWatermarks };
+  return { bankAccounts, bankBalanceSnapshots, bankTransactions, creditCardBills: [], watermarks: newWatermarks };
 }
 
 async function fetchAccountTransactionPages(

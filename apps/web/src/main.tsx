@@ -164,6 +164,22 @@ interface BankTransactionRow {
   };
 }
 
+interface CreditCardBillRow {
+  id: string;
+  connectorId: ConnectorId;
+  accountId: string;
+  accountSourceId?: string;
+  sourceId: string;
+  billingPeriod: string;
+  statementAmount?: number;
+  minimumPayment?: number;
+  paidAmount?: number;
+  isPaid?: number;
+  paymentDueDate?: string;
+  statementClosingDate?: string;
+  currency: string;
+}
+
 interface BankData {
   accounts: BankAccountRow[];
   transactions: BankTransactionRow[];
@@ -2279,6 +2295,10 @@ function Cards({ api }: { api: ApiClient }) {
     queryKey: ["bank"],
     queryFn: () => api.get<BankData>("/api/bank")
   });
+  const bills = useQuery({
+    queryKey: ["creditCardBills"],
+    queryFn: () => api.get<CreditCardBillRow[]>("/api/bank/bills")
+  });
 
   if (bank.isLoading) {
     return <EmptyState title="載入信用卡中" body="正在從 D1 讀取信用卡帳戶與交易。" />;
@@ -2292,24 +2312,24 @@ function Cards({ api }: { api: ApiClient }) {
   const cards = data.accounts.filter((account) => account.accountType === "credit");
   const cardIds = new Set(cards.map((card) => card.id));
   const cardTransactions = data.transactions.filter((transaction) => cardIds.has(transaction.accountId));
-  const outstandingBalance = cards.reduce((total, card) => total + (card.balance ?? 0), 0);
+  const outstandingBalance = cards.reduce((total, card) => total + Math.abs(card.balance ?? 0), 0);
   const availableCredit = cards.reduce((total, card) => total + (card.availableBalance ?? 0), 0);
 
   return (
     <section className="grid gap-5">
       <div className="grid gap-4 md:grid-cols-3">
         <Metric label="信用卡數" value={cards.length.toLocaleString()} icon={<CreditCard />} />
-        <Metric label="未繳餘額" value={formatCurrency(outstandingBalance)} icon={<CreditCard />} />
+        <Metric label="目前已用金額" value={formatCurrency(outstandingBalance)} icon={<CreditCard />} />
         <Metric label="可用額度" value={formatCurrency(availableCredit)} icon={<WalletCards />} />
       </div>
       <div>
         <h2 className="mb-3 text-lg font-semibold">信用卡</h2>
         <Table
-          columns={["機構", "卡片", "餘額", "可用額度", "繳款截止日", "帳單截止日", "截至時間"]}
+          columns={["機構", "卡片", "目前已用金額", "可用額度", "繳款截止日", "帳單截止日", "截至時間"]}
           rows={cards.map((card) => [
             card.institutionName ?? "-",
             card.accountName ?? card.sourceId,
-            card.balance === undefined || card.balance === null ? "-" : formatCurrency(card.balance, card.currency),
+            card.balance === undefined || card.balance === null ? "-" : formatCurrency(Math.abs(card.balance), card.currency),
             card.availableBalance === undefined || card.availableBalance === null
               ? "-"
               : formatCurrency(card.availableBalance, card.currency),
@@ -2320,6 +2340,24 @@ function Cards({ api }: { api: ApiClient }) {
           empty="尚無信用卡資料。"
         />
       </div>
+      {(bills.data ?? []).length > 0 && (
+        <div>
+          <h2 className="mb-3 text-lg font-semibold">帳單紀錄</h2>
+          <Table
+            columns={["帳單月份", "帳單金額", "最低應繳", "已繳金額", "是否已繳", "繳款截止日", "帳單截止日"]}
+            rows={(bills.data ?? []).map((bill) => [
+              bill.billingPeriod,
+              bill.statementAmount != null ? formatCurrency(bill.statementAmount, bill.currency) : "-",
+              bill.minimumPayment != null ? formatCurrency(bill.minimumPayment, bill.currency) : "-",
+              bill.paidAmount != null ? formatCurrency(bill.paidAmount, bill.currency) : "-",
+              bill.isPaid ? "已繳" : bill.statementAmount ? "未繳" : "-",
+              bill.paymentDueDate ?? "-",
+              bill.statementClosingDate ?? "-"
+            ])}
+            empty="尚無帳單紀錄。"
+          />
+        </div>
+      )}
       <div>
         <h2 className="mb-3 text-lg font-semibold">刷卡交易</h2>
         <Table
