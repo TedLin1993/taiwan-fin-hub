@@ -1,11 +1,14 @@
 import puppeteer, { type Page } from "@cloudflare/puppeteer";
-import type { BankAccount, BankBalanceSnapshot, BankTransaction, SyncResult } from "@taiwan-fin-hub/core";
+import type { BankAccount, BankBalanceSnapshot, BankTransaction, CreditCardBill, SyncResult } from "@taiwan-fin-hub/core";
 import type { EsunConfig } from "@taiwan-fin-hub/connectors";
 
 const HOME_URL = "https://ebank.esunbank.com.tw/indexMobile.jsp";
 const CREDIT_CARD_DETAIL_URL = "https://ebank.esunbank.com.tw/fcm01/fcm01003/home/detail/processDetail.json";
 const CREDIT_CARD_TIMELINE_URL = "https://ebank.esunbank.com.tw/fcm01/fcm01003/home/detail/1Y/getTimelineList.json";
+const CREDIT_CARD_OVERVIEW_URL = "https://ebank.esunbank.com.tw/fcm01/fcm01010/home/initData.json";
+const CREDIT_CARD_BILLS_URL = "https://ebank.esunbank.com.tw/fcm01/fcm01003/bill/bills.json";
 const ACCOUNT_OVERVIEW_URL = "https://ebank.esunbank.com.tw/fms01/fms01029/home/initData.json";
+const ACCOUNT_TX_INIT_URL = "https://ebank.esunbank.com.tw/fao01/fao01013/home/initData.json";
 const ACCOUNT_TX_URL = "https://ebank.esunbank.com.tw/fao01/fao01002/search/findTxDetails.json";
 
 export function createEsunConnector(browser?: Fetcher) {
@@ -32,12 +35,12 @@ export function createEsunConnector(browser?: Fetcher) {
       }
 
       const cursorState = readCursor(cursor);
-      const depositWatermarks = (cursorState.depositWatermarks as Record<string, string> | undefined) ?? {};
+      const depositWatermarks: Record<string, string> = {};
 
       console.log("[esun debug] scraping credit cards");
-      const creditCards = await scrapeCreditCards(client);
+      const creditCards = await scrapeCreditCards(client, config.lookbackMonths ?? 3);
       console.log("[esun debug] scraping deposit accounts");
-      const deposits = await scrapeDepositAccounts(client, depositWatermarks);
+      const deposits = await scrapeDepositAccounts(client, depositWatermarks, config.lookbackMonths ?? 3);
       const freshCookies = client.exportCookies();
       const expiresAt = new Date(Date.now() + 25 * 60 * 1000).toISOString();
 
@@ -46,11 +49,12 @@ export function createEsunConnector(browser?: Fetcher) {
         bankAccounts: [...creditCards.bankAccounts, ...deposits.bankAccounts],
         bankBalanceSnapshots: [...creditCards.bankBalanceSnapshots, ...deposits.bankBalanceSnapshots],
         bankTransactions: [...creditCards.bankTransactions, ...deposits.bankTransactions],
+        creditCardBills: creditCards.creditCardBills,
         cursor: JSON.stringify({
           ...cursorState,
           sessionCookies: freshCookies,
           sessionExpiresAt: expiresAt,
-          depositWatermarks: deposits.watermarks,
+          depositWatermarks: undefined,
           syncedAt: new Date().toISOString()
         })
       };
@@ -164,6 +168,7 @@ type Scraped = {
   bankAccounts: Array<Omit<BankAccount, "id" | "connectorId">>;
   bankBalanceSnapshots: Array<Omit<BankBalanceSnapshot, "id" | "connectorId">>;
   bankTransactions: Array<Omit<BankTransaction, "id" | "connectorId">>;
+  creditCardBills: Array<Omit<CreditCardBill, "id" | "connectorId">>;
 };
 
 interface EsunApiResponse<T> {
@@ -213,12 +218,34 @@ interface EsunCardRow {
 
 interface EsunCardDetailData {
   balance?: string | null;
+  creditLimit?: string | null;
+  availCreditAmt?: string | null;
+  availableAmt?: string | null;
   creditCardList?: EsunCardRow[] | null;
   billList?: Array<{
     billYm?: string | null;
     billCur?: string | null;
     payAmt?: string | null;
     paidAmt?: string | null;
+    payDueDate?: string | null;
+    dueDate?: string | null;
+  }> | null;
+}
+
+interface EsunCardOverviewData {
+  trsam?: number | null;   // total credit limit (永久信用額度)
+  useam?: number | null;   // usable/available credit remaining (可用額度)
+  tamt?: number | null;    // current statement total amount (本期帳單)
+  mimpy?: number | null;   // minimum payment
+  paydt?: string | null;   // payment due date (繳款截止日), format "0YYYMMDD" (民國)
+  intdt?: string | null;   // statement closing date (帳單截止日), format "0YYYMMDD"
+  lstym?: number | null;   // latest billing period yymm
+  bills?: Array<{
+    bym6?: number | null;  // billing period (e.g. 11505 = 民國115年05月)
+    tamt?: number | null;  // statement total
+    mimpy?: number | null; // minimum payment
+    payam?: number | null; // amount already paid
+    cucid?: string | null; // currency
   }> | null;
 }
 
@@ -255,8 +282,11 @@ interface EsunTimelinePage {
   endDate?: string;
 }
 
-async function scrapeCreditCards(client: EsunHttpClient): Promise<Scraped> {
-  const detail = await fetchCreditCardDetail(client);
+async function scrapeCreditCards(client: EsunHttpClient, lookbackMonths: number): Promise<Scraped> {
+  const [detail, overview] = await Promise.all([
+    fetchCreditCardDetail(client),
+    client.postJson<EsunCardOverviewData>(CREDIT_CARD_OVERVIEW_URL, {})
+  ]);
   const asOfAt = new Date().toISOString();
 
   const cards = getCreditCards(detail);
@@ -270,6 +300,25 @@ async function scrapeCreditCards(client: EsunHttpClient): Promise<Scraped> {
   const mainSourceId = "credit:esun:main";
   accountIds.add(mainSourceId);
 
+  // overview fields:
+  //   trsam = total credit limit (永久信用額度)
+  //   useam = usable/available amount remaining (可用額度) — NOT "used" despite the name
+  //   tamt  = current statement total (本期帳單)
+  //   intdt = statement closing date (帳單截止日), format "0YYYMMDD"
+  //   paydt = payment due date (繳款截止日), format "0YYYMMDD"
+  const creditLimit = overview.trsam ?? undefined;
+  const availableCredit = overview.useam ?? undefined;
+  const outstanding = overview.trsam != null && overview.useam != null
+    ? overview.trsam - overview.useam   // total charges outstanding across all cards
+    : 0;
+  const paymentDueDate = parseEsunCompactDate(overview.paydt) ?? undefined;
+  const statementClosingDate = parseEsunCompactDate(overview.intdt) ?? undefined;
+  const currentBill = overview.bills?.[0];
+  const statementBalance = currentBill?.tamt ?? overview.tamt ?? undefined;
+  const noPaymentNeeded = outstanding === 0;
+
+  console.log(`[esun debug] creditLimit=${creditLimit} availableCredit=${availableCredit} outstanding=${outstanding} statementBalance=${statementBalance} paymentDueDate=${paymentDueDate} statementClosingDate=${statementClosingDate}`);
+
   const cardBySourceId = new Map(cards.map((card) => [creditCardSourceId(card.cardNo), card]));
   const bankAccounts: Scraped["bankAccounts"] = Array.from(accountIds).map((sourceId) => {
     const card = cardBySourceId.get(sourceId);
@@ -279,24 +328,56 @@ async function scrapeCreditCards(client: EsunHttpClient): Promise<Scraped> {
       accountName: card?.cardNoDesc || (sourceId === mainSourceId ? "玉山信用卡" : `玉山信用卡 ${sourceId.slice(-4)}`),
       accountType: "credit",
       currency: "TWD",
+      creditLimit,
       raw: card ?? detail
     };
   });
 
-  const outstanding = readOutstandingBalance(detail);
-  const bankBalanceSnapshots: Scraped["bankBalanceSnapshots"] =
-    outstanding === undefined
-      ? []
-      : [{
-          accountId: mainSourceId,
-          sourceId: `${mainSourceId}:${asOfAt}`,
-          balance: -outstanding,
-          currency: "TWD",
-          asOfAt,
-          raw: detail
-        }];
+  const bankBalanceSnapshots: Scraped["bankBalanceSnapshots"] = [{
+    accountId: mainSourceId,
+    sourceId: `${mainSourceId}:${asOfAt}`,
+    balance: -outstanding,
+    availableBalance: availableCredit,
+    statementBalance,
+    paymentDueDate,
+    statementClosingDate,
+    noPaymentNeeded,
+    currency: "TWD",
+    asOfAt,
+    raw: { detail, overview }
+  }];
 
-  return { bankAccounts, bankBalanceSnapshots, bankTransactions };
+  // Build credit card bills from overview.bills (all periods available)
+  const creditCardBills: Scraped["creditCardBills"] = (overview.bills ?? []).map((bill) => {
+    const bym6 = bill.bym6 ?? 0;
+    const year = Math.floor(bym6 / 100) + 1911;
+    const month = bym6 % 100;
+    const billingPeriod = `${year}-${String(month).padStart(2, "0")}`;
+    const tamt = bill.tamt ?? 0;
+    const payam = bill.payam ?? 0;
+    const isCurrentPeriod = bym6 === (overview.lstym ?? 0);
+    return {
+      accountId: mainSourceId,
+      sourceId: `${mainSourceId}:bill:${billingPeriod}`,
+      billingPeriod,
+      statementAmount: tamt || undefined,
+      minimumPayment: bill.mimpy ?? undefined,
+      paidAmount: payam || undefined,
+      isPaid: tamt > 0 && payam >= tamt,
+      paymentDueDate: isCurrentPeriod ? paymentDueDate : undefined,
+      statementClosingDate: isCurrentPeriod ? statementClosingDate : undefined,
+      currency: bill.cucid?.trim() || "TWD",
+      raw: bill
+    };
+  });
+
+  return { bankAccounts, bankBalanceSnapshots, bankTransactions, creditCardBills };
+}
+
+interface EsunCardOverviewBillsData {
+  payDT?: string | null;
+  intDT?: string | null;
+  billList?: Array<{ currency?: string | null; amount?: string | null }> | null;
 }
 
 async function fetchCreditCardDetail(client: EsunHttpClient): Promise<EsunCardDetailData> {
@@ -447,10 +528,17 @@ interface EsunTxDetailsData {
 
 async function scrapeDepositAccounts(
   client: EsunHttpClient,
-  watermarks: Record<string, string>
+  watermarks: Record<string, string>,
+  lookbackMonths: number
 ): Promise<Scraped & { watermarks: Record<string, string> }> {
+  const cutoffDate = new Date();
+  cutoffDate.setMonth(cutoffDate.getMonth() - lookbackMonths);
+  const cutoffDateStr = cutoffDate.toISOString().slice(0, 10).replace(/-/g, "/");
+  // Required: initialize server-side session state before findTxDetails calls
+  const txInit = await client.postJson<{ drActList?: unknown[] }>(ACCOUNT_TX_INIT_URL, {});
+  console.log(`[esun debug] fao01013 init: drActList=${txInit.drActList?.length ?? 0}`);
   const overview = await client.postJson<EsunAccountOverviewData>(ACCOUNT_OVERVIEW_URL, {});
-  console.log(`[esun debug] overview: twDetails=${overview.twDetails?.length ?? 0} frDetails=${overview.frDetails?.length ?? 0}`);
+  console.log(`[esun debug] overview: twDetails=${overview.twDetails?.length ?? 0} frDetails=${overview.frDetails?.length ?? 0} lookbackMonths=${lookbackMonths} cutoffDateStr=${cutoffDateStr}`);
   const asOfAt = new Date().toISOString();
 
   const bankAccounts: Scraped["bankAccounts"] = [];
@@ -480,11 +568,11 @@ async function scrapeDepositAccounts(
       raw: row
     });
 
-    console.log(`[esun debug] tw account ${account} (${row.accountType ?? "401"}): watermark=${watermarks[account] ?? "none"}`);
-    const rows = await fetchAccountTransactionPages(client, account, row.accountType ?? "401", false, watermarks[account]);
+    console.log(`[esun debug] tw account ${account} (${row.accountType ?? "401"}): watermark=${watermarks[account] ?? "none"} cutoff=${cutoffDateStr}`);
+    const rows = await fetchAccountTransactionPages(client, account, row.accountType ?? "401", false, watermarks[account], cutoffDateStr);
     console.log(`[esun debug] tw account ${account}: fetched ${rows.length} transaction rows`);
     appendDepositTransactions(bankTransactions, rows, accountId, currency);
-    newWatermarks[account] = rows[0] ? txDateTimeKey(rows[0]) : watermarks[account];
+    newWatermarks[account] = watermarks[account];
   }
 
   for (const row of (overview.frDetails ?? []).filter((account) => account.account)) {
@@ -514,17 +602,17 @@ async function scrapeDepositAccounts(
       });
     }
 
-    console.log(`[esun debug] fr account ${account} (${row.accountType ?? "A01"}): watermark=${watermarks[account] ?? "none"}`);
-    const rows = await fetchAccountTransactionPages(client, account, row.accountType ?? "A01", true, watermarks[account]);
+    console.log(`[esun debug] fr account ${account} (${row.accountType ?? "A01"}): watermark=${watermarks[account] ?? "none"} cutoff=${cutoffDateStr}`);
+    const rows = await fetchAccountTransactionPages(client, account, row.accountType ?? "A01", true, watermarks[account], cutoffDateStr);
     console.log(`[esun debug] fr account ${account}: fetched ${rows.length} transaction rows`);
     for (const detail of rows) {
       const currency = detail.displayCurrency?.trim() || primaryCurrency;
       appendDepositTransactions(bankTransactions, [detail], depositSourceId(account, currency), currency);
     }
-    newWatermarks[account] = rows[0] ? txDateTimeKey(rows[0]) : watermarks[account];
+    newWatermarks[account] = watermarks[account];
   }
 
-  return { bankAccounts, bankBalanceSnapshots, bankTransactions, watermarks: newWatermarks };
+  return { bankAccounts, bankBalanceSnapshots, bankTransactions, creditCardBills: [], watermarks: newWatermarks };
 }
 
 async function fetchAccountTransactionPages(
@@ -532,7 +620,8 @@ async function fetchAccountTransactionPages(
   account: string,
   accountType: string,
   isForeign: boolean,
-  watermark: string | undefined
+  watermark: string | undefined,
+  cutoffDateStr: string
 ): Promise<EsunTxDetailRow[]> {
   const rows: EsunTxDetailRow[] = [];
   let searchKxy = "";
@@ -546,18 +635,29 @@ async function fetchAccountTransactionPages(
       counter: 0
     });
 
-    let reachedWatermark = false;
+    let reachedCutoff = false;
+    let skippedCutoff = 0;
+    let skippedWatermark = 0;
     for (const month of data.txMasters ?? []) {
       for (const detail of month.details ?? []) {
-        rows.push(detail);
-        if (watermark && txDateTimeKey(detail) <= watermark) {
-          reachedWatermark = true;
+        const dateStr = detail.txDate?.trim().replace(/-/g, "/") ?? "";
+        if (dateStr && dateStr < cutoffDateStr) {
+          reachedCutoff = true;
+          skippedCutoff++;
+          continue;
         }
+        if (watermark && txDateTimeKey(detail) <= watermark) {
+          reachedCutoff = true;
+          skippedWatermark++;
+          continue;
+        }
+        rows.push(detail);
       }
     }
-    console.log(`[esun debug] ${account} page ${page}: txMasters=${data.txMasters?.length ?? 0} searchKxy=${data.searchKxy ?? "null"} reachedWatermark=${reachedWatermark}`);
+    const months = (data.txMasters ?? []).map((m) => `${m.year}/${m.month}(${m.details?.length ?? 0})`).join(",");
+    console.log(`[esun debug] ${account} page ${page}: months=[${months}] added=${rows.length} skippedCutoff=${skippedCutoff} skippedWatermark=${skippedWatermark} searchKxy=${data.searchKxy ?? "null"} reachedCutoff=${reachedCutoff}`);
 
-    if (reachedWatermark || !data.searchKxy) break;
+    if (reachedCutoff || !data.searchKxy) break;
     searchKxy = data.searchKxy;
   }
 
@@ -620,6 +720,22 @@ function normalizeEsunTxDateTime(txDate: string | null | undefined, txTime: stri
 function parseTwd(text: string): number {
   const n = Number(text.replace(/[^0-9.-]/g, ""));
   return Number.isFinite(n) ? Math.round(n) : 0;
+}
+
+// Format "0YYYMMDD" where YYY = 民國 year (e.g. "01150629" → "2026/06/29")
+function parseEsunCompactDate(value: string | null | undefined): string | null {
+  const match = value?.match(/^0?(\d{3})(\d{2})(\d{2})$/);
+  if (!match) return null;
+  const year = parseInt(match[1]) + 1911;
+  return `${year}/${match[2]}/${match[3]}`;
+}
+
+// bym6 e.g. 11505 = 民國115年05月 → use last day of that month as the snapshot date
+function parseEsunBym6ToDate(bym6: number): string {
+  const year = Math.floor(bym6 / 100) + 1911;
+  const month = bym6 % 100;
+  const lastDay = new Date(year, month, 0).getDate();
+  return new Date(year, month - 1, lastDay).toISOString();
 }
 
 function readOutstandingBalance(detail: EsunCardDetailData) {

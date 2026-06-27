@@ -1,6 +1,7 @@
 import {
   einvoiceConnector,
   parseConnectorConfig,
+  parseCathaybkConfig,
   parseEsunConfig,
   parseInvoiceConfig,
   parseTdccConfig,
@@ -8,6 +9,7 @@ import {
   tdccConnector,
   TdccOtpExpiredError
 } from "@taiwan-fin-hub/connectors";
+import { createCathaybkConnector } from "./cathaybk";
 import { createEsunConnector } from "./esun";
 import {
   type BankAccount,
@@ -15,6 +17,7 @@ import {
   type BankTransaction,
   type Connector,
   type ConnectorId,
+  type CreditCardBill,
   type InvestmentPosition,
   type InvestmentTransaction,
   type InvoiceLineItem,
@@ -24,6 +27,7 @@ import {
 import {
   getConnectorSettings,
   updateConnectorCursor,
+  updateConnectorPublicConfig,
   upsertConnectorSettings
 } from "@taiwan-fin-hub/db";
 import { Hono, type Context } from "hono";
@@ -39,6 +43,7 @@ interface Env {
   CONFIG_ENCRYPTION_KEY?: string;
   TEAM_DOMAIN?: string;
   POLICY_AUD?: string;
+  POLICY_AUDS?: string;
   DEMO_MODE?: string | boolean;
 }
 
@@ -52,6 +57,12 @@ const api = new Hono<{ Bindings: Env; Variables: Variables }>();
 const settingsBodySchema = z.object({
   config: z.unknown()
 });
+
+const PUBLIC_FIELDS: Record<string, string[]> = {
+  esun: ["lookbackMonths"],
+  cathaybk: ["lookbackMonths"],
+  einvoice: ["periodsBack", "fetchDetails"]
+};
 
 const tdccSyncBodySchema = z.object({
   otp: z.string().min(1).optional(),
@@ -80,9 +91,9 @@ function jsonError(code: string, message: string, status = 400) {
   );
 }
 
-function requireAccessSecrets(env: Env): asserts env is Env & { TEAM_DOMAIN: string; POLICY_AUD: string } {
-  if (!env.TEAM_DOMAIN || !env.POLICY_AUD) {
-    throw new Error("TEAM_DOMAIN and POLICY_AUD are required unless DEMO_MODE is enabled.");
+function requireAccessSecrets(env: Env): asserts env is Env & { TEAM_DOMAIN: string } {
+  if (!env.TEAM_DOMAIN || (!env.POLICY_AUD && !env.POLICY_AUDS)) {
+    throw new Error("TEAM_DOMAIN and POLICY_AUD or POLICY_AUDS are required unless DEMO_MODE is enabled.");
   }
 }
 
@@ -599,6 +610,8 @@ api.get("/bank", async (c) => {
         account.account_last4 AS accountLast4,
         balance.balance AS balance,
         balance.available_balance AS availableBalance,
+        balance.payment_due_date AS paymentDueDate,
+        balance.statement_closing_date AS statementClosingDate,
         balance.as_of_at AS asOfAt
       FROM bank_accounts account
       LEFT JOIN bank_balance_snapshots balance
@@ -656,6 +669,29 @@ api.get("/bank", async (c) => {
       classification: classificationMap.get(String(t.id))
     }))
   });
+});
+
+api.get("/bank/bills", async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT
+      b.id,
+      b.connector_id AS connectorId,
+      b.account_id AS accountId,
+      a.source_id AS accountSourceId,
+      b.source_id AS sourceId,
+      b.billing_period AS billingPeriod,
+      b.statement_amount AS statementAmount,
+      b.minimum_payment AS minimumPayment,
+      b.paid_amount AS paidAmount,
+      b.is_paid AS isPaid,
+      b.payment_due_date AS paymentDueDate,
+      b.statement_closing_date AS statementClosingDate,
+      b.currency
+    FROM credit_card_bills b
+    JOIN bank_accounts a ON a.id = b.account_id
+    ORDER BY b.billing_period DESC, b.account_id ASC`
+  ).all();
+  return c.json(rows.results);
 });
 
 api.get("/history/net-worth", async (c) => {
@@ -806,7 +842,8 @@ api.get("/connectors/:connectorId/settings", async (c) => {
   return c.json({
     connectorId,
     configured: Boolean(settings),
-    updatedAt: settings?.updated_at
+    updatedAt: settings?.updated_at,
+    publicConfig: settings?.public_config ? JSON.parse(settings.public_config) : null
   });
 });
 
@@ -826,31 +863,54 @@ api.put("/connectors/:connectorId/settings", async (c) => {
     );
   }
 
-  let parsedConfig: unknown;
-  try {
-    parsedConfig = parseConnectorConfig(connectorId, body.data.config);
-  } catch {
-    return c.json(
-      {
-        success: false,
-        error: {
-          code: "INVALID_CONNECTOR_CONFIG",
-          message: "Connector config does not match the expected shape."
-        }
-      },
-      400
-    );
+  const rawConfig = body.data.config as Record<string, unknown>;
+  const publicKeys = PUBLIC_FIELDS[connectorId] ?? [];
+  const publicConfig: Record<string, unknown> = {};
+  const sensitiveConfig: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(rawConfig)) {
+    if (publicKeys.includes(k)) publicConfig[k] = v;
+    else sensitiveConfig[k] = v;
   }
+  const hasSensitive = Object.values(sensitiveConfig).some((v) => v !== undefined && v !== "");
 
   const now = new Date().toISOString();
   const encryptionKey = configEncryptionKey(c.env);
-  const encryptedConfig = await encryptJson(parsedConfig, encryptionKey);
-  await upsertConnectorSettings(c.env.DB, {
-    id: crypto.randomUUID(),
-    connectorId,
-    encryptedConfig,
-    now
-  });
+  const publicConfigJson = Object.keys(publicConfig).length > 0 ? JSON.stringify(publicConfig) : null;
+
+  if (hasSensitive) {
+    let parsedConfig: unknown;
+    try {
+      const existing = await getConnectorSettings(c.env.DB, connectorId);
+      const storedPublic = existing?.public_config ? JSON.parse(existing.public_config) : {};
+      parsedConfig = parseConnectorConfig(connectorId, { ...storedPublic, ...rawConfig });
+    } catch {
+      return c.json(
+        {
+          success: false,
+          error: {
+            code: "INVALID_CONNECTOR_CONFIG",
+            message: "Connector config does not match the expected shape."
+          }
+        },
+        400
+      );
+    }
+    const encryptedConfig = await encryptJson(parsedConfig, encryptionKey);
+    await upsertConnectorSettings(c.env.DB, {
+      id: crypto.randomUUID(),
+      connectorId,
+      encryptedConfig,
+      publicConfig: publicConfigJson,
+      now
+    });
+  } else {
+    const existing = await getConnectorSettings(c.env.DB, connectorId);
+    if (!existing) {
+      return c.json({ success: false, error: { code: "CONNECTOR_CONFIG_MISSING", message: "Cannot update public config before credentials are set." } }, 400);
+    }
+    const mergedPublic = { ...JSON.parse(existing.public_config ?? "{}"), ...publicConfig };
+    await updateConnectorPublicConfig(c.env.DB, connectorId, JSON.stringify(mergedPublic), now);
+  }
 
   return c.json({
     connectorId,
@@ -988,7 +1048,8 @@ api.post("/connectors/esun/sync", async (c) => {
 
   const encryptionKey = configEncryptionKey(c.env);
   const stored = await decryptJson<unknown>(settings.encrypted_config, encryptionKey);
-  const config = parseEsunConfig(stored);
+  const publicStored = settings.public_config ? JSON.parse(settings.public_config) : {};
+  const config = parseEsunConfig({ ...(stored as object), ...publicStored });
 
   console.log(`[sync] esun: starting (cursor=${settings.sync_cursor ?? "none"})`);
   const result = await createEsunConnector(c.env.BROWSER).sync(config, settings.sync_cursor ?? undefined);
@@ -996,13 +1057,15 @@ api.post("/connectors/esun/sync", async (c) => {
   const bankAccounts = result.bankAccounts ?? [];
   const bankBalanceSnapshots = result.bankBalanceSnapshots ?? [];
   const bankTransactions = result.bankTransactions ?? [];
-  console.log(`[sync] esun: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length}`);
+  const creditCardBills = result.creditCardBills ?? [];
+  console.log(`[sync] esun: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} bills=${creditCardBills.length}`);
 
   const now = new Date().toISOString();
   const statements: D1PreparedStatement[] = [
     ...bankAccounts.map((a) => bankAccountStatement(c.env.DB, "esun", a, now)),
     ...bankBalanceSnapshots.map((s) => bankBalanceSnapshotStatement(c.env.DB, "esun", s, now)),
     ...bankTransactions.map((t) => bankTransactionStatement(c.env.DB, "esun", t, now)),
+    ...creditCardBills.map((b) => creditCardBillStatement(c.env.DB, "esun", b, now)),
     ...(bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(c.env.DB)] : [])
   ];
 
@@ -1012,6 +1075,62 @@ api.post("/connectors/esun/sync", async (c) => {
     statements.push(
       c.env.DB.prepare(`UPDATE connector_settings SET encrypted_config = ?, sync_cursor = ?, updated_at = ? WHERE connector_id = ?`)
         .bind(await encryptJson(updatedConfig, encryptionKey), result.cursor, now, "esun")
+    );
+  }
+
+  if (statements.length > 0) {
+    await c.env.DB.batch(statements);
+  }
+
+  if (bankBalanceSnapshots.length > 0) {
+    await rebuildBankDepositHistory(c.env.DB, [dateFromIso(now)]);
+  }
+
+  return c.json({
+    success: true,
+    records: bankAccounts.length + bankBalanceSnapshots.length + bankTransactions.length,
+    cursorUpdated: Boolean(result.cursor && result.cursor !== settings.sync_cursor)
+  });
+});
+
+api.post("/connectors/cathaybk/sync", async (c) => {
+  const settings = await getConnectorSettings(c.env.DB, "cathaybk");
+  if (!settings) {
+    return c.json(
+      { success: false, error: { code: "CONNECTOR_CONFIG_MISSING", message: "Connector settings are required before sync." } },
+      400
+    );
+  }
+
+  const encryptionKey = configEncryptionKey(c.env);
+  const stored = await decryptJson<unknown>(settings.encrypted_config, encryptionKey);
+  const publicStoredCathaybk = settings.public_config ? JSON.parse(settings.public_config) : {};
+  const config = parseCathaybkConfig({ ...(stored as object), ...publicStoredCathaybk });
+
+  console.log(`[sync] cathaybk: starting (cursor=${settings.sync_cursor ?? "none"})`);
+  const result = await createCathaybkConnector(c.env.BROWSER).sync(config, settings.sync_cursor ?? undefined);
+
+  const bankAccounts = result.bankAccounts ?? [];
+  const bankBalanceSnapshots = result.bankBalanceSnapshots ?? [];
+  const bankTransactions = result.bankTransactions ?? [];
+  const creditCardBills = result.creditCardBills ?? [];
+  console.log(`[sync] cathaybk: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} bills=${creditCardBills.length}`);
+
+  const now = new Date().toISOString();
+  const statements: D1PreparedStatement[] = [
+    ...bankAccounts.map((a) => bankAccountStatement(c.env.DB, "cathaybk", a, now)),
+    ...bankBalanceSnapshots.map((s) => bankBalanceSnapshotStatement(c.env.DB, "cathaybk", s, now)),
+    ...bankTransactions.map((t) => bankTransactionStatement(c.env.DB, "cathaybk", t, now)),
+    ...creditCardBills.map((b) => creditCardBillStatement(c.env.DB, "cathaybk", b, now)),
+    ...(bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(c.env.DB)] : [])
+  ];
+
+  if (result.cursor) {
+    const cursorState = JSON.parse(result.cursor) as Record<string, unknown>;
+    const updatedConfig = { ...config, ...cursorState };
+    statements.push(
+      c.env.DB.prepare(`UPDATE connector_settings SET encrypted_config = ?, sync_cursor = ?, updated_at = ? WHERE connector_id = ?`)
+        .bind(await encryptJson(updatedConfig, encryptionKey), result.cursor, now, "cathaybk")
     );
   }
 
@@ -1076,6 +1195,7 @@ async function syncTdccRecords<TConfig>(
         id: settings.id,
         connectorId,
         encryptedConfig: await encryptJson(configWithoutOtp, encryptionKey),
+        publicConfig: settings.public_config ?? null,
         now: new Date().toISOString()
       });
       console.log(`[sync] ${connectorId}/${syncScope}: cleared expired otp from config`);
@@ -1160,6 +1280,7 @@ async function syncTdccTradeRecords(c: Context<{ Bindings: Env; Variables: Varia
         id: settings.id,
         connectorId,
         encryptedConfig: await encryptJson(configWithoutOtp, encryptionKey),
+        publicConfig: settings.public_config ?? null,
         now: new Date().toISOString()
       });
       console.log("[sync] tdcc/trades: cleared expired otp from config");
@@ -1288,6 +1409,7 @@ function invoiceLineItemStatement(
 // account when it's synced both directly and via TDCC. TDCC may mask the account
 // number, so only trailing digits are used from the account segment.
 const ESUN_BANK_CODE = "808";
+const CATHAYBK_BANK_CODE = "013";
 const TAIWAN_BANK_NAMES: Record<string, string> = {
   "004": "台灣銀行",
   "005": "土地銀行",
@@ -1340,6 +1462,10 @@ function deriveBankMatchKey(connectorId: ConnectorId, sourceId: string): { bankC
     const last4 = sourceId.split(":")[2]?.replace(/\D/g, "").slice(-4) ?? "";
     return { bankCode: ESUN_BANK_CODE, last4: last4 || null };
   }
+  if (connectorId === "cathaybk" && sourceId.startsWith("bank:cathaybk:")) {
+    const last4 = sourceId.split(":")[2]?.replace(/\D/g, "").slice(-4) ?? "";
+    return { bankCode: CATHAYBK_BANK_CODE, last4: last4 || null };
+  }
   const match = sourceId.match(/^settlement:([^:]+):([^:]+)/);
   const last4 = match?.[2]?.replace(/\D/g, "").slice(-4) ?? "";
   return match ? { bankCode: match[1], last4: last4 || null } : { bankCode: null, last4: null };
@@ -1358,7 +1484,10 @@ function normalizeBankTransactionDisplay<T extends BankDisplayRow>(row: T): T {
 function normalizeDepositDisplay<T extends BankDisplayRow>(row: T): T {
   const sourceId = row.accountSourceId ?? row.sourceId ?? "";
   const settlement = parseBankAccountSource(sourceId);
-  const bankCode = row.bankCode ?? settlement.bankCode ?? (row.connectorId === "esun" ? ESUN_BANK_CODE : undefined);
+  const bankCode =
+    row.bankCode ??
+    settlement.bankCode ??
+    (row.connectorId === "esun" ? ESUN_BANK_CODE : row.connectorId === "cathaybk" ? CATHAYBK_BANK_CODE : undefined);
   const accountLast5 = accountLast5FromSourceId(sourceId);
 
   return {
@@ -1374,6 +1503,9 @@ function parseBankAccountSource(sourceId: string): { bankCode?: string; account?
 
   const esun = sourceId.match(/^bank:esun:([^:]+)/);
   if (esun) return { bankCode: ESUN_BANK_CODE, account: esun[1] };
+
+  const cathaybk = sourceId.match(/^bank:cathaybk:([^:]+)/);
+  if (cathaybk) return { bankCode: CATHAYBK_BANK_CODE, account: cathaybk[1] };
 
   return {};
 }
@@ -1401,17 +1533,19 @@ function bankAccountStatement(
         account_name,
         account_type,
         currency,
+        credit_limit,
         bank_code,
         account_last4,
         raw_payload,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(connector_id, source_id) DO UPDATE SET
         institution_name = excluded.institution_name,
         account_name = excluded.account_name,
         account_type = excluded.account_type,
         currency = excluded.currency,
+        credit_limit = excluded.credit_limit,
         bank_code = excluded.bank_code,
         account_last4 = excluded.account_last4,
         raw_payload = excluded.raw_payload,
@@ -1425,6 +1559,7 @@ function bankAccountStatement(
       account.accountName ?? null,
       account.accountType ?? null,
       account.currency || "TWD",
+      account.creditLimit ?? null,
       bankCode,
       last4,
       JSON.stringify(account.raw ?? account),
@@ -1433,20 +1568,19 @@ function bankAccountStatement(
     );
 }
 
-// ponytail: esun is the only direct-bank connector today, so it always wins as canonical.
-// If a second direct-bank connector is added, this needs a real priority order instead.
 function linkCanonicalBankAccountsStatement(db: D1Database) {
   return db.prepare(
     `UPDATE bank_accounts
     SET canonical_account_id = (
-      SELECT esun.id FROM bank_accounts esun
-      WHERE esun.connector_id = 'esun'
-        AND esun.bank_code = bank_accounts.bank_code
-        AND esun.account_last4 = bank_accounts.account_last4
-        AND esun.currency = bank_accounts.currency
+      SELECT direct.id FROM bank_accounts direct
+      WHERE direct.connector_id IN ('esun', 'cathaybk')
+        AND direct.bank_code = bank_accounts.bank_code
+        AND direct.account_last4 = bank_accounts.account_last4
+        AND direct.currency = bank_accounts.currency
+      ORDER BY direct.connector_id  -- deterministic tiebreak
       LIMIT 1
     )
-    WHERE connector_id != 'esun' AND bank_code IS NOT NULL AND account_last4 IS NOT NULL`
+    WHERE connector_id NOT IN ('esun', 'cathaybk') AND bank_code IS NOT NULL AND account_last4 IS NOT NULL`
   );
 }
 
@@ -1466,15 +1600,23 @@ function bankBalanceSnapshotStatement(
         source_id,
         balance,
         available_balance,
+        statement_balance,
+        payment_due_date,
+        statement_closing_date,
+        no_payment_needed,
         currency,
         as_of_at,
         raw_payload,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(connector_id, account_id, source_id) DO UPDATE SET
         balance = excluded.balance,
         available_balance = excluded.available_balance,
+        statement_balance = excluded.statement_balance,
+        payment_due_date = excluded.payment_due_date,
+        statement_closing_date = excluded.statement_closing_date,
+        no_payment_needed = excluded.no_payment_needed,
         currency = excluded.currency,
         as_of_at = excluded.as_of_at,
         raw_payload = excluded.raw_payload,
@@ -1487,6 +1629,10 @@ function bankBalanceSnapshotStatement(
       snapshot.sourceId,
       snapshot.balance,
       snapshot.availableBalance ?? null,
+      snapshot.statementBalance ?? null,
+      snapshot.paymentDueDate ?? null,
+      snapshot.statementClosingDate ?? null,
+      snapshot.noPaymentNeeded == null ? null : (snapshot.noPaymentNeeded ? 1 : 0),
       snapshot.currency || "TWD",
       snapshot.asOfAt,
       JSON.stringify(snapshot.raw ?? snapshot),
@@ -1541,6 +1687,63 @@ function bankTransactionStatement(
       transaction.description ?? null,
       transaction.counterparty ?? null,
       JSON.stringify(transaction.raw ?? transaction),
+      now,
+      now
+    );
+}
+
+function creditCardBillStatement(
+  db: D1Database,
+  connectorId: ConnectorId,
+  bill: Omit<CreditCardBill, "id" | "connectorId">,
+  now: string
+) {
+  const accountId = stableId(connectorId, bill.accountId);
+  return db
+    .prepare(
+      `INSERT INTO credit_card_bills (
+        id,
+        connector_id,
+        account_id,
+        source_id,
+        billing_period,
+        statement_amount,
+        minimum_payment,
+        paid_amount,
+        is_paid,
+        payment_due_date,
+        statement_closing_date,
+        currency,
+        raw_payload,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(connector_id, account_id, billing_period) DO UPDATE SET
+        source_id = excluded.source_id,
+        statement_amount = excluded.statement_amount,
+        minimum_payment = excluded.minimum_payment,
+        paid_amount = excluded.paid_amount,
+        is_paid = excluded.is_paid,
+        payment_due_date = excluded.payment_due_date,
+        statement_closing_date = excluded.statement_closing_date,
+        currency = excluded.currency,
+        raw_payload = excluded.raw_payload,
+        updated_at = excluded.updated_at`
+    )
+    .bind(
+      stableId(connectorId, bill.accountId, bill.billingPeriod),
+      connectorId,
+      accountId,
+      bill.sourceId,
+      bill.billingPeriod,
+      bill.statementAmount ?? null,
+      bill.minimumPayment ?? null,
+      bill.paidAmount ?? null,
+      bill.isPaid == null ? null : (bill.isPaid ? 1 : 0),
+      bill.paymentDueDate ?? null,
+      bill.statementClosingDate ?? null,
+      bill.currency || "TWD",
+      JSON.stringify(bill.raw ?? bill),
       now,
       now
     );
