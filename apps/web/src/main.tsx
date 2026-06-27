@@ -2295,6 +2295,8 @@ function Cards({ api }: { api: ApiClient }) {
   const [cardFilter, setCardFilter] = useState("all");
   const [flowFilter, setFlowFilter] = useState<"all" | "inflow" | "outflow">("all");
   const [dateRange, setDateRange] = useState<BankDateRange>("month");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
 
   const bank = useQuery({
     queryKey: ["bank"],
@@ -2320,6 +2322,26 @@ function Cards({ api }: { api: ApiClient }) {
   const outstandingBalance = cards.reduce((total, card) => total + Math.abs(card.balance ?? 0), 0);
   const availableCredit = cards.reduce((total, card) => total + (card.availableBalance ?? 0), 0);
 
+  const today = new Date().toISOString().slice(0, 10);
+  const in7days = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const billsByAccountId = (bills.data ?? []).reduce<Record<string, CreditCardBillRow[]>>((acc, bill) => {
+    (acc[bill.accountId] ??= []).push(bill);
+    return acc;
+  }, {});
+  const cardGroups = Object.entries(
+    cards.reduce<Record<string, BankAccountRow[]>>((groups, card) => {
+      const key = card.institutionName ?? card.connectorId;
+      (groups[key] ??= []).push(card);
+      return groups;
+    }, {})
+  ).map(([name, groupCards]) => ({
+    name,
+    cards: groupCards,
+    outstandingByCurrency: sumAccountsByCurrency(groupCards.map((c) => ({ ...c, balance: c.balance != null ? Math.abs(c.balance) : undefined })), "balance"),
+    availableByCurrency: sumAccountsByCurrency(groupCards, "availableBalance"),
+    latestAsOf: groupCards.reduce<string>((latest, c) => c.asOfAt && c.asOfAt > latest ? c.asOfAt : latest, "")
+  })).sort((a, b) => a.name.localeCompare(b.name, "zh-TW"));
+
   return (
     <section className="grid gap-5">
       <div className="grid gap-4 md:grid-cols-3">
@@ -2327,74 +2349,99 @@ function Cards({ api }: { api: ApiClient }) {
         <Metric label="目前已用金額" value={formatCurrency(outstandingBalance)} icon={<TrendingUp />} />
         <Metric label="可用額度" value={formatCurrency(availableCredit)} icon={<WalletCards />} />
       </div>
-      <div>
-        <h2 className="mb-3 text-lg font-semibold">信用卡</h2>
-        <Table
-          columns={["機構", "卡片", "目前已用金額", "可用額度", "繳款截止日", "帳單截止日", "截至時間"]}
-          rows={cards.map((card) => [
-            card.institutionName ?? "-",
-            card.accountName ?? card.sourceId,
-            card.balance === undefined || card.balance === null ? "-" : formatCurrency(Math.abs(card.balance), card.currency),
-            card.availableBalance === undefined || card.availableBalance === null
-              ? "-"
-              : formatCurrency(card.availableBalance, card.currency),
-            card.paymentDueDate ?? "-",
-            card.statementClosingDate ?? "-",
-            card.asOfAt ? formatDateTime(card.asOfAt) : "-"
-          ])}
-          empty="尚無信用卡資料。"
-        />
-      </div>
-      {(bills.data ?? []).length > 0 && (() => {
-        const today = new Date().toISOString().slice(0, 10);
-        const cardById = new Map(cards.map((c) => [c.id, c]));
-        const grouped = (bills.data ?? []).reduce<Record<string, { card: BankAccountRow | undefined; bills: CreditCardBillRow[] }>>((acc, bill) => {
-          const key = bill.accountId;
-          if (!acc[key]) acc[key] = { card: cardById.get(bill.accountId), bills: [] };
-          acc[key].bills.push(bill);
-          return acc;
-        }, {});
-        return (
-          <div>
-            <h2 className="mb-3 text-lg font-semibold">帳單紀錄</h2>
-            <div className="grid gap-4">
-              {Object.values(grouped).map(({ card, bills: groupBills }) => {
-                const cardLabel = card
-                  ? `${card.institutionName ?? "未知銀行"} — ${card.accountName ?? card.sourceId}`
-                  : groupBills[0].accountId;
-                const sorted = [...groupBills].sort((a, b) => b.billingPeriod.localeCompare(a.billingPeriod));
-                return (
-                  <div key={groupBills[0].accountId}>
-                    <h3 className="mb-2 text-sm font-medium text-ink/60">{cardLabel}</h3>
-                    <Table
-                      columns={["帳單月份", "帳單金額", "最低應繳", "已繳金額", "是否已繳", "繳款截止日", "帳單截止日"]}
-                      rows={sorted.map((bill) => {
-                        const dueSoon = !bill.isPaid && bill.paymentDueDate && bill.paymentDueDate <= new Date(new Date(today).getTime() + 7 * 86400000).toISOString().slice(0, 10);
-                        return [
-                          bill.billingPeriod,
-                          bill.statementAmount != null ? formatCurrency(bill.statementAmount, bill.currency) : "-",
-                          bill.minimumPayment != null ? formatCurrency(bill.minimumPayment, bill.currency) : "-",
-                          bill.paidAmount != null ? formatCurrency(bill.paidAmount, bill.currency) : "-",
-                          bill.isPaid ? (
-                            <span className="inline-flex items-center rounded-full bg-moss/10 px-2 py-0.5 text-xs font-medium text-moss">已繳</span>
-                          ) : bill.statementAmount ? (
-                            <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">未繳</span>
-                          ) : "-",
-                          bill.paymentDueDate
-                            ? <span className={dueSoon ? "font-medium text-red-600" : ""}>{bill.paymentDueDate}</span>
-                            : "-",
-                          bill.statementClosingDate ?? "-"
-                        ];
-                      })}
-                      empty="尚無帳單紀錄。"
-                    />
+      <section>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold">信用卡</h2>
+          <span className="text-sm text-ink/45">{cardGroups.length} 家機構</span>
+        </div>
+        {cardGroups.length === 0 ? (
+          <EmptyState title="尚無信用卡資料" body="同步銀行連接器後顯示信用卡。" />
+        ) : (
+          <div className="grid gap-3">
+            {cardGroups.map((group) => (
+              <article key={group.name} className="overflow-hidden rounded-xl border border-ink/10 bg-white shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink/8 bg-ink px-4 py-3 text-white">
+                  <div className="min-w-0">
+                    <h3 className="truncate font-semibold">{group.name}</h3>
+                    <p className="text-xs text-white/65">
+                      {group.cards.length} 張信用卡{group.latestAsOf ? ` · 更新 ${formatDate(group.latestAsOf)}` : ""}
+                    </p>
                   </div>
-                );
-              })}
-            </div>
+                  <div className="text-right text-sm text-white">
+                    <p className="font-semibold tabular-nums">已用 {formatCurrencyTotals(group.outstandingByCurrency)}</p>
+                    <p className="text-xs text-white/65 tabular-nums">可用 {formatCurrencyTotals(group.availableByCurrency)}</p>
+                  </div>
+                </div>
+                <div className="divide-y divide-ink/8">
+                  {group.cards.map((card) => {
+                    const cardBills = [...(billsByAccountId[card.id] ?? [])].sort((a, b) => b.billingPeriod.localeCompare(a.billingPeriod));
+                    return (
+                      <div key={card.id}>
+                        <div className="grid gap-3 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{card.accountName ?? card.sourceId}</p>
+                            <p className="text-xs text-ink/45">信用卡{card.accountLast4 ? ` · 末四 ${card.accountLast4}` : ""}</p>
+                          </div>
+                          <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm sm:justify-end">
+                            <div className="sm:text-right">
+                              <p className="text-[11px] font-medium uppercase text-ink/40">已用</p>
+                              <p className="font-semibold tabular-nums">{card.balance != null ? formatCurrency(Math.abs(card.balance), card.currency) : "-"}</p>
+                            </div>
+                            <div className="sm:text-right">
+                              <p className="text-[11px] font-medium uppercase text-ink/40">可用</p>
+                              <p className="font-semibold tabular-nums">{card.availableBalance != null ? formatCurrency(card.availableBalance, card.currency) : "-"}</p>
+                            </div>
+                            <div className="sm:text-right">
+                              <p className="text-[11px] font-medium uppercase text-ink/40">繳款截止</p>
+                              <p>{card.paymentDueDate ?? "-"}</p>
+                            </div>
+                            <div className="sm:text-right">
+                              <p className="text-[11px] font-medium uppercase text-ink/40">帳單截止</p>
+                              <p>{card.statementClosingDate ?? "-"}</p>
+                            </div>
+                            <div className="sm:text-right">
+                              <p className="text-[11px] font-medium uppercase text-ink/40">截至時間</p>
+                              <p className="text-ink/45">{card.asOfAt ? formatDate(card.asOfAt) : "-"}</p>
+                            </div>
+                          </div>
+                        </div>
+                        {cardBills.length > 0 && (
+                          <div className="border-t border-ink/5 bg-paper">
+                            <p className="px-4 pt-3 text-xs font-medium text-ink/45">帳單紀錄</p>
+                            <Table
+                              bare
+                              columns={["帳單月份", "帳單金額", "最低應繳", "已繳金額", "是否已繳", "繳款截止日", "帳單截止日"]}
+                              rows={cardBills.map((bill) => {
+                                const dueSoon = !bill.isPaid && bill.paymentDueDate && bill.paymentDueDate <= in7days;
+                                return [
+                                  bill.billingPeriod,
+                                  bill.statementAmount != null ? formatCurrency(bill.statementAmount, bill.currency) : "-",
+                                  bill.minimumPayment != null ? formatCurrency(bill.minimumPayment, bill.currency) : "-",
+                                  bill.paidAmount != null ? formatCurrency(bill.paidAmount, bill.currency) : "-",
+                                  bill.isPaid ? (
+                                    <span className="inline-flex items-center rounded-full bg-moss/10 px-2 py-0.5 text-xs font-medium text-moss">已繳</span>
+                                  ) : bill.statementAmount ? (
+                                    <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">未繳</span>
+                                  ) : "-",
+                                  bill.paymentDueDate
+                                    ? <span className={dueSoon ? "font-medium text-red-600" : ""}>{bill.paymentDueDate}</span>
+                                    : "-",
+                                  bill.statementClosingDate ?? "-"
+                                ];
+                              })}
+                              empty="尚無帳單紀錄。"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </article>
+            ))}
           </div>
-        );
-      })()}
+        )}
+      </section>
       <div className="rounded-xl border border-ink/10 bg-white shadow-sm">
         <div className="flex flex-col gap-3 border-b border-ink/8 px-4 py-4">
           <div className="flex items-center justify-between gap-4">
@@ -2421,6 +2468,23 @@ function Cards({ api }: { api: ApiClient }) {
               </button>
             ))}
           </div>
+          {dateRange === "custom" && (
+            <div className="flex items-center gap-2">
+              <input
+                type="month"
+                className="rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm outline-none"
+                value={customStart}
+                onChange={(e) => setCustomStart(e.target.value)}
+              />
+              <span className="text-sm text-ink/45">—</span>
+              <input
+                type="month"
+                className="rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm outline-none"
+                value={customEnd}
+                onChange={(e) => setCustomEnd(e.target.value)}
+              />
+            </div>
+          )}
           <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
             <select
               className="min-w-0 rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm outline-none"
@@ -2449,7 +2513,12 @@ function Cards({ api }: { api: ApiClient }) {
           </div>
         </div>
         {(() => {
-          const period = filterTransactionsByDateRange(cardTransactions, dateRange);
+          const period = dateRange === "custom"
+            ? cardTransactions.filter((t) => {
+                const ym = (t.postedDate ?? t.authorizedAt ?? "").slice(0, 7);
+                return (!customStart || ym >= customStart) && (!customEnd || ym <= customEnd);
+              })
+            : filterTransactionsByDateRange(cardTransactions, dateRange);
           const filtered = filterBankTransactions(period, search, cardFilter, flowFilter);
           const sorted = [...filtered].sort((a, b) => (b.postedDate ?? b.authorizedAt ?? "").localeCompare(a.postedDate ?? a.authorizedAt ?? ""));
           return (
@@ -2925,7 +2994,7 @@ function Bank({ api, onNavigate }: { api: ApiClient; onNavigate: (v: View) => vo
 }
 
 
-type BankDateRange = "month" | "threeMonths" | "year" | "all";
+type BankDateRange = "month" | "threeMonths" | "year" | "all" | "custom";
 type BankCategoryKey = "salary" | "transfer" | "food" | "transport" | "shopping" | "housing" | "health" | "education" | "entertainment" | "investment" | "insurance" | "fee" | "tax" | "other";
 type BankFlowFilter = "all" | "inflow" | "outflow";
 type MonthlyCashFlowPoint = {
@@ -2936,7 +3005,7 @@ type MonthlyCashFlowPoint = {
   net: number;
 };
 
-const BANK_DATE_RANGES: BankDateRange[] = ["month", "threeMonths", "year", "all"];
+const BANK_DATE_RANGES: BankDateRange[] = ["month", "threeMonths", "year", "all", "custom"];
 const BANK_FLOW_FILTERS: { key: BankFlowFilter; label: string }[] = [
   { key: "all", label: "全部" },
   { key: "inflow", label: "收入" },
@@ -3229,7 +3298,7 @@ function groupTransactionsByDate(transactions: BankTransactionRow[], rateMap: Re
 }
 
 function filterTransactionsByDateRange(transactions: BankTransactionRow[], range: BankDateRange) {
-  if (range === "all") return transactions;
+  if (range === "all" || range === "custom") return transactions;
 
   const now = new Date();
   const start = new Date(now);
@@ -3382,7 +3451,8 @@ function dateRangeLabel(range: BankDateRange) {
     month: "本月",
     threeMonths: "近 3 個月",
     year: "今年",
-    all: "全部時間"
+    all: "全部時間",
+    custom: "自訂"
   };
   return labels[range];
 }
