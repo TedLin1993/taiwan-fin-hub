@@ -4,6 +4,22 @@ export interface NetWorthHistoryPoint {
   assetType?: "total" | "stock" | "fund";
 }
 
+export interface CreditCardBill {
+  id: string;
+  connectorId: string;
+  accountId: string;
+  sourceId: string;
+  billingPeriod: string;        // "2026-05"
+  statementAmount?: number;
+  minimumPayment?: number;
+  paidAmount?: number;
+  isPaid?: boolean;
+  paymentDueDate?: string;
+  statementClosingDate?: string;
+  currency: string;
+  raw?: unknown;
+}
+
 export interface SyncResult<TResult> {
   records: TResult[];
   cursor?: string;
@@ -11,6 +27,7 @@ export interface SyncResult<TResult> {
   bankAccounts?: Array<Omit<BankAccount, "id" | "connectorId">>;
   bankBalanceSnapshots?: Array<Omit<BankBalanceSnapshot, "id" | "connectorId">>;
   bankTransactions?: Array<Omit<BankTransaction, "id" | "connectorId">>;
+  creditCardBills?: Array<Omit<CreditCardBill, "id" | "connectorId">>;
   investmentTransactions?: Array<Omit<InvestmentTransaction, "id" | "connectorId">>;
   netWorthHistory?: NetWorthHistoryPoint[];
 }
@@ -103,6 +120,7 @@ export interface BankAccount {
   accountName?: string;
   accountType?: BankAccountType;
   currency: string;
+  creditLimit?: number;
   raw?: unknown;
 }
 
@@ -113,6 +131,10 @@ export interface BankBalanceSnapshot {
   sourceId: string;
   balance: number;
   availableBalance?: number;
+  statementBalance?: number;
+  paymentDueDate?: string;
+  statementClosingDate?: string;
+  noPaymentNeeded?: boolean;
   currency: string;
   asOfAt: string;
   raw?: unknown;
@@ -159,7 +181,7 @@ export interface ApiErrorResponse {
   };
 }
 
-export const supportedConnectorIds = ["einvoice", "tdcc", "esun"] as const;
+export const supportedConnectorIds = ["einvoice", "tdcc", "esun", "cathaybk"] as const;
 export type ConnectorId = (typeof supportedConnectorIds)[number];
 
 export function isConnectorId(value: string): value is ConnectorId {

@@ -22,7 +22,7 @@ import {
   TrendingUp,
   WalletCards
 } from "lucide-react";
-import { type ReactNode, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -55,7 +55,7 @@ interface ManualAssetHistoryEntry {
 }
 
 type View = "dashboard" | "invoices" | "investments" | "cards" | "bank" | "assets" | "settings";
-type ConnectorId = "einvoice" | "tdcc" | "esun";
+type ConnectorId = "einvoice" | "tdcc" | "esun" | "cathaybk";
 type SyncTarget = "default" | "investments" | "bank" | "trades";
 
 interface Summary {
@@ -133,6 +133,8 @@ interface BankAccountRow {
   accountLast4?: string;
   balance?: number;
   availableBalance?: number;
+  paymentDueDate?: string;
+  statementClosingDate?: string;
   asOfAt?: string;
 }
 
@@ -162,6 +164,22 @@ interface BankTransactionRow {
   };
 }
 
+interface CreditCardBillRow {
+  id: string;
+  connectorId: ConnectorId;
+  accountId: string;
+  accountSourceId?: string;
+  sourceId: string;
+  billingPeriod: string;
+  statementAmount?: number;
+  minimumPayment?: number;
+  paidAmount?: number;
+  isPaid?: number;
+  paymentDueDate?: string;
+  statementClosingDate?: string;
+  currency: string;
+}
+
 interface BankData {
   accounts: BankAccountRow[];
   transactions: BankTransactionRow[];
@@ -171,6 +189,7 @@ interface ConnectorSettings {
   connectorId: ConnectorId;
   configured: boolean;
   updatedAt?: string;
+  publicConfig?: Record<string, unknown> | null;
 }
 
 interface ApiError {
@@ -2272,9 +2291,20 @@ function Investments({ api }: { api: ApiClient }) {
 }
 
 function Cards({ api }: { api: ApiClient }) {
+  const [search, setSearch] = useState("");
+  const [cardFilter, setCardFilter] = useState("all");
+  const [flowFilter, setFlowFilter] = useState<"all" | "inflow" | "outflow">("all");
+  const [dateRange, setDateRange] = useState<BankDateRange>("month");
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
+
   const bank = useQuery({
     queryKey: ["bank"],
     queryFn: () => api.get<BankData>("/api/bank")
+  });
+  const bills = useQuery({
+    queryKey: ["creditCardBills"],
+    queryFn: () => api.get<CreditCardBillRow[]>("/api/bank/bills")
   });
 
   if (bank.isLoading) {
@@ -2289,50 +2319,240 @@ function Cards({ api }: { api: ApiClient }) {
   const cards = data.accounts.filter((account) => account.accountType === "credit");
   const cardIds = new Set(cards.map((card) => card.id));
   const cardTransactions = data.transactions.filter((transaction) => cardIds.has(transaction.accountId));
-  const outstandingBalance = cards.reduce((total, card) => total + (card.balance ?? 0), 0);
+  const outstandingBalance = cards.reduce((total, card) => total + Math.abs(card.balance ?? 0), 0);
   const availableCredit = cards.reduce((total, card) => total + (card.availableBalance ?? 0), 0);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const in7days = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const billsByAccountId = (bills.data ?? []).reduce<Record<string, CreditCardBillRow[]>>((acc, bill) => {
+    (acc[bill.accountId] ??= []).push(bill);
+    return acc;
+  }, {});
+  const cardGroups = Object.entries(
+    cards.reduce<Record<string, BankAccountRow[]>>((groups, card) => {
+      const key = card.institutionName ?? card.connectorId;
+      (groups[key] ??= []).push(card);
+      return groups;
+    }, {})
+  ).map(([name, groupCards]) => ({
+    name,
+    cards: groupCards,
+    outstandingByCurrency: sumAccountsByCurrency(groupCards.map((c) => ({ ...c, balance: c.balance != null ? Math.abs(c.balance) : undefined })), "balance"),
+    availableByCurrency: sumAccountsByCurrency(groupCards, "availableBalance"),
+    paymentDueDate: groupCards.find((c) => c.paymentDueDate)?.paymentDueDate,
+    statementClosingDate: groupCards.find((c) => c.statementClosingDate)?.statementClosingDate,
+    latestAsOf: groupCards.reduce<string>((latest, c) => c.asOfAt && c.asOfAt > latest ? c.asOfAt : latest, "")
+  })).sort((a, b) => a.name.localeCompare(b.name, "zh-TW"));
 
   return (
     <section className="grid gap-5">
       <div className="grid gap-4 md:grid-cols-3">
         <Metric label="信用卡數" value={cards.length.toLocaleString()} icon={<CreditCard />} />
-        <Metric label="未繳餘額" value={formatCurrency(outstandingBalance)} icon={<CreditCard />} />
+        <Metric label="目前已用金額" value={formatCurrency(outstandingBalance)} icon={<TrendingUp />} />
         <Metric label="可用額度" value={formatCurrency(availableCredit)} icon={<WalletCards />} />
       </div>
-      <div>
-        <h2 className="mb-3 text-lg font-semibold">信用卡</h2>
-        <Table
-          columns={["機構", "卡片", "餘額", "可用額度", "截至時間"]}
-          rows={cards.map((card) => [
-            card.institutionName ?? "-",
-            card.accountName ?? card.sourceId,
-            card.balance === undefined || card.balance === null ? "-" : formatCurrency(card.balance, card.currency),
-            card.availableBalance === undefined || card.availableBalance === null
-              ? "-"
-              : formatCurrency(card.availableBalance, card.currency),
-            card.asOfAt ? formatDateTime(card.asOfAt) : "-"
-          ])}
-          empty="尚無信用卡資料。"
-        />
-      </div>
-      <div>
-        <h2 className="mb-3 text-lg font-semibold">刷卡交易</h2>
-        <Table
-          columns={["日期", "卡片", "說明", "交易對象", "金額", "狀態"]}
-          rows={cardTransactions.map((transaction) => [
-            transaction.postedDate
-              ? formatDateTime(transaction.postedDate)
-              : transaction.authorizedAt
-                ? formatDateTime(transaction.authorizedAt)
-                : "-",
-            transaction.accountName ?? transaction.accountId,
-            transaction.description ?? "-",
-            transaction.counterparty ?? "-",
-            formatCurrency(transaction.amount, transaction.currency),
-            transaction.status ?? "-"
-          ])}
-          empty="尚無刷卡交易。"
-        />
+      <section>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold">信用卡</h2>
+          <span className="text-sm text-ink/45">{cardGroups.length} 家機構</span>
+        </div>
+        {cardGroups.length === 0 ? (
+          <EmptyState title="尚無信用卡資料" body="同步銀行連接器後顯示信用卡。" />
+        ) : (
+          <div className="grid gap-3">
+            {cardGroups.map((group) => (
+              <article key={group.name} className="overflow-hidden rounded-xl border border-ink/10 bg-white shadow-sm">
+                <div className="border-b border-ink/8 bg-ink px-4 py-3 text-white">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h3 className="truncate font-semibold">{group.name}</h3>
+                      <p className="text-xs text-white/65">
+                        {group.cards.length} 張信用卡{group.latestAsOf ? ` · 資料更新 ${formatDate(group.latestAsOf)}` : ""}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-x-6 gap-y-1 text-right text-sm">
+                      <div>
+                        <p className="text-[11px] text-white/50">已用</p>
+                        <p className="font-semibold tabular-nums">{formatCurrencyTotals(group.outstandingByCurrency)}</p>
+                      </div>
+                      <div>
+                        <p className="text-[11px] text-white/50">可用</p>
+                        <p className="font-semibold tabular-nums">{formatCurrencyTotals(group.availableByCurrency)}</p>
+                      </div>
+                      {group.paymentDueDate && (
+                        <div>
+                          <p className="text-[11px] text-white/50">繳款截止</p>
+                          <p>{group.paymentDueDate}</p>
+                        </div>
+                      )}
+                      {group.statementClosingDate && (
+                        <div>
+                          <p className="text-[11px] text-white/50">帳單截止</p>
+                          <p>{group.statementClosingDate}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="divide-y divide-ink/8">
+                  {group.cards.map((card) => (
+                    <div key={card.id} className="px-4 py-3">
+                      <p className="truncate text-sm font-medium">{card.accountName ?? card.sourceId}</p>
+                      <p className="text-xs text-ink/45">信用卡{card.accountLast4 ? ` · 末四 ${card.accountLast4}` : ""}</p>
+                    </div>
+                  ))}
+                </div>
+                {(() => {
+                  const allBills = group.cards.flatMap((c) => billsByAccountId[c.id] ?? []);
+                  if (allBills.length === 0) return null;
+                  const merged = Object.values(
+                    allBills.reduce<Record<string, { billingPeriod: string; statementAmount: number | null; minimumPayment: number | null; paidAmount: number | null; isPaid: boolean; paymentDueDate?: string; statementClosingDate?: string; currency: string }>>((acc, bill) => {
+                      const key = bill.billingPeriod;
+                      if (!acc[key]) {
+                        acc[key] = { billingPeriod: key, statementAmount: null, minimumPayment: null, paidAmount: null, isPaid: true, paymentDueDate: bill.paymentDueDate, statementClosingDate: bill.statementClosingDate, currency: bill.currency };
+                      }
+                      const e = acc[key]!;
+                      if (bill.statementAmount != null) e.statementAmount = (e.statementAmount ?? 0) + bill.statementAmount;
+                      if (bill.minimumPayment != null) e.minimumPayment = (e.minimumPayment ?? 0) + bill.minimumPayment;
+                      if (bill.paidAmount != null) e.paidAmount = (e.paidAmount ?? 0) + bill.paidAmount;
+                      if (!bill.isPaid) e.isPaid = false;
+                      return acc;
+                    }, {})
+                  ).sort((a, b) => b.billingPeriod.localeCompare(a.billingPeriod));
+                  return (
+                    <div className="border-t border-ink/5 bg-paper">
+                      <p className="px-4 pt-3 text-xs font-medium text-ink/45">帳單紀錄</p>
+                      <Table
+                        bare
+                        columns={["帳單月份", "帳單金額", "最低應繳", "已繳金額", "是否已繳", "繳款截止日", "帳單截止日"]}
+                        rows={merged.map((bill) => {
+                          const dueSoon = !bill.isPaid && bill.paymentDueDate && bill.paymentDueDate <= in7days;
+                          return [
+                            bill.billingPeriod,
+                            bill.statementAmount != null ? formatCurrency(bill.statementAmount, bill.currency) : "-",
+                            bill.minimumPayment != null ? formatCurrency(bill.minimumPayment, bill.currency) : "-",
+                            bill.paidAmount != null ? formatCurrency(bill.paidAmount, bill.currency) : "-",
+                            bill.isPaid ? (
+                              <span className="inline-flex items-center rounded-full bg-moss/10 px-2 py-0.5 text-xs font-medium text-moss">已繳</span>
+                            ) : bill.statementAmount ? (
+                              <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-600">未繳</span>
+                            ) : "-",
+                            bill.paymentDueDate
+                              ? <span className={dueSoon ? "font-medium text-red-600" : ""}>{bill.paymentDueDate}</span>
+                              : "-",
+                            bill.statementClosingDate ?? "-"
+                          ];
+                        })}
+                        empty="尚無帳單紀錄。"
+                      />
+                    </div>
+                  );
+                })()}
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+      <div className="rounded-xl border border-ink/10 bg-white shadow-sm">
+        <div className="flex flex-col gap-3 border-b border-ink/8 px-4 py-4">
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-lg font-semibold">刷卡交易</h2>
+          </div>
+          <label className="flex items-center gap-2 rounded-md border border-ink/15 bg-paper px-3 py-2">
+            <Search className="h-4 w-4 shrink-0 text-steel" aria-hidden="true" />
+            <input
+              className="w-full bg-transparent text-sm outline-none"
+              placeholder="搜尋說明或交易對象"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </label>
+          <div className="no-scrollbar flex gap-2 overflow-x-auto pb-1">
+            {BANK_DATE_RANGES.map((range) => (
+              <button
+                key={range}
+                type="button"
+                onClick={() => setDateRange(range)}
+                className={`shrink-0 rounded-md border px-3 py-1.5 text-sm font-medium ${dateRange === range ? "border-ink bg-ink text-white" : "border-ink/15 bg-paper text-ink/60"}`}
+              >
+                {dateRangeLabel(range)}
+              </button>
+            ))}
+          </div>
+          {dateRange === "custom" && (
+            <div className="flex items-center gap-2">
+              <input
+                type="month"
+                className="rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm outline-none"
+                value={customStart}
+                onChange={(e) => setCustomStart(e.target.value)}
+              />
+              <span className="text-sm text-ink/45">—</span>
+              <input
+                type="month"
+                className="rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm outline-none"
+                value={customEnd}
+                onChange={(e) => setCustomEnd(e.target.value)}
+              />
+            </div>
+          )}
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+            <select
+              className="min-w-0 rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm outline-none"
+              value={cardFilter}
+              onChange={(e) => setCardFilter(e.target.value)}
+            >
+              <option value="all">全部卡片</option>
+              {cards.map((card) => (
+                <option key={card.id} value={card.id}>
+                  {[card.institutionName, card.accountName ?? card.sourceId].filter(Boolean).join(" · ")}
+                </option>
+              ))}
+            </select>
+            <div className="grid grid-cols-3 rounded-md border border-ink/15 bg-paper p-0.5">
+              {BANK_FLOW_FILTERS.map((filter) => (
+                <button
+                  key={filter.key}
+                  type="button"
+                  onClick={() => setFlowFilter(filter.key)}
+                  className={`rounded px-3 py-1.5 text-sm font-medium ${flowFilter === filter.key ? "bg-white text-ink shadow-sm" : "text-ink/50"}`}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        {(() => {
+          const period = dateRange === "custom"
+            ? cardTransactions.filter((t) => {
+                const ym = (t.postedDate ?? t.authorizedAt ?? "").slice(0, 7);
+                return (!customStart || ym >= customStart) && (!customEnd || ym <= customEnd);
+              })
+            : filterTransactionsByDateRange(cardTransactions, dateRange);
+          const filtered = filterBankTransactions(period, search, cardFilter, flowFilter);
+          const sorted = [...filtered].sort((a, b) => (b.postedDate ?? b.authorizedAt ?? "").localeCompare(a.postedDate ?? a.authorizedAt ?? ""));
+          return (
+            <Table
+              bare
+              columns={["日期", "卡片", "說明", "交易對象", "金額"]}
+              rows={sorted.map((transaction) => [
+                transaction.postedDate
+                  ? formatDateTime(transaction.postedDate)
+                  : transaction.authorizedAt
+                    ? formatDateTime(transaction.authorizedAt)
+                    : "-",
+                transaction.accountName ?? transaction.accountId,
+                transaction.description ?? "-",
+                transaction.counterparty ?? "-",
+                <span className={transaction.amount > 0 ? "text-red-600" : "text-moss"}>
+                  {formatCurrency(transaction.amount, transaction.currency)}
+                </span>
+              ])}
+              empty="尚無刷卡交易。"
+            />
+          );
+        })()}
       </div>
     </section>
   );
@@ -2785,7 +3005,7 @@ function Bank({ api, onNavigate }: { api: ApiClient; onNavigate: (v: View) => vo
 }
 
 
-type BankDateRange = "month" | "threeMonths" | "year" | "all";
+type BankDateRange = "month" | "threeMonths" | "year" | "all" | "custom";
 type BankCategoryKey = "salary" | "transfer" | "food" | "transport" | "shopping" | "housing" | "health" | "education" | "entertainment" | "investment" | "insurance" | "fee" | "tax" | "other";
 type BankFlowFilter = "all" | "inflow" | "outflow";
 type MonthlyCashFlowPoint = {
@@ -2796,7 +3016,7 @@ type MonthlyCashFlowPoint = {
   net: number;
 };
 
-const BANK_DATE_RANGES: BankDateRange[] = ["month", "threeMonths", "year", "all"];
+const BANK_DATE_RANGES: BankDateRange[] = ["month", "threeMonths", "year", "all", "custom"];
 const BANK_FLOW_FILTERS: { key: BankFlowFilter; label: string }[] = [
   { key: "all", label: "全部" },
   { key: "inflow", label: "收入" },
@@ -3089,7 +3309,7 @@ function groupTransactionsByDate(transactions: BankTransactionRow[], rateMap: Re
 }
 
 function filterTransactionsByDateRange(transactions: BankTransactionRow[], range: BankDateRange) {
-  if (range === "all") return transactions;
+  if (range === "all" || range === "custom") return transactions;
 
   const now = new Date();
   const start = new Date(now);
@@ -3242,7 +3462,8 @@ function dateRangeLabel(range: BankDateRange) {
     month: "本月",
     threeMonths: "近 3 個月",
     year: "今年",
-    all: "全部時間"
+    all: "全部時間",
+    custom: "自訂"
   };
   return labels[range];
 }
@@ -3309,7 +3530,14 @@ const connectorFields: Record<ConnectorId, ConnectorField[]> = {
   esun: [
     { key: "userId", label: "身分證字號", type: "text", placeholder: "A123456789" },
     { key: "account", label: "使用者名稱", type: "text" },
-    { key: "password", label: "密碼", type: "password" }
+    { key: "password", label: "密碼", type: "password" },
+    { key: "lookbackMonths", label: "查詢期間（月）", type: "number", placeholder: "1（最多 24）" }
+  ],
+  cathaybk: [
+    { key: "userId", label: "身分證字號", type: "text", placeholder: "A123456789" },
+    { key: "account", label: "用戶代號", type: "text" },
+    { key: "password", label: "網銀密碼", type: "password" },
+    { key: "lookbackMonths", label: "查詢期間（月）", type: "number", placeholder: "1（最多 24）" }
   ]
 };
 
@@ -3602,6 +3830,7 @@ function SettingsView({ api, demoMode }: { api: ApiClient; demoMode: boolean }) 
         <ConnectorPanel api={api} connectorId="einvoice" demoMode={demoMode} title="電子發票" />
         <ConnectorPanel api={api} connectorId="tdcc" demoMode={demoMode} title="集保e存摺" />
         <ConnectorPanel api={api} connectorId="esun" demoMode={demoMode} title="玉山銀行" />
+        <ConnectorPanel api={api} connectorId="cathaybk" demoMode={demoMode} title="國泰世華銀行" />
         <ExchangeRatesPanel api={api} />
         <ClassificationRulesPanel api={api} />
       </section>
@@ -3635,6 +3864,20 @@ function ConnectorPanel({
     queryKey: ["connector-settings", connectorId],
     queryFn: () => api.get<ConnectorSettings>(`/api/connectors/${connectorId}/settings`)
   });
+
+  useEffect(() => {
+    const pub = settings.data?.publicConfig;
+    if (!pub) return;
+    setValues((current) => {
+      const next = { ...current };
+      for (const field of fields) {
+        if (field.key in pub && next[field.key] === undefined) {
+          next[field.key] = String(pub[field.key] ?? "");
+        }
+      }
+      return next;
+    });
+  }, [settings.data?.publicConfig]);
 
   function setValue(key: string, value: string | boolean) {
     setValues((current) => ({ ...current, [key]: value }));
@@ -3680,7 +3923,7 @@ function ConnectorPanel({
       queryClient.invalidateQueries({ queryKey: ["invoice"] });
       return;
     }
-    if (connectorId === "esun") {
+    if (connectorId === "esun" || connectorId === "cathaybk") {
       queryClient.invalidateQueries({ queryKey: ["bank"] });
       return;
     }
@@ -3973,9 +4216,9 @@ function Metric({ label, value, icon }: { label: string; value: string; icon: Re
   );
 }
 
-function Table({ columns, rows, empty }: { columns: string[]; rows: string[][]; empty: string }) {
+function Table({ columns, rows, empty, bare }: { columns: string[]; rows: ReactNode[][]; empty: string; bare?: boolean }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-ink/10 bg-white shadow-sm">
+    <div className={bare ? "overflow-hidden" : "overflow-hidden rounded-xl border border-ink/10 bg-white shadow-sm"}>
       <div className="hidden overflow-x-auto md:block">
         <table className="min-w-full divide-y divide-ink/10 text-left text-sm">
           <thead className="bg-paper">
