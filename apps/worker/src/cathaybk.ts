@@ -577,7 +577,7 @@ async function scrapeCreditCards(page: Page, lookbackMonths: number): Promise<Sc
       accountId: sourceId,
       sourceId: `${sourceId}:bill:${period}`,
       billingPeriod: period,
-      statementAmount: bill.twdAmount != null ? Math.abs(bill.twdAmount) : undefined,
+      statementAmount: bill.twdAmount ?? undefined,
       statementClosingDate: bill.billDate.slice(0, 10),
       paymentDueDate: isLatest ? (cardOverview.paymentDueDate ?? undefined) : undefined,
       isPaid: isLatest ? cardOverview.noPaymentNeeded : true,
