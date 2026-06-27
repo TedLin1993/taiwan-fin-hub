@@ -36,10 +36,26 @@ jobs:
             || git remote set-url upstream https://github.com/kevchentw/taiwan-fin-hub.git
           git fetch upstream main
 
+          # 上游已包含在目前 main：無須處理。
           if git merge-base --is-ancestor upstream/main HEAD; then
             echo "Already up to date with upstream."
             exit 0
           fi
 
-          git merge --no-edit upstream/main
+          # 部署流程建立的 repo 與上游沒有共同祖先；僅在首次同步時允許接軌。
+          if ! git merge-base HEAD upstream/main >/dev/null 2>&1; then
+            echo "First sync: reconciling unrelated histories."
+
+            # 保留第一次同步前的版本，方便需要時回復。
+            if ! git ls-remote --exit-code --heads origin backup-before-first-upstream-sync >/dev/null 2>&1; then
+              git branch backup-before-first-upstream-sync
+              git push origin backup-before-first-upstream-sync
+            fi
+
+            # 同檔案衝突時優先採用上游；本 workflow 檔案會保留在目前 repo。
+            git merge --allow-unrelated-histories -X theirs --no-edit upstream/main
+          else
+            git merge --no-edit upstream/main
+          fi
+
           git push origin HEAD:main
