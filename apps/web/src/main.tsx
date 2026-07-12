@@ -11,6 +11,7 @@ import {
   FileText,
   KeyRound,
   Landmark,
+  Menu,
   Pencil,
   Plus,
   RefreshCw,
@@ -22,8 +23,13 @@ import {
   TrendingUp,
   WalletCards
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Button } from "./components/ui/button";
+import { Card, CardContent, CardHeader } from "./components/ui/card";
+import { AppIcon } from "./components/ui/icon";
+import { cn } from "./lib/utils";
 import "./styles.css";
 
 interface NetWorthHistoryRow {
@@ -232,19 +238,22 @@ const navItems: {
   label: string;
   shortLabel: string;
   description: string;
-  icon: ReactNode;
+  icon: LucideIcon;
 }[] = [
-  { view: "dashboard", label: "總覽", shortLabel: "總覽", description: "資產、現金流與最近交易集中檢視。", icon: <BarChart3 /> },
-  { view: "invoices", label: "發票", shortLabel: "發票", description: "搜尋電子發票、商家與品項明細。", icon: <FileText /> },
-  { view: "investments", label: "投資", shortLabel: "投資", description: "追蹤 TDCC 持倉與交易歷史。", icon: <WalletCards /> },
-  { view: "cards", label: "信用卡", shortLabel: "卡片", description: "查看信用卡帳戶與刷卡交易。", icon: <CreditCard /> },
-  { view: "bank", label: "銀行", shortLabel: "銀行", description: "管理銀行帳戶餘額與交易流水。", icon: <Building2 /> },
-  { view: "assets", label: "其他資產", shortLabel: "資產", description: "維護保險、不動產、交通工具與其他資產估值。", icon: <Landmark /> },
-  { view: "settings", label: "設定", shortLabel: "設定", description: "設定連接器、同步資料與匯率。", icon: <Settings /> }
+  { view: "dashboard", label: "總覽", shortLabel: "總覽", description: "資產、現金流與最近交易集中檢視。", icon: BarChart3 },
+  { view: "invoices", label: "發票", shortLabel: "發票", description: "搜尋電子發票、商家與品項明細。", icon: FileText },
+  { view: "investments", label: "投資", shortLabel: "投資", description: "追蹤 TDCC 持倉與交易歷史。", icon: WalletCards },
+  { view: "cards", label: "信用卡", shortLabel: "卡片", description: "查看信用卡帳戶與刷卡交易。", icon: CreditCard },
+  { view: "bank", label: "銀行", shortLabel: "銀行", description: "管理銀行帳戶餘額與交易流水。", icon: Building2 },
+  { view: "assets", label: "其他資產", shortLabel: "資產", description: "維護保險、不動產、交通工具與其他資產估值。", icon: Landmark },
+  { view: "settings", label: "設定", shortLabel: "設定", description: "設定連接器、同步資料與匯率。", icon: Settings }
 ];
+
+const mobilePrimaryViews: View[] = ["dashboard", "bank", "invoices"];
 
 function App() {
   const [view, setView] = useState<View>("dashboard");
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const currentView = navItems.find((item) => item.view === view) ?? navItems[0]!;
 
   return (
@@ -293,8 +302,36 @@ function App() {
           </footer>
         </div>
 
-        <nav className="fixed inset-x-0 bottom-0 z-30 flex gap-1 overflow-x-auto border-t border-ink/10 bg-white/95 px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 shadow-[0_-8px_28px_rgba(31,41,51,0.08)] backdrop-blur lg:hidden">
-          {navItems.map((item) => (
+        {mobileMoreOpen && (
+          <div className="fixed inset-0 z-40 lg:hidden" role="presentation" onClick={() => setMobileMoreOpen(false)}>
+            <div className="absolute inset-0 bg-ink/30 backdrop-blur-[2px]" />
+            <section
+              aria-label="更多功能"
+              className="absolute inset-x-3 bottom-[calc(5.25rem+env(safe-area-inset-bottom))] rounded-2xl border border-ink/10 bg-white p-3 shadow-xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <p className="px-2 pb-2 pt-1 text-xs font-semibold uppercase tracking-wider text-ink/45">更多功能</p>
+              <div className="grid grid-cols-2 gap-2">
+                {navItems.slice(1).map((item) => (
+                  <Button
+                    className="h-12 justify-start [&_svg]:size-5"
+                    key={item.view}
+                    onClick={() => { setView(item.view); setMobileMoreOpen(false); }}
+                    variant={view === item.view ? "default" : "ghost"}
+                  >
+                    <AppIcon icon={item.icon} size="lg" />
+                    {item.label}
+                  </Button>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
+
+        <nav aria-label="主要導覽" className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 gap-1 border-t border-ink/10 bg-white/95 px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 shadow-[0_-8px_28px_rgba(31,41,51,0.08)] backdrop-blur lg:hidden">
+          {mobilePrimaryViews.map((mobileView) => {
+            const item = navItems.find((candidate) => candidate.view === mobileView)!;
+            return (
             <BottomNavButton
               key={item.view}
               active={view === item.view}
@@ -302,7 +339,9 @@ function App() {
               label={item.shortLabel}
               onClick={() => setView(item.view)}
             />
-          ))}
+            );
+          })}
+          <BottomNavButton active={mobileMoreOpen || !mobilePrimaryViews.includes(view)} icon={Menu} label="更多" onClick={() => setMobileMoreOpen((open) => !open)} />
         </nav>
       </div>
     </QueryClientProvider>
@@ -780,19 +819,18 @@ function ManualAssetsPanel({ api }: { api: ApiClient }) {
   });
 
   return (
-    <section className="rounded-xl border border-ink/10 bg-white shadow-sm">
-      <div className="flex items-center justify-between border-b border-ink/8 px-5 py-4">
+    <Card as="section">
+      <CardHeader className="flex-row items-center justify-between border-b border-ink/8 py-4">
         <div className="flex items-center gap-2">
-          <Landmark className="h-4 w-4 text-steel" />
+          <AppIcon className="text-steel" icon={Landmark} size="lg" />
           <h2 className="text-base font-semibold">其他資產</h2>
         </div>
         {!adding && (
-          <button type="button" onClick={() => setAdding(true)}
-            className="flex items-center gap-1 rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white hover:bg-ink/80">
-            <Plus className="h-3.5 w-3.5" /> 新增
-          </button>
+          <Button type="button" onClick={() => setAdding(true)} size="sm">
+            <AppIcon icon={Plus} size="sm" /> 新增
+          </Button>
         )}
-      </div>
+      </CardHeader>
 
       {adding && (
         <div className="flex flex-wrap items-end gap-3 border-b border-ink/8 px-5 py-4">
@@ -838,7 +876,7 @@ function ManualAssetsPanel({ api }: { api: ApiClient }) {
           ))}
         </div>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -4284,23 +4322,20 @@ function NavButton({
   onClick
 }: {
   active: boolean;
-  icon: ReactNode;
+  icon: LucideIcon;
   label: string;
   onClick: () => void;
 }) {
   return (
-    <button
-      className={`flex h-10 min-w-fit items-center gap-2 rounded-lg px-3 text-sm font-medium transition lg:min-w-0 ${
-        active ? "bg-ink text-white shadow-sm" : "text-ink/70 hover:bg-ink/5 hover:text-ink"
-      }`}
+    <Button
+      className="w-full justify-start [&_svg]:size-5"
       onClick={onClick}
       type="button"
+      variant={active ? "default" : "ghost"}
     >
-      <span className="h-4 w-4 [&>svg]:h-4 [&>svg]:w-4" aria-hidden="true">
-        {icon}
-      </span>
+      <AppIcon icon={icon} size="lg" />
       <span className="whitespace-nowrap">{label}</span>
-    </button>
+    </Button>
   );
 }
 
@@ -4311,21 +4346,21 @@ function BottomNavButton({
   onClick
 }: {
   active: boolean;
-  icon: ReactNode;
+  icon: LucideIcon;
   label: string;
   onClick: () => void;
 }) {
   return (
     <button
-      className={`flex min-h-12 min-w-16 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 text-[11px] font-medium transition ${
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steel",
         active ? "bg-ink text-white" : "text-ink/55 hover:bg-ink/5 hover:text-ink"
-      }`}
+      )}
       onClick={onClick}
       type="button"
     >
-      <span className="h-5 w-5 [&>svg]:h-5 [&>svg]:w-5" aria-hidden="true">
-        {icon}
-      </span>
+      <AppIcon icon={icon} size="nav" />
       <span>{label}</span>
     </button>
   );
@@ -4362,15 +4397,17 @@ function IconButton({
 
 function Metric({ label, value, icon }: { label: string; value: string; icon: ReactNode }) {
   return (
-    <article className="rounded-xl border border-ink/10 bg-white p-5 shadow-sm">
+    <Card as="article">
+      <CardContent className="pt-5">
       <div className="flex items-center justify-between gap-4">
         <p className="text-sm font-medium text-ink/65">{label}</p>
-        <span className="rounded-md bg-moss/10 p-2 text-moss [&>svg]:h-5 [&>svg]:w-5" aria-hidden="true">
+        <span className="rounded-lg bg-moss/10 p-2 text-moss [&>svg]:size-5 [&>svg]:shrink-0" aria-hidden="true">
           {icon}
         </span>
       </div>
-      <p className="mt-4 text-3xl font-semibold">{value}</p>
-    </article>
+      <p className="mt-4 break-words text-3xl font-semibold tabular-nums">{value}</p>
+      </CardContent>
+    </Card>
   );
 }
 

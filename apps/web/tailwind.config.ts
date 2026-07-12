@@ -9,7 +9,11 @@ export default {
         paper: "#f7f7f2",
         moss: "#556b2f",
         coral: "#b75b45",
-        steel: "#3e6f7c"
+        steel: "#3e6f7c",
+        background: "hsl(var(--background))",
+        foreground: "hsl(var(--foreground))",
+        border: "hsl(var(--border))",
+        ring: "hsl(var(--ring))"
       }
     }
   },
