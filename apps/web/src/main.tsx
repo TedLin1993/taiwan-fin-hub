@@ -443,12 +443,25 @@ function WealthOverview({ api, onNavigate }: { api: ApiClient; onNavigate: (view
   const unhealthyJobs = (jobs.data ?? []).filter((job) => job.lastStatus === "failed" || job.lastStatus === "needs_user_action");
   const sourceCount = Math.max((jobs.data ?? []).length, 4);
   const healthyCount = Math.max(sourceCount - unhealthyJobs.length, 0);
-  const historyValues = Object.entries((history.data ?? []).reduce<Record<string, number>>((totals, row) => {
-    totals[row.date] = (totals[row.date] ?? 0) + row.netWorth;
-    return totals;
-  }, {})).sort(([a], [b]) => a.localeCompare(b)).slice(-10).map(([, value]) => value).filter(Number.isFinite);
+  const historyValues = (() => {
+    const latestBySeries: Record<string, number> = {};
+    const totalsByDate: Record<string, number> = {};
+    for (const row of [...(history.data ?? [])].sort((a, b) => a.date.localeCompare(b.date))) {
+      latestBySeries[`${row.source}:${row.assetType}`] = row.netWorth;
+      totalsByDate[row.date] = Object.values(latestBySeries).reduce((sum, value) => sum + value, 0);
+    }
+    return Object.entries(totalsByDate).sort(([a], [b]) => a.localeCompare(b)).slice(-12).map(([, value]) => value).filter(Number.isFinite);
+  })();
   const bars = historyValues.length >= 3 ? historyValues : [netWorth * .72, netWorth * .78, netWorth * .75, netWorth * .84, netWorth * .9, netWorth * .87, netWorth * .96, netWorth];
-  const maxBar = Math.max(...bars, 1);
+  const mobileTrendValues = bars.slice(-12);
+  const mobileTrendMin = Math.min(...mobileTrendValues);
+  const mobileTrendRange = Math.max(Math.max(...mobileTrendValues) - mobileTrendMin, 1);
+  const mobileTrendPoints = mobileTrendValues.map((value, index) => ({
+    x: mobileTrendValues.length > 1 ? index * 300 / (mobileTrendValues.length - 1) : 150,
+    y: 50 - ((value - mobileTrendMin) / mobileTrendRange) * 42
+  }));
+  const mobileTrendLine = mobileTrendPoints.map((point, index) => `${index === 0 ? "M" : "L"}${point.x},${point.y}`).join(" ");
+  const mobileTrendArea = mobileTrendPoints.length ? `${mobileTrendLine} L300,56 L0,56 Z` : "";
   const accountRows = bankData.accounts.slice(0, 4);
   const recent = [
     ...bankData.transactions.map((transaction) => ({ id: transaction.id, date: transaction.postedDate ?? transaction.authorizedAt ?? "", title: transaction.description ?? transaction.counterparty ?? "銀行交易", detail: transaction.institutionName ?? "銀行", amount: transaction.amount, currency: transaction.currency })),
@@ -466,7 +479,14 @@ function WealthOverview({ api, onNavigate }: { api: ApiClient; onNavigate: (view
           {allocation.map((item) => <span className={item.color} key={item.label} style={{ width: `${pct(item.value)}%` }} />)}
         </div>
         <p className="mt-3 hidden text-xs text-white/65 md:block">{allocation.map((item) => `${item.label} ${pct(item.value)}%`).join("　")}</p>
-        <div className="mt-3 flex h-14 items-end gap-2 md:hidden">{bars.slice(-9).map((value, index) => <span className="flex-1 rounded-md bg-[#82a6ae]" key={index} style={{height:`${Math.max(24,value/maxBar*100)}%`}} />)}</div>
+        <div className="mt-3 h-14 overflow-hidden rounded-lg bg-white/5 md:hidden">
+          <svg aria-label="最近資產趨勢" className="h-full w-full" preserveAspectRatio="none" role="img" viewBox="0 0 300 56">
+            <defs><linearGradient id="mobile-net-worth-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#8FC2CC" stopOpacity="0.38"/><stop offset="100%" stopColor="#8FC2CC" stopOpacity="0.04"/></linearGradient></defs>
+            <path d={mobileTrendArea} fill="url(#mobile-net-worth-fill)" />
+            <path d={mobileTrendLine} fill="none" stroke="#9CCBD3" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
+            {mobileTrendPoints.at(-1) && <circle cx={mobileTrendPoints.at(-1)!.x} cy={mobileTrendPoints.at(-1)!.y} fill="#DDF4F0" r="3" stroke="#3E6F7C" strokeWidth="2" vectorEffect="non-scaling-stroke" />}
+          </svg>
+        </div>
       </section>
       <Card className="hidden xl:block"><CardContent className="pt-6"><h2 className="text-lg font-semibold">同步健康度</h2><p className="mt-3 text-3xl font-bold">{healthyCount} / {sourceCount} 來源正常</p><p className={cn("mt-3 text-sm font-semibold", unhealthyJobs.length ? "text-coral" : "text-moss")}>{unhealthyJobs.length ? `${unhealthyJobs.length} 個來源需要處理` : "所有來源同步正常"}</p><p className="mt-2 text-xs text-ink/45">銀行與發票使用最近同步紀錄</p><Button className="mt-4" onClick={() => onNavigate("settings")} size="sm" variant="secondary">前往同步設定</Button></CardContent></Card>
     </div>
