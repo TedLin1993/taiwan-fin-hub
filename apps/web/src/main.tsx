@@ -66,7 +66,8 @@ interface ManualAssetHistoryEntry {
 
 export type PrimaryView = "overview" | "assets" | "activity" | "invoices" | "settings";
 type DetailView = "bank" | "cards" | "investments" | "manual-assets";
-type View = PrimaryView | DetailView | "more";
+type MobileSettingsView = "data-sources" | "exchange-rates" | "classification-rules";
+type View = PrimaryView | DetailView | MobileSettingsView | "more";
 export type AssetSection = "all" | "bank" | "cards" | "investments" | "manual-assets";
 export interface MoneyVisibilityState { hidden: boolean; }
 export interface ActivityItem {
@@ -78,6 +79,8 @@ export interface ActivityItem {
   amount?: number;
   currency: string;
   category: string;
+  categoryId?: string;
+  transactionId?: string;
   status: string;
 }
 type ConnectorId = "einvoice" | "tdcc" | "esun" | "cathaybk";
@@ -277,15 +280,22 @@ const detailLabels: Record<DetailView, { label: string; description: string }> =
   "manual-assets": { label: "其他資產", description: "保險、不動產、交通工具與估值紀錄。" }
 };
 
+const mobileSettingsLabels: Record<MobileSettingsView, { label: string; description: string }> = {
+  "data-sources": { label: "資料來源與連接器", description: "管理來源狀態、憑證、自動同步與重新驗證。" },
+  "exchange-rates": { label: "匯率", description: "管理資產換算使用的參考匯率。" },
+  "classification-rules": { label: "分類規則", description: "讓銀行交易依條件自動分類。" }
+};
+
 function App() {
   const [view, setView] = useState<View>("overview");
   const [moneyVisibility, setMoneyVisibility] = useState<MoneyVisibilityState>(() => ({
     hidden: localStorage.getItem(moneyVisibilityStorageKey) === "true"
   }));
   moneyValuesHidden = moneyVisibility.hidden;
-  const primaryView: PrimaryView = view === "more" ? "settings" : view in detailLabels ? "assets" : view as PrimaryView;
+  const primaryView: PrimaryView = view === "more" || view in mobileSettingsLabels ? "settings" : view in detailLabels ? "assets" : view as PrimaryView;
   const currentView = navItems.find((item) => item.view === primaryView) ?? navItems[0]!;
   const detail = view in detailLabels ? detailLabels[view as DetailView] : undefined;
+  const mobileSetting = view in mobileSettingsLabels ? mobileSettingsLabels[view as MobileSettingsView] : undefined;
 
   function navigate(next: View) {
     setView(next);
@@ -322,7 +332,7 @@ function App() {
           </nav>
         </aside>
 
-        <div className="min-w-0 pb-20 md:pb-0">
+        <div className={cn("min-w-0 md:pb-0", mobileSetting ? "pb-5" : "pb-20")}>
           <div className="no-scrollbar hidden border-b border-ink/10 bg-white px-4 py-2 md:flex md:gap-1 md:overflow-x-auto xl:hidden">
             {navItems.map((item) => <NavButton key={item.view} active={primaryView === item.view} icon={item.icon} label={item.label} onClick={() => navigate(item.view)} />)}
           </div>
@@ -330,14 +340,11 @@ function App() {
             <div className="mx-auto flex max-w-[1440px] flex-col gap-3 px-4 py-4 sm:px-6 xl:px-8 xl:py-6">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  {detail && <button className="mb-1 inline-flex items-center gap-1 text-xs font-medium text-steel" onClick={() => navigate("assets")} type="button">← 返回資產</button>}
-                  <h1 className="truncate text-2xl font-semibold tracking-tight xl:text-3xl">
-                    {detail?.label ?? <><span className="md:hidden">{view === "more" ? "更多" : primaryView === "overview" ? "資產總覽" : primaryView === "activity" ? "所有活動" : currentView.label}</span><span className="hidden md:inline">{currentView.label}</span></>}
-                  </h1>
-                  <p className="mt-1 hidden text-sm text-ink/55 md:block">{detail?.description ?? currentView.description}</p>
+                  {mobileSetting ? <div className="flex items-center gap-2 md:block"><button aria-label="返回更多" className="flex size-10 shrink-0 items-center justify-center rounded-full text-xl text-ink hover:bg-ink/5 md:hidden" onClick={() => navigate("more")} type="button">←</button><h1 className="truncate text-2xl font-semibold tracking-tight xl:text-3xl">{mobileSetting.label}</h1></div> : <>{detail && <button className="mb-1 inline-flex items-center gap-1 text-xs font-medium text-steel" onClick={() => navigate("assets")} type="button">← 返回資產</button>}<h1 className="truncate text-2xl font-semibold tracking-tight xl:text-3xl">{detail?.label ?? <><span className="md:hidden">{view === "more" ? "更多" : primaryView === "overview" ? "資產總覽" : primaryView === "activity" ? "所有活動" : currentView.label}</span><span className="hidden md:inline">{currentView.label}</span></>}</h1></>}
+                  <p className="mt-1 hidden text-sm text-ink/55 md:block">{detail?.description ?? mobileSetting?.description ?? currentView.description}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <Button className="rounded-full" aria-label={moneyVisibility.hidden ? "顯示金額" : "隱藏金額"} onClick={toggleMoneyVisibility} size="icon" variant="secondary">
+                  <Button className={cn("rounded-full", mobileSetting && "hidden md:inline-flex")} aria-label={moneyVisibility.hidden ? "顯示金額" : "隱藏金額"} onClick={toggleMoneyVisibility} size="icon" variant="secondary">
                     <AppIcon icon={moneyVisibility.hidden ? Eye : EyeOff} size="lg" />
                   </Button>
                   {primaryView === "settings" && <Button className="hidden md:inline-flex" onClick={() => queryClient.invalidateQueries()} variant="primary"><AppIcon icon={RefreshCw} size="sm" />同步資料</Button>}
@@ -358,7 +365,7 @@ function App() {
           </footer>
         </div>
 
-        <nav aria-label="主要導覽" className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 gap-1 border-t border-ink/10 bg-ink px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 text-white shadow-[0_-8px_28px_rgba(31,41,51,0.12)] md:hidden">
+        {!mobileSetting && <nav aria-label="主要導覽" className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 gap-1 border-t border-ink/10 bg-ink px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 text-white shadow-[0_-8px_28px_rgba(31,41,51,0.12)] md:hidden">
           {mobilePrimaryViews.map((mobileView) => {
             const item = navItems.find((candidate) => candidate.view === mobileView)!;
             return (
@@ -372,7 +379,7 @@ function App() {
             );
           })}
           <BottomNavButton active={view === "more" || !mobilePrimaryViews.includes(primaryView)} icon={Ellipsis} label="更多" onClick={() => navigate("more")} />
-        </nav>
+        </nav>}
       </div>
     </QueryClientProvider>
   );
@@ -443,25 +450,6 @@ function WealthOverview({ api, onNavigate }: { api: ApiClient; onNavigate: (view
   const unhealthyJobs = (jobs.data ?? []).filter((job) => job.lastStatus === "failed" || job.lastStatus === "needs_user_action");
   const sourceCount = Math.max((jobs.data ?? []).length, 4);
   const healthyCount = Math.max(sourceCount - unhealthyJobs.length, 0);
-  const historyValues = (() => {
-    const latestBySeries: Record<string, number> = {};
-    const totalsByDate: Record<string, number> = {};
-    for (const row of [...(history.data ?? [])].sort((a, b) => a.date.localeCompare(b.date))) {
-      latestBySeries[`${row.source}:${row.assetType}`] = row.netWorth;
-      totalsByDate[row.date] = Object.values(latestBySeries).reduce((sum, value) => sum + value, 0);
-    }
-    return Object.entries(totalsByDate).sort(([a], [b]) => a.localeCompare(b)).slice(-12).map(([, value]) => value).filter(Number.isFinite);
-  })();
-  const bars = historyValues.length >= 3 ? historyValues : [netWorth * .72, netWorth * .78, netWorth * .75, netWorth * .84, netWorth * .9, netWorth * .87, netWorth * .96, netWorth];
-  const mobileTrendValues = bars.slice(-12);
-  const mobileTrendMin = Math.min(...mobileTrendValues);
-  const mobileTrendRange = Math.max(Math.max(...mobileTrendValues) - mobileTrendMin, 1);
-  const mobileTrendPoints = mobileTrendValues.map((value, index) => ({
-    x: mobileTrendValues.length > 1 ? index * 300 / (mobileTrendValues.length - 1) : 150,
-    y: 50 - ((value - mobileTrendMin) / mobileTrendRange) * 42
-  }));
-  const mobileTrendLine = mobileTrendPoints.map((point, index) => `${index === 0 ? "M" : "L"}${point.x},${point.y}`).join(" ");
-  const mobileTrendArea = mobileTrendPoints.length ? `${mobileTrendLine} L300,56 L0,56 Z` : "";
   const accountRows = bankData.accounts.slice(0, 4);
   const recent = [
     ...bankData.transactions.map((transaction) => ({ id: transaction.id, date: transaction.postedDate ?? transaction.authorizedAt ?? "", title: transaction.description ?? transaction.counterparty ?? "銀行交易", detail: transaction.institutionName ?? "銀行", amount: transaction.amount, currency: transaction.currency })),
@@ -479,14 +467,6 @@ function WealthOverview({ api, onNavigate }: { api: ApiClient; onNavigate: (view
           {allocation.map((item) => <span className={item.color} key={item.label} style={{ width: `${pct(item.value)}%` }} />)}
         </div>
         <p className="mt-3 hidden text-xs text-white/65 md:block">{allocation.map((item) => `${item.label} ${pct(item.value)}%`).join("　")}</p>
-        <div className="mt-3 h-14 overflow-hidden rounded-lg bg-white/5 md:hidden">
-          <svg aria-label="最近資產趨勢" className="h-full w-full" preserveAspectRatio="none" role="img" viewBox="0 0 300 56">
-            <defs><linearGradient id="mobile-net-worth-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#8FC2CC" stopOpacity="0.38"/><stop offset="100%" stopColor="#8FC2CC" stopOpacity="0.04"/></linearGradient></defs>
-            <path d={mobileTrendArea} fill="url(#mobile-net-worth-fill)" />
-            <path d={mobileTrendLine} fill="none" stroke="#9CCBD3" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" vectorEffect="non-scaling-stroke" />
-            {mobileTrendPoints.at(-1) && <circle cx={mobileTrendPoints.at(-1)!.x} cy={mobileTrendPoints.at(-1)!.y} fill="#DDF4F0" r="3" stroke="#3E6F7C" strokeWidth="2" vectorEffect="non-scaling-stroke" />}
-          </svg>
-        </div>
       </section>
       <Card className="hidden xl:block"><CardContent className="pt-6"><h2 className="text-lg font-semibold">同步健康度</h2><p className="mt-3 text-3xl font-bold">{healthyCount} / {sourceCount} 來源正常</p><p className={cn("mt-3 text-sm font-semibold", unhealthyJobs.length ? "text-coral" : "text-moss")}>{unhealthyJobs.length ? `${unhealthyJobs.length} 個來源需要處理` : "所有來源同步正常"}</p><p className="mt-2 text-xs text-ink/45">銀行與發票使用最近同步紀錄</p><Button className="mt-4" onClick={() => onNavigate("settings")} size="sm" variant="secondary">前往同步設定</Button></CardContent></Card>
     </div>
@@ -495,6 +475,8 @@ function WealthOverview({ api, onNavigate }: { api: ApiClient; onNavigate: (view
       {allocation.map((item) => <Card key={item.label}><CardContent className="p-3 md:p-5"><p className={cn("text-2xl font-bold tabular-nums md:hidden",item.text)}>{pct(item.value)}%</p><p className="mt-1 text-xs text-ink/50 md:mt-0">{item.label === "其他" ? "其他資產" : item.label}</p><p className={cn("mt-2 hidden text-2xl font-bold tabular-nums md:block",item.text)}>{formatCurrency(item.value)}</p><p className="mt-1 hidden text-xs text-ink/40 md:block">{item.detail}</p></CardContent></Card>)}
       <div className="hidden md:block"><WealthMetric label="本月淨流入" value={formatCurrency(income-expense)} detail="收入 − 支出" tone={income>=expense?"positive":"negative"}/></div>
     </div>
+
+    <div className="xl:hidden"><NetWorthHistoryPanel data={history.data} loading={history.isLoading} /></div>
 
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1.8fr)_minmax(300px,1fr)]">
       <div className="hidden xl:block"><NetWorthHistoryPanel data={history.data} loading={history.isLoading} /></div>
@@ -625,60 +607,154 @@ function AssetsHub({ api, onNavigate }: { api: ApiClient; onNavigate: (view: Vie
   );
 }
 
+interface ActivityCategorySlice {
+  category: string;
+  amount: number;
+  percentage: number;
+  color: string;
+  offset: number;
+}
+
+const ACTIVITY_CATEGORY_COLORS = ["#3E6F7C", "#557332", "#BC5B43", "#C7922B", "#7665A8", "#388D82", "#A45C78", "#68747B"];
+
+function activityCashAmount(item: ActivityItem) {
+  if (item.amount == null || (item.source !== "bank" && item.source !== "card")) return 0;
+  return item.source === "card" ? -Math.abs(item.amount) : item.amount;
+}
+
+function buildActivityCategorySlices(items: ActivityItem[], flow: "income" | "expense", amountOf: (item: ActivityItem) => number = activityCashAmount): ActivityCategorySlice[] {
+  const grouped = new Map<string, number>();
+  for (const item of items) {
+    const amount = amountOf(item);
+    const included = flow === "income" ? amount > 0 : amount < 0;
+    if (!included) continue;
+    grouped.set(item.category, (grouped.get(item.category) ?? 0) + Math.abs(amount));
+  }
+  const sorted = [...grouped.entries()].sort((a, b) => b[1] - a[1]);
+  const total = sorted.reduce((sum, [, amount]) => sum + amount, 0);
+  let offset = 0;
+  return sorted.map(([category, amount], index) => {
+    const percentage = total > 0 ? amount / total * 100 : 0;
+    const slice = { category, amount, percentage, color: ACTIVITY_CATEGORY_COLORS[index % ACTIVITY_CATEGORY_COLORS.length]!, offset };
+    offset += percentage;
+    return slice;
+  });
+}
+
+function ActivityCategoryDonut({ flow, slices, selectedCategory, onSelect }: { flow: "income" | "expense"; slices: ActivityCategorySlice[]; selectedCategory?: string; onSelect: (category: string) => void }) {
+  const total = slices.reduce((sum, slice) => sum + slice.amount, 0);
+  const title = flow === "income" ? "收入分類" : "支出分類";
+  return <Card className={cn("overflow-hidden",flow==="income"?"border-moss/20":"border-coral/20")}>
+    <CardHeader className="flex-row items-start justify-between gap-3 pb-2"><div><h2 className="text-lg font-semibold">{title}</h2><p className="mt-1 text-xs text-ink/45">點選分類查看該月活動</p></div><p className={cn("text-lg font-bold tabular-nums",flow==="income"?"text-moss":"text-coral")}>{flow==="income"?"+":"−"}{formatCurrency(total)}</p></CardHeader>
+    <CardContent className="grid gap-4 pt-2 sm:grid-cols-[160px_minmax(0,1fr)] sm:items-center">
+      {slices.length === 0 ? <div className="col-span-full rounded-xl bg-paper p-6 text-center text-sm text-ink/45">此月份沒有{flow==="income"?"收入":"支出"}活動</div> : <>
+        <div className="relative mx-auto size-36">
+          <svg aria-label={`${title}圓餅圖`} className="size-full" role="group" viewBox="0 0 120 120">
+            <circle cx="60" cy="60" fill="none" r="42" stroke="#EEF0EF" strokeWidth="18" />
+            {slices.map((slice)=><circle aria-label={`${slice.category} ${slice.percentage.toFixed(1)}%`} className="cursor-pointer outline-none focus:stroke-ink" cx="60" cy="60" fill="none" key={slice.category} onClick={()=>onSelect(slice.category)} onKeyDown={(event)=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();onSelect(slice.category);}}} opacity={!selectedCategory||selectedCategory===slice.category?1:.28} pathLength="100" r="42" role="button" stroke={slice.color} strokeDasharray={`${slice.percentage} ${100-slice.percentage}`} strokeDashoffset={-slice.offset} strokeWidth={selectedCategory===slice.category?22:18} tabIndex={0} transform="rotate(-90 60 60)" />)}
+          </svg>
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center"><span className="text-[11px] text-ink/40">合計</span><span className="mt-0.5 text-sm font-bold tabular-nums">{formatCompactTwd(total)}</span></div>
+        </div>
+        <div className="grid gap-1.5">{slices.map((slice)=><button aria-pressed={selectedCategory===slice.category} className={cn("grid min-h-11 grid-cols-[12px_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2 text-left transition",selectedCategory===slice.category?"bg-steel/10 ring-1 ring-steel/20":"hover:bg-paper")} key={slice.category} onClick={()=>onSelect(slice.category)} type="button"><span className="size-2.5 rounded-full" style={{backgroundColor:slice.color}}/><span className="truncate text-sm font-semibold">{slice.category}</span><span className="text-right"><span className="block text-xs font-bold tabular-nums">{slice.percentage.toFixed(1)}%</span><span className="block text-[10px] text-ink/40 tabular-nums">{formatCurrency(slice.amount)}</span></span></button>)}</div>
+      </>}
+    </CardContent>
+  </Card>;
+}
+
 function ActivityHub({ api, onNavigate }: { api: ApiClient; onNavigate: (view: View) => void }) {
   const [source, setSource] = useState<"all" | ActivityItem["source"]>("all");
   const [search, setSearch] = useState("");
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [selectedCategory, setSelectedCategory] = useState<{ flow: "income" | "expense"; category: string } | null>(null);
+  const [pendingCategory, setPendingCategory] = useState<{ item: ActivityItem; categoryId: BankCategoryKey; addRule: boolean; pattern: string; operator: "contains" | "equals" } | null>(null);
+  const activityQueryClient = useQueryClient();
+  const categoryMutation = useMutation({
+    mutationFn: async ({ transactionId, categoryId, addRule, pattern, operator }: { transactionId: string; categoryId: string; addRule: boolean; pattern: string; operator: string }) => {
+      await api.put(`/api/classification/overrides/bank_transaction/${transactionId}`, { categoryId });
+      if (addRule) await api.post("/api/classification/rules", { categoryId, targetType: "bank_transaction", field: "any_text", operator, pattern: pattern.trim(), priority: 200, description: "由活動頁建立" });
+    },
+    onSuccess: () => {
+      activityQueryClient.invalidateQueries({ queryKey: ["bank"] });
+      activityQueryClient.invalidateQueries({ queryKey: ["classification-rules"] });
+      setPendingCategory(null);
+    }
+  });
   const bank = useQuery({ queryKey: ["bank"], queryFn: () => api.get<BankData>("/api/bank") });
   const invoices = useQuery({ queryKey: ["invoices"], queryFn: () => api.get<InvoiceRow[]>("/api/invoices") });
   const trades = useQuery({ queryKey: ["investment-transactions"], queryFn: () => api.get<InvestmentTransactionRow[]>("/api/investment-transactions") });
-  if (bank.isLoading || invoices.isLoading || trades.isLoading) return <EmptyState title="載入活動中" body="正在彙整所有資料來源。" />;
-  const error = bank.error ?? invoices.error ?? trades.error;
+  const fxRates = useQuery({ queryKey: ["exchange-rates"], queryFn: () => api.get<ExchangeRateRow[]>("/api/exchange-rates") });
+  if (bank.isLoading || invoices.isLoading || trades.isLoading || fxRates.isLoading) return <EmptyState title="載入活動中" body="正在彙整所有資料來源。" />;
+  const error = bank.error ?? invoices.error ?? trades.error ?? fxRates.error;
   if (error) return <EmptyState title="無法載入活動" body={messageFromError(error)} />;
   const accounts = new Map((bank.data?.accounts ?? []).map((account) => [account.id, account]));
   const bankItems: ActivityItem[] = (bank.data?.transactions ?? []).map((transaction) => {
     const account = accounts.get(transaction.accountId);
     const isCard = account?.accountType === "credit" || transaction.accountType === "credit";
-    return { id: `bank-${transaction.id}`, source: isCard ? "card" : "bank", date: transaction.postedDate ?? transaction.authorizedAt ?? "", title: transaction.description ?? transaction.counterparty ?? "交易", subtitle: [transaction.institutionName ?? account?.institutionName, transaction.accountName ?? account?.accountName].filter(Boolean).join(" · "), amount: transaction.amount, currency: transaction.currency, category: transaction.classification?.label ?? categorizeBankTransaction(transaction).label, status: transaction.status === "pending" ? "待入帳" : "已入帳" };
+    const fallbackCategory = categorizeBankTransaction(transaction);
+    return { id: `bank-${transaction.id}`, transactionId: transaction.id, source: isCard ? "card" : "bank", date: transaction.postedDate ?? transaction.authorizedAt ?? "", title: transaction.description ?? transaction.counterparty ?? "交易", subtitle: [transaction.institutionName ?? account?.institutionName, transaction.accountName ?? account?.accountName].filter(Boolean).join(" · "), amount: transaction.amount, currency: transaction.currency, category: transaction.classification?.label ?? fallbackCategory.label, categoryId: transaction.classification?.categoryId ?? fallbackCategory.key, status: transaction.status === "pending" ? "待入帳" : "已入帳" };
   });
   const tradeItems: ActivityItem[] = (trades.data ?? []).map((trade) => ({ id: `trade-${trade.id}`, source: "investment", date: trade.tradeDate ?? trade.postedDate ?? "", title: trade.name ?? trade.transactionName ?? trade.symbol ?? "投資交易", subtitle: [trade.brokerName, trade.transactionName].filter(Boolean).join(" · "), amount: trade.amount, currency: trade.currency, category: "投資", status: trade.transactionName ?? "已入帳" }));
   const invoiceItems: ActivityItem[] = (invoices.data ?? []).map((invoice) => ({ id: `invoice-${invoice.id}`, source: "invoice", date: invoice.invoiceDate, title: invoice.sellerName ?? "電子發票", subtitle: invoice.items?.[0]?.description ?? invoice.invoiceNumber ?? "電子發票", amount: invoice.amount, currency: "TWD", category: "發票", status: invoice.items?.length ? `明細 ${invoice.items.length} 項` : "已同步" }));
   const allItems = [...bankItems, ...tradeItems, ...invoiceItems].sort((a, b) => b.date.localeCompare(a.date));
+  const rateMap = Object.fromEntries((fxRates.data??[]).map((rate)=>[rate.currency,rate.rateTwd]));
+  const cashAmountTwd = (item: ActivityItem) => activityCashAmount(item) * (item.currency==="TWD"?1:(rateMap[item.currency]??0));
+  const selectedMonthBankItems = bankItems.filter((item) => item.date.startsWith(selectedMonth));
+  const incomeSlices = buildActivityCategorySlices(selectedMonthBankItems, "income", cashAmountTwd);
+  const expenseSlices = buildActivityCategorySlices(selectedMonthBankItems, "expense", cashAmountTwd);
+  const income = incomeSlices.reduce((sum, slice) => sum + slice.amount, 0);
+  const expense = expenseSlices.reduce((sum, slice) => sum + slice.amount, 0);
   const q = search.trim().toLocaleLowerCase("zh-TW");
-  const items = allItems.filter((item) => item.date.startsWith(selectedMonth) && (source === "all" || item.source === source) && (!q || `${item.title} ${item.subtitle} ${item.category}`.toLocaleLowerCase("zh-TW").includes(q)));
+  const items = allItems.filter((item) => {
+    if (!item.date.startsWith(selectedMonth) || (source !== "all" && item.source !== source)) return false;
+    if (q && !`${item.title} ${item.subtitle} ${item.category}`.toLocaleLowerCase("zh-TW").includes(q)) return false;
+    if (!selectedCategory) return true;
+    const amount = cashAmountTwd(item);
+    const sameFlow = selectedCategory.flow === "income" ? amount > 0 : amount < 0;
+    return sameFlow && item.category === selectedCategory.category;
+  });
   const currentMonth = new Date().toISOString().slice(0, 7);
-  const monthTransactions = bankItems.filter((item) => item.date.slice(0, 7) === currentMonth && item.source === "bank");
-  const income = monthTransactions.reduce((sum, item) => sum + Math.max(item.amount ?? 0, 0), 0);
-  const expense = Math.abs(monthTransactions.reduce((sum, item) => sum + Math.min(item.amount ?? 0, 0), 0));
   const pendingCount = bankItems.filter((item) => item.status === "待入帳" || item.category === "其他").length;
-  const monthKeys = Array.from({ length: 6 }, (_, index) => {
+  const calendarMonthKeys = Array.from({ length: 6 }, (_, index) => {
     const date = new Date(); date.setMonth(date.getMonth() - (5 - index)); return date.toISOString().slice(0, 7);
   });
-  const cashFlow = monthKeys.map((month) => ({
+  const availableMonths = [...new Set([currentMonth,...bankItems.map((item)=>item.date.slice(0,7)).filter(Boolean)])].sort((a,b)=>b.localeCompare(a)).slice(0,12);
+  function chooseMonth(month: string) { setSelectedMonth(month); setSelectedCategory(null); }
+  function chooseCategory(flow: "income"|"expense", category: string) {
+    setSelectedCategory((current)=>current?.flow===flow&&current.category===category?null:{flow,category});
+    setSource("all");
+    setSearch("");
+  }
+  const cashFlow = calendarMonthKeys.map((month) => ({
     month,
-    income: bankItems.filter((item) => item.date.startsWith(month)).reduce((sum, item) => sum + Math.max(item.amount ?? 0, 0), 0),
-    expense: Math.abs(bankItems.filter((item) => item.date.startsWith(month)).reduce((sum, item) => sum + Math.min(item.amount ?? 0, 0), 0))
+    income: bankItems.filter((item) => item.date.startsWith(month)).reduce((sum, item) => sum + Math.max(cashAmountTwd(item), 0), 0),
+    expense: Math.abs(bankItems.filter((item) => item.date.startsWith(month)).reduce((sum, item) => sum + Math.min(cashAmountTwd(item), 0), 0))
   }));
   const maxCashFlow = Math.max(...cashFlow.flatMap((point) => [point.income, point.expense]), 1);
+  const selectedMonthLabel = `${Number(selectedMonth.slice(5))} 月`;
   const sourceMeta: Record<ActivityItem["source"], { label: string; icon: LucideIcon }> = { bank: { label: "銀行", icon: Building2 }, card: { label: "信用卡", icon: CreditCard }, investment: { label: "投資", icon: TrendingUp }, invoice: { label: "發票", icon: FileText } };
+  const renderedAmount = (item: ActivityItem) => item.source==="bank"||item.source==="card"?activityCashAmount(item):item.amount;
+  const categoryEditor = (item: ActivityItem, compact = false) => item.transactionId ? <select aria-label={`更新 ${item.title} 分類`} className={cn("rounded-md border border-ink/10 bg-paper font-medium text-steel outline-none focus:border-steel",compact?"max-w-24 px-1 py-0.5 text-xs":"min-h-9 px-2 text-sm")} disabled={categoryMutation.isPending} onChange={(event)=>{const categoryId=event.target.value as BankCategoryKey;if(categoryId!==item.categoryId)setPendingCategory({item,categoryId,addRule:false,pattern:item.title.trim(),operator:"contains"});}} value={item.categoryId}>{(Object.entries(BANK_CATEGORIES) as Array<[BankCategoryKey,typeof BANK_CATEGORIES[BankCategoryKey]]>).map(([key,value])=><option key={key} value={key}>{value.label}</option>)}</select> : <span>{item.category}</span>;
   return (
     <div className="grid gap-5">
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
-        <WealthMetric label="本月收入" value={`+${formatCurrency(income)}`} detail="銀行交易" tone="positive" />
-        <WealthMetric label="本月支出" value={`−${formatCurrency(expense)}`} detail="不重複計入發票" tone="negative" />
-        <div className="hidden md:block"><WealthMetric label="本月淨流入" value={formatCurrency(income - expense)} detail="收入 − 支出" tone={income >= expense ? "positive" : "negative"} /></div>
+      <div className="hidden grid-cols-2 gap-3 md:grid md:grid-cols-4 md:gap-4">
+        <WealthMetric label={`${selectedMonthLabel}收入`} value={`+${formatCurrency(income)}`} detail="銀行與信用卡活動" tone="positive" />
+        <WealthMetric label={`${selectedMonthLabel}支出`} value={`−${formatCurrency(expense)}`} detail="不重複計入發票" tone="negative" />
+        <div className="hidden md:block"><WealthMetric label={`${selectedMonthLabel}淨流入`} value={formatCurrency(income - expense)} detail="收入 − 支出" tone={income >= expense ? "positive" : "negative"} /></div>
         <div className="hidden md:block"><WealthMetric label="待分類" value={`${pendingCount} 筆`} detail="銀行交易" /></div>
       </div>
-      <Card className="hidden md:block"><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">現金流趨勢</h2><span className="rounded-full bg-steel/10 px-3 py-1 text-xs font-semibold text-steel">6 個月　收入／支出</span></CardHeader><CardContent><div className="grid grid-cols-6 gap-3">{cashFlow.map((point)=>{const active=selectedMonth===point.month;return <button aria-pressed={active} className={cn("grid min-w-0 rounded-xl px-2 pb-2 pt-3 transition",active?"bg-steel/10 ring-2 ring-steel/30":"hover:bg-paper")} key={point.month} onClick={()=>setSelectedMonth(point.month)} type="button"><div className="flex h-28 items-end justify-center gap-2"><span className="w-1/3 rounded-t-lg bg-emerald-700" style={{height:`${Math.max(8,point.income/maxCashFlow*100)}%`}}/><span className="w-1/3 rounded-t-lg bg-coral" style={{height:`${Math.max(8,point.expense/maxCashFlow*100)}%`}}/></div><span className="mt-2 text-xs font-semibold">{Number(point.month.slice(5))} 月</span><span className="mt-1 truncate text-[10px] text-moss">+{fmtCompact(point.income)}</span><span className="truncate text-[10px] text-coral">−{fmtCompact(point.expense)}</span></button>})}</div><div className="mt-3 flex items-center justify-between text-xs text-ink/45"><span>■ 收入　<span className="text-coral">■ 支出</span></span><button className="font-semibold text-steel" onClick={()=>setSelectedMonth(currentMonth)} type="button">回到本月</button></div></CardContent></Card>
+      <section className="grid gap-3"><div className="flex items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">每月分類比例</h2><p className="mt-1 text-xs text-ink/45">收入與支出分開計算，發票不重複列入</p></div><label className="shrink-0"><span className="sr-only">選擇月份</span><select aria-label="選擇活動月份" className="min-h-11 rounded-xl border border-ink/10 bg-white px-3 text-sm font-semibold text-ink shadow-sm outline-none focus:border-steel" onChange={(event)=>chooseMonth(event.target.value)} value={selectedMonth}>{availableMonths.map((month)=><option key={month} value={month}>{month.slice(0,4)} 年 {Number(month.slice(5))} 月</option>)}</select></label></div><div className="grid gap-3 lg:grid-cols-2"><ActivityCategoryDonut flow="income" onSelect={(category)=>chooseCategory("income",category)} selectedCategory={selectedCategory?.flow==="income"?selectedCategory.category:undefined} slices={incomeSlices}/><ActivityCategoryDonut flow="expense" onSelect={(category)=>chooseCategory("expense",category)} selectedCategory={selectedCategory?.flow==="expense"?selectedCategory.category:undefined} slices={expenseSlices}/></div></section>
+      <Card className="hidden md:block"><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">現金流趨勢</h2><span className="rounded-full bg-steel/10 px-3 py-1 text-xs font-semibold text-steel">6 個月　收入／支出</span></CardHeader><CardContent><div className="grid grid-cols-6 gap-3">{cashFlow.map((point)=>{const active=selectedMonth===point.month;return <button aria-pressed={active} className={cn("grid min-w-0 rounded-xl px-2 pb-2 pt-3 transition",active?"bg-steel/10 ring-2 ring-steel/30":"hover:bg-paper")} key={point.month} onClick={()=>chooseMonth(point.month)} type="button"><div className="flex h-28 items-end justify-center gap-2"><span className="w-1/3 rounded-t-lg bg-emerald-700" style={{height:`${Math.max(8,point.income/maxCashFlow*100)}%`}}/><span className="w-1/3 rounded-t-lg bg-coral" style={{height:`${Math.max(8,point.expense/maxCashFlow*100)}%`}}/></div><span className="mt-2 text-xs font-semibold">{Number(point.month.slice(5))} 月</span><span className="mt-1 truncate text-[10px] text-moss">+{fmtCompact(point.income)}</span><span className="truncate text-[10px] text-coral">−{fmtCompact(point.expense)}</span></button>})}</div><div className="mt-3 flex items-center justify-between text-xs text-ink/45"><span>■ 收入　<span className="text-coral">■ 支出</span></span><button className="font-semibold text-steel" onClick={()=>chooseMonth(currentMonth)} type="button">回到本月</button></div></CardContent></Card>
       <Card>
         <CardHeader className="gap-3 border-b border-ink/8">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold">所有活動</h2><p className="text-xs text-ink/45">銀行、信用卡、投資與發票</p></div><label className="flex min-h-11 items-center gap-2 rounded-lg border border-ink/10 bg-paper px-3 md:w-80"><AppIcon icon={Search} size="sm" className="text-ink/40"/><input className="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder="搜尋商家、帳戶、品項或分類" value={search} onChange={(event) => setSearch(event.target.value)} /></label></div>
-          <div className="grid grid-cols-5 gap-1">{([{ key: "all", label: "全部" }, { key: "bank", label: "銀行" }, { key: "card", label: "信用卡" }, { key: "investment", label: "投資" }, { key: "invoice", label: "發票" }] as const).map((filter) => <button className={cn("min-h-10 min-w-0 rounded-lg px-1 text-xs font-semibold md:text-sm", source === filter.key ? "bg-ink text-white" : "bg-paper text-ink/55")} key={filter.key} onClick={() => setSource(filter.key)} type="button">{filter.label}</button>)}</div>
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold">{selectedCategory?`${selectedMonthLabel} · ${selectedCategory.category}`:`${selectedMonthLabel}所有活動`}</h2><p className="text-xs text-ink/45">{selectedCategory?`${selectedCategory.flow==="income"?"收入":"支出"}分類篩選結果`:`銀行、信用卡、投資與發票`}</p></div><label className="flex min-h-11 items-center gap-2 rounded-lg border border-ink/10 bg-paper px-3 md:w-80"><AppIcon icon={Search} size="sm" className="text-ink/40"/><input className="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder="搜尋商家、帳戶、品項或分類" value={search} onChange={(event) => setSearch(event.target.value)} /></label></div>
+          {selectedCategory&&<div className="flex items-center justify-between rounded-lg bg-steel/10 px-3 py-2 text-sm"><span><strong>{selectedCategory.category}</strong> · {selectedCategory.flow==="income"?"收入":"支出"}</span><button className="min-h-8 px-2 text-xs font-semibold text-steel" onClick={()=>setSelectedCategory(null)} type="button">顯示全部</button></div>}
+          <div className="grid grid-cols-5 gap-1">{([{ key: "all", label: "全部" }, { key: "bank", label: "銀行" }, { key: "card", label: "信用卡" }, { key: "investment", label: "投資" }, { key: "invoice", label: "發票" }] as const).map((filter) => <button className={cn("min-h-10 min-w-0 rounded-lg px-1 text-xs font-semibold md:text-sm", source === filter.key ? "bg-ink text-white" : "bg-paper text-ink/55")} key={filter.key} onClick={() => {setSource(filter.key);setSelectedCategory(null);}} type="button">{filter.label}</button>)}</div>
         </CardHeader>
-        <div className="divide-y divide-ink/8 md:hidden">{items.length === 0 ? <p className="p-8 text-center text-sm text-ink/50">沒有符合條件的活動。</p> : items.slice(0, 7).map((item) => { const meta=sourceMeta[item.source]; return <div className="flex items-center gap-3 px-4 py-3" key={item.id}><span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel"><AppIcon icon={meta.icon} size="lg"/></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{item.title}</p><p className="truncate text-xs text-ink/45">{meta.label} · {item.category}</p></div><div className="text-right"><p className={cn("text-sm font-semibold tabular-nums", item.amount != null && item.amount < 0 ? "text-coral" : item.source !== "invoice" && "text-moss")}>{item.amount == null ? "—" : formatCurrency(item.amount,item.currency)}</p><p className="text-[11px] text-ink/40">{formatDate(item.date)}</p></div></div>; })}</div>
-        <div className="hidden md:block"><Table bare columns={["日期","來源","說明／商家","分類","金額","狀態"]} rows={items.slice(0,100).map((item)=>[formatDate(item.date),sourceMeta[item.source].label,<span className="block max-w-xs truncate">{item.title}<span className="block text-xs font-normal text-ink/40">{item.subtitle}</span></span>,item.category,item.amount == null?"—":<span className={item.amount<0?"text-coral":"text-moss"}>{formatCurrency(item.amount,item.currency)}</span>,item.status])} empty="沒有符合條件的活動。"/></div>
+        <div className="divide-y divide-ink/8 md:hidden">{items.length === 0 ? <p className="p-8 text-center text-sm text-ink/50">沒有符合條件的活動。</p> : (selectedCategory?items:items.slice(0,7)).map((item) => { const meta=sourceMeta[item.source]; const amount=renderedAmount(item); return <div className="flex items-center gap-3 px-4 py-3" key={item.id}><span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel"><AppIcon icon={meta.icon} size="lg"/></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{item.title}</p><div className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-ink/45"><span className="shrink-0">{meta.label} ·</span>{categoryEditor(item,true)}</div></div><div className="text-right"><p className={cn("text-sm font-semibold tabular-nums", amount != null && amount < 0 ? "text-coral" : item.source !== "invoice" && "text-moss")}>{amount == null ? "—" : formatCurrency(amount,item.currency)}</p><p className="text-[11px] text-ink/40">{formatDate(item.date)}</p></div></div>; })}</div>
+        <div className="hidden md:block"><Table bare columns={["日期","來源","說明／商家","分類","金額","狀態"]} rows={items.slice(0,100).map((item)=>{const amount=renderedAmount(item);return [formatDate(item.date),sourceMeta[item.source].label,<span className="block max-w-xs truncate">{item.title}<span className="block text-xs font-normal text-ink/40">{item.subtitle}</span></span>,categoryEditor(item),amount == null?"—":<span className={amount<0?"text-coral":"text-moss"}>{formatCurrency(amount,item.currency)}</span>,item.status];})} empty="沒有符合條件的活動。"/></div>
       </Card>
       <div className="flex justify-end"><Button variant="ghost" onClick={() => onNavigate("invoices")}>查看完整發票明細 →</Button></div>
+      {pendingCategory && <div aria-modal="true" className="fixed inset-0 z-[70] flex items-end bg-ink/45 md:items-center md:justify-center md:p-6" role="dialog"><div className="max-h-[88vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 shadow-2xl md:max-w-lg md:rounded-2xl md:p-6"><div className="flex items-start justify-between gap-4"><div><p className="text-xs font-semibold text-steel">更新活動分類</p><h2 className="mt-1 text-xl font-semibold">{pendingCategory.item.title}</h2><p className="mt-1 text-sm text-ink/50">變更為「{BANK_CATEGORIES[pendingCategory.categoryId].label}」</p></div><button aria-label="關閉分類設定" className="flex size-10 items-center justify-center rounded-full bg-ink/5 text-xl" onClick={()=>setPendingCategory(null)} type="button">×</button></div><label className="mt-5 flex cursor-pointer items-start gap-3 rounded-xl border border-ink/10 bg-paper p-4"><input checked={pendingCategory.addRule} className="mt-1 size-4" onChange={(event)=>setPendingCategory((current)=>current&&({...current,addRule:event.target.checked}))} type="checkbox"/><span><span className="block font-semibold">同時新增分類規則</span><span className="mt-1 block text-xs leading-relaxed text-ink/50">符合規則的過去活動會立即重新計算分類，之後的新活動也會自動套用。</span></span></label>{pendingCategory.addRule&&<div className="mt-4 grid gap-3 rounded-xl border border-steel/20 bg-steel/5 p-4"><label className="grid gap-1"><span className="text-xs font-semibold text-ink/55">比對方式</span><select className={INPUT_CLS} onChange={(event)=>setPendingCategory((current)=>current&&({...current,operator:event.target.value as "contains"|"equals"}))} value={pendingCategory.operator}><option value="contains">交易文字包含</option><option value="equals">交易文字完全等於</option></select></label><label className="grid gap-1"><span className="text-xs font-semibold text-ink/55">比對文字</span><input className={INPUT_CLS} onChange={(event)=>setPendingCategory((current)=>current&&({...current,pattern:event.target.value}))} value={pendingCategory.pattern}/></label><p className="text-xs font-semibold text-steel">將同步更新目前資料中的 {countRuleMatches(bank.data?.transactions??[],pendingCategory.pattern,pendingCategory.operator)} 筆過去活動</p></div>}<div className="mt-5 grid grid-cols-2 gap-3"><Button onClick={()=>setPendingCategory(null)} variant="secondary">取消</Button><Button disabled={categoryMutation.isPending||(pendingCategory.addRule&&!pendingCategory.pattern.trim())} onClick={()=>categoryMutation.mutate({transactionId:pendingCategory.item.transactionId!,categoryId:pendingCategory.categoryId,addRule:pendingCategory.addRule,pattern:pendingCategory.pattern,operator:pendingCategory.operator})}>{categoryMutation.isPending?"更新中…":pendingCategory.addRule?"更新並建立規則":"只更新這一筆"}</Button></div>{categoryMutation.isError&&<p className="mt-3 text-sm text-coral">{messageFromError(categoryMutation.error)}</p>}</div></div>}
     </div>
   );
 }
@@ -730,30 +806,56 @@ function ApiProvider({
     return <><div className="md:hidden"><MobileMoreView api={api} demoMode={demoMode} onNavigate={onNavigate} /></div><div className="hidden md:block"><SettingsView api={api} demoMode={demoMode} /></div></>;
   }
 
+  if (view in mobileSettingsLabels) {
+    return <><div className="md:hidden"><MobileSettingsDetail api={api} demoMode={demoMode} onNavigate={onNavigate} view={view as MobileSettingsView} /></div><div className="hidden md:block"><SettingsView api={api} demoMode={demoMode} /></div></>;
+  }
+
   return <SettingsView api={api} demoMode={demoMode} />;
 }
 
 function MobileMoreView({ api, demoMode, onNavigate }: { api: ApiClient; demoMode: boolean; onNavigate: (view: View) => void }) {
   const jobs = useQuery({ queryKey: ["sync-jobs"], queryFn: () => api.get<SyncJobRow[]>("/api/sync-jobs") });
   const rules = useQuery({ queryKey: ["classification-rules"], queryFn: () => api.get<ClassificationRuleRow[]>("/api/classification/rules") });
-  const rates = useQuery({ queryKey: ["exchange-rates"], queryFn: () => api.get<ExchangeRateRow[]>("/api/exchange-rates") });
+  const bank = useQuery({ queryKey: ["bank"], queryFn: () => api.get<BankData>("/api/bank") });
   const allJobs = jobs.data ?? [];
   const unhealthy = allJobs.filter((job) => job.lastStatus === "failed" || job.lastStatus === "needs_user_action");
   const sources = [
     { id: "einvoice", label: "電子發票" }, { id: "esun", label: "玉山銀行" },
     { id: "cathaybk", label: "國泰世華" }, { id: "tdcc", label: "集保 e 存摺" }
   ];
+  const foreignCurrencies = new Set((bank.data?.accounts ?? []).map((account) => account.currency).filter((currency) => currency && currency !== "TWD"));
   const entries = [
-    { label: "同步與連接器", detail: "設定銀行、TDCC 與電子發票", meta: unhealthy.length ? `${unhealthy.length} 警告` : "正常", icon: RefreshCw },
-    { label: "匯率", detail: "管理外幣換算", meta: `${rates.data?.length ?? 0} 種`, icon: Database },
-    { label: "分類規則", detail: "銀行交易自動分類", meta: `${rules.data?.length ?? 0} 條`, icon: Settings }
+    { view: "data-sources" as const, label: "資料來源與連接器", detail: "狀態、憑證、排程與重新驗證", meta: unhealthy.length ? `${unhealthy.length} 警告` : "4 個", icon: Database },
+    { view: "exchange-rates" as const, label: "匯率", detail: "管理外幣換算", meta: `${foreignCurrencies.size} 種`, icon: WalletCards },
+    { view: "classification-rules" as const, label: "分類規則", detail: "銀行交易自動分類", meta: `${rules.data?.length ?? 0} 條`, icon: Settings }
   ];
   return <div className="grid gap-4">
     {demoMode && <span className="w-fit rounded-full bg-steel/10 px-3 py-1 text-xs font-semibold text-steel">Demo 資料</span>}
     <Card><CardContent className="pt-5"><p className="text-xs font-semibold text-ink/45">資料健康度</p><p className="mt-2 text-2xl font-bold">{Math.max(sources.length-unhealthy.length,0)} / {sources.length} 來源正常</p>{unhealthy.length>0&&<p className="mt-2 text-sm font-semibold text-coral">{unhealthy.length} 個來源需要處理</p>}</CardContent></Card>
-    <section><h2 className="mb-2 text-sm font-semibold text-ink/50">資料與設定</h2><Card><div className="divide-y divide-ink/8">{entries.map((entry)=><button className="flex min-h-16 w-full items-center gap-3 px-4 py-3 text-left" key={entry.label} onClick={()=>onNavigate("settings")} type="button"><span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel"><AppIcon icon={entry.icon} size="lg"/></span><span className="min-w-0 flex-1"><span className="block font-semibold">{entry.label}</span><span className="block truncate text-xs text-ink/45">{entry.detail}</span></span><span className="shrink-0 text-xs font-semibold text-steel">{entry.meta}　›</span></button>)}</div></Card></section>
-    <section><div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-semibold text-ink/50">資料來源</h2><button className="text-xs font-semibold text-steel" onClick={()=>onNavigate("settings")} type="button">管理</button></div><Card><div className="divide-y divide-ink/8">{sources.map((source)=>{const job=allJobs.find(item=>item.connectorId===source.id);const warning=job?.lastStatus==="failed"||job?.lastStatus==="needs_user_action";return <div className="flex items-center justify-between gap-3 px-4 py-3 text-sm" key={source.id}><span className="font-semibold">{source.label}</span><span className={warning?"text-coral":"text-moss"}>{warning?"需要處理":job?.lastSuccessAt?`正常 · ${formatDate(job.lastSuccessAt)}`:"尚未同步"}</span></div>})}</div></Card></section>
+    <section><h2 className="mb-2 text-sm font-semibold text-ink/50">設定與資料</h2><Card><div className="divide-y divide-ink/8">{entries.map((entry)=><button className="flex min-h-16 w-full items-center gap-3 px-4 py-3 text-left" key={entry.label} onClick={()=>onNavigate(entry.view)} type="button"><span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel"><AppIcon icon={entry.icon} size="lg"/></span><span className="min-w-0 flex-1"><span className="block font-semibold">{entry.label}</span><span className="block truncate text-xs text-ink/45">{entry.detail}</span></span><span className="shrink-0 text-xs font-semibold text-steel">{entry.meta}　›</span></button>)}</div></Card></section>
+    <section><div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-semibold text-ink/50">資料來源</h2><button className="min-h-8 px-2 text-xs font-semibold text-steel" onClick={()=>onNavigate("data-sources")} type="button">管理</button></div><Card><div className="divide-y divide-ink/8">{sources.map((source)=>{const job=allJobs.find(item=>item.connectorId===source.id);const warning=job?.lastStatus==="failed"||job?.lastStatus==="needs_user_action";return <div className="flex items-center justify-between gap-3 px-4 py-3 text-sm" key={source.id}><span className="font-semibold">{source.label}</span><span className={warning?"text-coral":"text-moss"}>{warning?"需要處理":job?.lastSuccessAt?`正常 · ${formatDate(job.lastSuccessAt)}`:"尚未同步"}</span></div>})}</div></Card></section>
     <p className="rounded-xl bg-ink/5 p-4 text-xs leading-relaxed text-ink/45">資料僅供個人研究與自用；憑證與同步狀態可在設定中管理。</p>
+  </div>;
+}
+
+function MobileSettingsDetail({ api, demoMode, onNavigate, view }: { api: ApiClient; demoMode: boolean; onNavigate: (view: View) => void; view: MobileSettingsView }) {
+  if (view === "data-sources") return <MobileDataSourcesView api={api} demoMode={demoMode} onNavigate={onNavigate} />;
+  if (view === "exchange-rates") return <ExchangeRatesPanel api={api} />;
+  return <ClassificationRulesPanel api={api} />;
+}
+
+const mobileConnectorSources: { id: ConnectorId; title: string; description: string }[] = [
+  { id: "einvoice", title: "電子發票", description: "財政部載具與品項明細" },
+  { id: "esun", title: "玉山銀行", description: "帳戶、信用卡與交易" },
+  { id: "cathaybk", title: "國泰世華", description: "帳戶與交易" },
+  { id: "tdcc", title: "集保 e 存摺", description: "持倉與投資交易" }
+];
+
+function MobileDataSourcesView({ api, demoMode, onNavigate }: { api: ApiClient; demoMode: boolean; onNavigate: (view: View) => void }) {
+  const [selectedConnector, setSelectedConnector] = useState<ConnectorId | null>(null);
+  return <div className="grid gap-3">
+    {mobileConnectorSources.map((source) => <SettingsSourceCard api={api} description={source.description} id={source.id} key={source.id} onConfigure={() => setSelectedConnector((current) => current === source.id ? null : source.id)} selected={selectedConnector === source.id} title={source.title} />)}
+    {selectedConnector && <ConnectorPanel api={api} connectorId={selectedConnector} demoMode={demoMode} title={mobileConnectorSources.find((source) => source.id === selectedConnector)?.title ?? selectedConnector} />}
   </div>;
 }
 
@@ -1994,6 +2096,9 @@ function NetWorthHistoryPanel({ data, loading }: { data?: NetWorthHistoryRow[]; 
   const xLabelIdxs = dates.length <= 6
     ? dates.map((_, index) => index)
     : [...new Set(Array.from({ length: 6 }, (_, index) => Math.round(index * (dates.length - 1) / 5)))];
+  const mobileXLabelIdxs = dates.length <= 3
+    ? dates.map((_, index) => index)
+    : [0, Math.round((dates.length - 1) / 2), dates.length - 1];
 
   function formatXLabel(date: string) {
     const [, m, d] = date.split("-");
@@ -2003,7 +2108,7 @@ function NetWorthHistoryPanel({ data, loading }: { data?: NetWorthHistoryRow[]; 
   const singleLineColor = seriesPoints[0]?.color ?? "#10b981";
 
   return (
-    <section className="rounded-xl border border-ink/10 bg-white p-5 shadow-sm">
+    <section className="rounded-xl border border-ink/10 bg-white p-4 shadow-sm md:p-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
           <h2 className="flex items-center gap-2 text-base font-semibold">
@@ -2173,7 +2278,15 @@ function NetWorthHistoryPanel({ data, loading }: { data?: NetWorthHistoryRow[]; 
             )}
 
             {/* X-axis labels */}
-            <div className="relative mt-1" style={{ height: 16 }}>
+            <div className="relative mt-1 md:hidden" style={{ height: 16 }}>
+              {mobileXLabelIdxs.map((idx, position) => (
+                <span key={dates[idx]} className="absolute text-[11px] text-ink/40 tabular-nums"
+                  style={{ left: `${(idx / Math.max(dates.length - 1, 1)) * 100}%`, transform: position === 0 ? "none" : position === mobileXLabelIdxs.length - 1 ? "translateX(-100%)" : "translateX(-50%)" }}>
+                  {formatXLabel(dates[idx]!)}
+                </span>
+              ))}
+            </div>
+            <div className="relative mt-1 hidden md:block" style={{ height: 16 }}>
               {xLabelIdxs.map(idx => (
                 <span key={dates[idx]} className="absolute -translate-x-1/2 text-[11px] text-ink/40 tabular-nums"
                   style={{ left: `${(idx / Math.max(dates.length - 1, 1)) * 100}%` }}>
