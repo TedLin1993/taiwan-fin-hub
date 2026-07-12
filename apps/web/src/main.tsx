@@ -501,7 +501,7 @@ function WealthOverview({ api, onNavigate }: { api: ApiClient; onNavigate: (view
     </div>
 
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1.8fr)_minmax(300px,1fr)]">
-      <Card className="hidden xl:block"><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">淨資產趨勢</h2><span className="rounded-full bg-steel/10 px-3 py-1 text-xs font-semibold text-steel">6 個月</span></CardHeader><CardContent><div className="flex h-40 items-end gap-3">{bars.map((value,index)=><span className="flex-1 rounded-t-lg bg-[#82a6ae]" key={index} style={{height:`${Math.max(20,value/maxBar*100)}%`}} />)}</div><p className="mt-3 text-xs text-ink/45">股票、ETF、基金、存款與其他資產</p></CardContent></Card>
+      <div className="hidden xl:block"><NetWorthHistoryPanel data={history.data} loading={history.isLoading} /></div>
       <Card><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">資產配置</h2><Button onClick={() => onNavigate("assets")} size="sm" variant="ghost">查看全部 →</Button></CardHeader><CardContent className="grid gap-5">{allocation.map((item)=><div key={item.label}><div className="flex items-center justify-between gap-3"><div><span className="text-sm font-semibold">{item.label}</span><span className="ml-2 text-xs text-ink/40">{item.detail}</span></div><span className={cn("text-sm font-bold tabular-nums",item.text)}>{formatCurrency(item.value)}</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-ink/10"><span className={cn("block h-full rounded-full",item.color)} style={{width:`${pct(item.value)}%`}} /></div></div>)}</CardContent></Card>
     </div>
 
@@ -632,6 +632,7 @@ function AssetsHub({ api, onNavigate }: { api: ApiClient; onNavigate: (view: Vie
 function ActivityHub({ api, onNavigate }: { api: ApiClient; onNavigate: (view: View) => void }) {
   const [source, setSource] = useState<"all" | ActivityItem["source"]>("all");
   const [search, setSearch] = useState("");
+  const [selectedMonth, setSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const bank = useQuery({ queryKey: ["bank"], queryFn: () => api.get<BankData>("/api/bank") });
   const invoices = useQuery({ queryKey: ["invoices"], queryFn: () => api.get<InvoiceRow[]>("/api/invoices") });
   const trades = useQuery({ queryKey: ["investment-transactions"], queryFn: () => api.get<InvestmentTransactionRow[]>("/api/investment-transactions") });
@@ -648,7 +649,7 @@ function ActivityHub({ api, onNavigate }: { api: ApiClient; onNavigate: (view: V
   const invoiceItems: ActivityItem[] = (invoices.data ?? []).map((invoice) => ({ id: `invoice-${invoice.id}`, source: "invoice", date: invoice.invoiceDate, title: invoice.sellerName ?? "電子發票", subtitle: invoice.items?.[0]?.description ?? invoice.invoiceNumber ?? "電子發票", amount: invoice.amount, currency: "TWD", category: "發票", status: invoice.items?.length ? `明細 ${invoice.items.length} 項` : "已同步" }));
   const allItems = [...bankItems, ...tradeItems, ...invoiceItems].sort((a, b) => b.date.localeCompare(a.date));
   const q = search.trim().toLocaleLowerCase("zh-TW");
-  const items = allItems.filter((item) => (source === "all" || item.source === source) && (!q || `${item.title} ${item.subtitle} ${item.category}`.toLocaleLowerCase("zh-TW").includes(q)));
+  const items = allItems.filter((item) => item.date.startsWith(selectedMonth) && (source === "all" || item.source === source) && (!q || `${item.title} ${item.subtitle} ${item.category}`.toLocaleLowerCase("zh-TW").includes(q)));
   const currentMonth = new Date().toISOString().slice(0, 7);
   const monthTransactions = bankItems.filter((item) => item.date.slice(0, 7) === currentMonth && item.source === "bank");
   const income = monthTransactions.reduce((sum, item) => sum + Math.max(item.amount ?? 0, 0), 0);
@@ -672,7 +673,7 @@ function ActivityHub({ api, onNavigate }: { api: ApiClient; onNavigate: (view: V
         <div className="hidden md:block"><WealthMetric label="本月淨流入" value={formatCurrency(income - expense)} detail="收入 − 支出" tone={income >= expense ? "positive" : "negative"} /></div>
         <div className="hidden md:block"><WealthMetric label="待分類" value={`${pendingCount} 筆`} detail="銀行交易" /></div>
       </div>
-      <Card className="hidden md:block"><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">現金流趨勢</h2><span className="rounded-full bg-steel/10 px-3 py-1 text-xs font-semibold text-steel">6 個月　收入／支出</span></CardHeader><CardContent><div className="flex h-36 items-end justify-around gap-5">{cashFlow.map((point)=><div className="flex h-full flex-1 items-end justify-center gap-2" key={point.month}><span className="w-1/3 rounded-t-lg bg-emerald-700" style={{height:`${Math.max(8,point.income/maxCashFlow*100)}%`}}/><span className="w-1/3 rounded-t-lg bg-coral" style={{height:`${Math.max(8,point.expense/maxCashFlow*100)}%`}}/></div>)}</div><p className="mt-3 text-xs text-ink/45">■ 收入　<span className="text-coral">■ 支出</span>　· 點選月份可查看交易與發票明細</p></CardContent></Card>
+      <Card className="hidden md:block"><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">現金流趨勢</h2><span className="rounded-full bg-steel/10 px-3 py-1 text-xs font-semibold text-steel">6 個月　收入／支出</span></CardHeader><CardContent><div className="grid grid-cols-6 gap-3">{cashFlow.map((point)=>{const active=selectedMonth===point.month;return <button aria-pressed={active} className={cn("grid min-w-0 rounded-xl px-2 pb-2 pt-3 transition",active?"bg-steel/10 ring-2 ring-steel/30":"hover:bg-paper")} key={point.month} onClick={()=>setSelectedMonth(point.month)} type="button"><div className="flex h-28 items-end justify-center gap-2"><span className="w-1/3 rounded-t-lg bg-emerald-700" style={{height:`${Math.max(8,point.income/maxCashFlow*100)}%`}}/><span className="w-1/3 rounded-t-lg bg-coral" style={{height:`${Math.max(8,point.expense/maxCashFlow*100)}%`}}/></div><span className="mt-2 text-xs font-semibold">{Number(point.month.slice(5))} 月</span><span className="mt-1 truncate text-[10px] text-moss">+{fmtCompact(point.income)}</span><span className="truncate text-[10px] text-coral">−{fmtCompact(point.expense)}</span></button>})}</div><div className="mt-3 flex items-center justify-between text-xs text-ink/45"><span>■ 收入　<span className="text-coral">■ 支出</span></span><button className="font-semibold text-steel" onClick={()=>setSelectedMonth(currentMonth)} type="button">回到本月</button></div></CardContent></Card>
       <Card>
         <CardHeader className="gap-3 border-b border-ink/8">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold">所有活動</h2><p className="text-xs text-ink/45">銀行、信用卡、投資與發票</p></div><label className="flex min-h-11 items-center gap-2 rounded-lg border border-ink/10 bg-paper px-3 md:w-80"><AppIcon icon={Search} size="sm" className="text-ink/40"/><input className="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder="搜尋商家、帳戶、品項或分類" value={search} onChange={(event) => setSearch(event.target.value)} /></label></div>
@@ -4197,18 +4198,41 @@ function ClassificationRulesPanel({ api }: { api: ApiClient }) {
 }
 
 function SettingsView({ api, demoMode }: { api: ApiClient; demoMode: boolean }) {
+  const [selectedConnector, setSelectedConnector] = useState<ConnectorId | null>(null);
+  const jobs = useQuery({ queryKey: ["sync-jobs"], queryFn: () => api.get<SyncJobRow[]>("/api/sync-jobs") });
+  const rules = useQuery({ queryKey: ["classification-rules"], queryFn: () => api.get<ClassificationRuleRow[]>("/api/classification/rules") });
+  const sources: { id: ConnectorId; title: string; description: string }[] = [
+    { id: "einvoice", title: "電子發票", description: "財政部載具與品項明細" },
+    { id: "tdcc", title: "集保 e 存摺", description: "持倉、投資交易與銀行帳戶" },
+    { id: "esun", title: "玉山銀行", description: "帳戶、信用卡與交易" },
+    { id: "cathaybk", title: "國泰世華銀行", description: "帳戶與交易" }
+  ];
+  const allJobs = jobs.data ?? [];
+  const enabledJobs = allJobs.filter((job) => job.enabled).length;
+  const needsAction = allJobs.filter((job) => job.lastStatus === "failed" || job.lastStatus === "needs_user_action").length;
   return (
     <div className="grid gap-5">
-      <section className="grid gap-5 lg:grid-cols-2">
-        <ConnectorPanel api={api} connectorId="einvoice" demoMode={demoMode} title="電子發票" />
-        <ConnectorPanel api={api} connectorId="tdcc" demoMode={demoMode} title="集保e存摺" />
-        <ConnectorPanel api={api} connectorId="esun" demoMode={demoMode} title="玉山銀行" />
-        <ConnectorPanel api={api} connectorId="cathaybk" demoMode={demoMode} title="國泰世華銀行" />
-        <ExchangeRatesPanel api={api} />
-        <ClassificationRulesPanel api={api} />
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
+        <WealthMetric label="已設定來源" value="4" detail="資料連接器" />
+        <WealthMetric label="同步排程" value={enabledJobs.toLocaleString()} detail="已啟用" />
+        <WealthMetric label="分類規則" value={(rules.data?.length ?? 0).toLocaleString()} detail="銀行交易" />
+        <WealthMetric label="需要處理" value={needsAction.toLocaleString()} detail="同步狀態" tone={needsAction ? "negative" : "positive"} />
+      </div>
+      <section className="grid gap-3 md:grid-cols-2">
+        {sources.map((source) => <SettingsSourceCard api={api} description={source.description} id={source.id} key={source.id} onConfigure={() => setSelectedConnector((current) => current === source.id ? null : source.id)} selected={selectedConnector === source.id} title={source.title} />)}
       </section>
+      {selectedConnector && <ConnectorPanel api={api} connectorId={selectedConnector} demoMode={demoMode} title={sources.find((source) => source.id === selectedConnector)?.title ?? selectedConnector} />}
+      <section className="grid gap-5 xl:grid-cols-2"><ExchangeRatesPanel api={api} /><ClassificationRulesPanel api={api} /></section>
     </div>
   );
+}
+
+function SettingsSourceCard({ api, id, title, description, selected, onConfigure }: { api: ApiClient; id: ConnectorId; title: string; description: string; selected: boolean; onConfigure: () => void }) {
+  const settings = useQuery({ queryKey: ["connector-settings", id], queryFn: () => api.get<ConnectorSettings>(`/api/connectors/${id}/settings`) });
+  const jobs = useQuery({ queryKey: ["sync-jobs"], queryFn: () => api.get<SyncJobRow[]>("/api/sync-jobs") });
+  const job = jobs.data?.find((item) => item.connectorId === id && item.scope === "all");
+  const needsAction = job?.lastStatus === "failed" || job?.lastStatus === "needs_user_action";
+  return <Card className={cn(selected && "ring-2 ring-steel/30")}><CardContent className="pt-5"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><h2 className="text-lg font-semibold">{title}</h2><p className="mt-1 text-sm text-ink/50">{description}</p></div><span className={cn("shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold",needsAction?"bg-coral/10 text-coral":settings.data?.configured?"bg-moss/10 text-moss":"bg-ink/5 text-ink/45")}>{needsAction?"需要處理":settings.data?.configured?"已設定":"未設定"}</span></div><div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-ink/8 pt-4"><div className="text-xs text-ink/45"><p>上次成功：{job?.lastSuccessAt ? formatDateTime(job.lastSuccessAt) : "尚無紀錄"}</p><p className="mt-1">排程：{job?.enabled ? `${job.intervalMinutes / 60} 小時` : "關閉"}</p></div><Button onClick={onConfigure} size="sm" variant={selected?"default":"secondary"}>{selected?"收合設定":"設定"}</Button></div></CardContent></Card>;
 }
 
 function ConnectorPanel({
