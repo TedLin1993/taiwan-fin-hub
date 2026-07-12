@@ -332,11 +332,13 @@ function App() {
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   {detail && <button className="mb-1 inline-flex items-center gap-1 text-xs font-medium text-steel" onClick={() => navigate("assets")} type="button">← 返回資產</button>}
-                  <h1 className="truncate text-2xl font-semibold tracking-tight xl:text-3xl">{detail?.label ?? currentView.label}</h1>
+                  <h1 className="truncate text-2xl font-semibold tracking-tight xl:text-3xl">
+                    {detail?.label ?? <><span className="md:hidden">{primaryView === "overview" ? "資產總覽" : primaryView === "activity" ? "所有活動" : currentView.label}</span><span className="hidden md:inline">{currentView.label}</span></>}
+                  </h1>
                   <p className="mt-1 hidden text-sm text-ink/55 sm:block">{detail?.description ?? currentView.description}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  <Button aria-label={moneyVisibility.hidden ? "顯示金額" : "隱藏金額"} onClick={toggleMoneyVisibility} size="icon" variant="secondary">
+                  <Button className="rounded-full" aria-label={moneyVisibility.hidden ? "顯示金額" : "隱藏金額"} onClick={toggleMoneyVisibility} size="icon" variant="secondary">
                     <AppIcon icon={moneyVisibility.hidden ? Eye : EyeOff} size="lg" />
                   </Button>
                   <Button className="hidden sm:inline-flex" onClick={() => queryClient.invalidateQueries()} variant="primary"><AppIcon icon={RefreshCw} size="sm" />同步資料</Button>
@@ -345,7 +347,7 @@ function App() {
             </div>
           </header>
 
-          <main className="mx-auto max-w-[1440px] px-4 py-5 sm:px-6 xl:px-8 xl:py-6">
+          <main className="mx-auto max-w-[1440px] px-4 pb-5 pt-0 sm:px-6 md:py-5 xl:px-8 xl:py-6">
             <RuntimeAwareContent view={view} onNavigate={navigate} />
           </main>
 
@@ -413,7 +415,6 @@ function RuntimeAwareContent({ view, onNavigate }: { view: View; onNavigate: (v:
 
   return (
     <div className="grid min-w-0 max-w-full gap-5 overflow-x-hidden">
-      {demoMode && <DemoBanner />}
       <ApiProvider api={api} demoMode={demoMode} view={view} onNavigate={onNavigate} />
     </div>
   );
@@ -431,12 +432,94 @@ function DemoBanner() {
   );
 }
 
+function WealthOverview({ api, onNavigate }: { api: ApiClient; onNavigate: (view: View) => void }) {
+  const summary = useQuery({ queryKey: ["summary"], queryFn: () => api.get<Summary>("/api/summary") });
+  const bank = useQuery({ queryKey: ["bank"], queryFn: () => api.get<BankData>("/api/bank") });
+  const investments = useQuery({ queryKey: ["investments"], queryFn: () => api.get<InvestmentRow[]>("/api/investments") });
+  const invoices = useQuery({ queryKey: ["invoices"], queryFn: () => api.get<InvoiceRow[]>("/api/invoices") });
+  const trades = useQuery({ queryKey: ["investment-transactions"], queryFn: () => api.get<InvestmentTransactionRow[]>("/api/investment-transactions") });
+  const manualAssets = useQuery({ queryKey: ["manualAssets"], queryFn: () => api.get<ManualAssetRow[]>("/api/manual-assets") });
+  const rates = useQuery({ queryKey: ["exchange-rates"], queryFn: () => api.get<ExchangeRateRow[]>("/api/exchange-rates") });
+  const history = useQuery({ queryKey: ["netWorthHistory"], queryFn: () => api.get<NetWorthHistoryRow[]>("/api/history/net-worth") });
+  const jobs = useQuery({ queryKey: ["sync-jobs"], queryFn: () => api.get<SyncJobRow[]>("/api/sync-jobs") });
+  if (summary.isLoading || bank.isLoading || investments.isLoading || manualAssets.isLoading) return <EmptyState title="載入總覽中" body="正在讀取最新本機紀錄。" />;
+  const error = summary.error ?? bank.error ?? investments.error ?? manualAssets.error;
+  if (error) return <EmptyState title="無法載入總覽" body={messageFromError(error)} />;
+
+  const bankData = bank.data ?? { accounts: [], transactions: [] };
+  const rateMap = Object.fromEntries((rates.data ?? []).map((rate) => [rate.currency, rate.rateTwd]));
+  const toTwd = (value: number, currency: string) => currency === "TWD" ? value : value * (rateMap[currency] ?? 0);
+  const deposits = bankData.accounts.filter((account) => account.accountType !== "credit");
+  const cards = bankData.accounts.filter((account) => account.accountType === "credit");
+  const depositTotal = deposits.reduce((sum, account) => sum + toTwd(account.balance ?? 0, account.currency), 0);
+  const cardDebt = cards.reduce((sum, account) => sum + Math.abs(toTwd(account.balance ?? 0, account.currency)), 0);
+  const investmentTotal = (investments.data ?? []).reduce((sum, item) => sum + toTwd((item.marketValue ?? 0) + (item.cashBalance ?? 0), item.currency), 0);
+  const manualTotal = (manualAssets.data ?? []).reduce((sum, item) => sum + (item.value ?? 0), 0);
+  const gross = depositTotal + investmentTotal + manualTotal;
+  const netWorth = gross - cardDebt;
+  const allocation = [
+    { label: "投資", value: investmentTotal, color: "bg-steel", text: "text-steel", detail: `${investments.data?.length ?? 0} 個持倉` },
+    { label: "存款", value: depositTotal, color: "bg-moss", text: "text-moss", detail: `${deposits.length} 個帳戶` },
+    { label: "其他", value: manualTotal, color: "bg-coral", text: "text-coral", detail: "保險、房產" }
+  ];
+  const pct = (value: number) => gross > 0 ? Math.round(value / gross * 100) : 0;
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const monthlyBank = bankData.transactions.filter((transaction) => (transaction.postedDate ?? transaction.authorizedAt ?? "").startsWith(thisMonth) && transaction.accountType !== "credit");
+  const income = monthlyBank.reduce((sum, transaction) => sum + Math.max(transaction.amount, 0), 0);
+  const expense = Math.abs(monthlyBank.reduce((sum, transaction) => sum + Math.min(transaction.amount, 0), 0));
+  const unhealthyJobs = (jobs.data ?? []).filter((job) => job.lastStatus === "failed" || job.lastStatus === "needs_user_action");
+  const sourceCount = Math.max((jobs.data ?? []).length, 4);
+  const healthyCount = Math.max(sourceCount - unhealthyJobs.length, 0);
+  const historyValues = [...(history.data ?? [])].sort((a, b) => a.date.localeCompare(b.date)).slice(-10).map((row) => row.netWorth).filter(Number.isFinite);
+  const bars = historyValues.length >= 3 ? historyValues : [netWorth * .72, netWorth * .78, netWorth * .75, netWorth * .84, netWorth * .9, netWorth * .87, netWorth * .96, netWorth];
+  const maxBar = Math.max(...bars, 1);
+  const accountRows = bankData.accounts.slice(0, 4);
+  const recent = [
+    ...bankData.transactions.map((transaction) => ({ id: transaction.id, date: transaction.postedDate ?? transaction.authorizedAt ?? "", title: transaction.description ?? transaction.counterparty ?? "銀行交易", detail: transaction.institutionName ?? "銀行", amount: transaction.amount, currency: transaction.currency })),
+    ...(trades.data ?? []).map((trade) => ({ id: trade.id, date: trade.tradeDate ?? trade.postedDate ?? "", title: trade.name ?? trade.transactionName ?? "投資交易", detail: trade.brokerName ?? "投資", amount: trade.amount ?? 0, currency: trade.currency })),
+    ...(invoices.data ?? []).map((invoice) => ({ id: invoice.id, date: invoice.invoiceDate, title: invoice.sellerName ?? "電子發票", detail: "電子發票", amount: invoice.amount, currency: "TWD" }))
+  ].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 4);
+
+  return <div className="grid min-w-0 gap-4 md:gap-5">
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.8fr)_minmax(300px,1fr)]">
+      <section className="rounded-2xl bg-ink p-5 text-white md:p-6">
+        <p className="text-xs font-semibold text-white/55">全部資產</p>
+        <p className="mt-3 text-4xl font-bold tracking-tight tabular-nums md:text-[40px]">{formatCurrency(netWorth)}</p>
+        <p className="mt-3 text-sm font-semibold text-emerald-300">淨資產 · 已扣除 {formatCurrency(cardDebt)} 信用卡負債</p>
+        <div className="mt-4 flex h-3 overflow-hidden rounded-full bg-white/10 md:mt-5">
+          {allocation.map((item) => <span className={item.color} key={item.label} style={{ width: `${pct(item.value)}%` }} />)}
+        </div>
+        <p className="mt-3 hidden text-xs text-white/65 md:block">{allocation.map((item) => `${item.label} ${pct(item.value)}%`).join("　")}</p>
+        <div className="mt-3 flex h-14 items-end gap-2 md:hidden">{bars.slice(-9).map((value, index) => <span className="flex-1 rounded-md bg-[#82a6ae]" key={index} style={{height:`${Math.max(24,value/maxBar*100)}%`}} />)}</div>
+      </section>
+      <Card className="hidden xl:block"><CardContent className="pt-6"><h2 className="text-lg font-semibold">同步健康度</h2><p className="mt-3 text-3xl font-bold">{healthyCount} / {sourceCount} 來源正常</p><p className={cn("mt-3 text-sm font-semibold", unhealthyJobs.length ? "text-coral" : "text-moss")}>{unhealthyJobs.length ? `${unhealthyJobs.length} 個來源需要處理` : "所有來源同步正常"}</p><p className="mt-2 text-xs text-ink/45">銀行與發票使用最近同步紀錄</p><Button className="mt-4" onClick={() => onNavigate("settings")} size="sm" variant="secondary">前往同步設定</Button></CardContent></Card>
+    </div>
+
+    <div className="grid grid-cols-3 gap-2 md:grid-cols-4 md:gap-4">
+      {allocation.map((item) => <Card key={item.label}><CardContent className="p-3 md:p-5"><p className={cn("text-2xl font-bold tabular-nums md:hidden",item.text)}>{pct(item.value)}%</p><p className="mt-1 text-xs text-ink/50 md:mt-0">{item.label === "其他" ? "其他資產" : item.label}</p><p className={cn("mt-2 hidden text-2xl font-bold tabular-nums md:block",item.text)}>{formatCurrency(item.value)}</p><p className="mt-1 hidden text-xs text-ink/40 md:block">{item.detail}</p></CardContent></Card>)}
+      <div className="hidden md:block"><WealthMetric label="本月淨流入" value={formatCurrency(income-expense)} detail="收入 − 支出" tone={income>=expense?"positive":"negative"}/></div>
+    </div>
+
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,1.8fr)_minmax(300px,1fr)]">
+      <Card className="hidden xl:block"><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">淨資產趨勢</h2><span className="rounded-full bg-steel/10 px-3 py-1 text-xs font-semibold text-steel">6 個月</span></CardHeader><CardContent><div className="flex h-40 items-end gap-3">{bars.map((value,index)=><span className="flex-1 rounded-t-lg bg-[#82a6ae]" key={index} style={{height:`${Math.max(20,value/maxBar*100)}%`}} />)}</div><p className="mt-3 text-xs text-ink/45">股票、ETF、基金、存款與其他資產</p></CardContent></Card>
+      <Card><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">資產配置</h2><Button onClick={() => onNavigate("assets")} size="sm" variant="ghost">查看全部 →</Button></CardHeader><CardContent className="grid gap-5">{allocation.map((item)=><div key={item.label}><div className="flex items-center justify-between gap-3"><div><span className="text-sm font-semibold">{item.label}</span><span className="ml-2 text-xs text-ink/40">{item.detail}</span></div><span className={cn("text-sm font-bold tabular-nums",item.text)}>{formatCurrency(item.value)}</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-ink/10"><span className={cn("block h-full rounded-full",item.color)} style={{width:`${pct(item.value)}%`}} /></div></div>)}</CardContent></Card>
+    </div>
+
+    {unhealthyJobs.length > 0 && <section className="rounded-2xl bg-amber-50 p-5 text-amber-900 md:hidden"><p className="font-semibold">{unhealthyJobs.length} 個來源需要更新</p><button className="mt-3 text-sm text-amber-800" onClick={() => onNavigate("settings")} type="button">立即處理 →</button></section>}
+
+    <div className="hidden gap-5 xl:grid xl:grid-cols-[minmax(0,1.8fr)_minmax(300px,1fr)]">
+      <Card><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">銀行與信用卡</h2><Button onClick={() => onNavigate("assets")} size="sm" variant="ghost">查看資產 →</Button></CardHeader><CardContent className="grid gap-4">{accountRows.map((account)=><div className="grid grid-cols-[120px_minmax(0,1fr)_auto_auto] gap-3 text-sm" key={account.id}><span className="font-semibold">{account.institutionName ?? account.connectorId}</span><span className="truncate text-ink/45">{account.accountName ?? formatBankAccountName(account)}</span><span className={cn("font-semibold tabular-nums",account.accountType==="credit"&&"text-coral")}>{formatCurrency(account.balance??0,account.currency)}</span><span className="text-xs text-ink/40">{account.asOfAt?formatDate(account.asOfAt):"—"}</span></div>)}</CardContent></Card>
+      <Card><CardHeader><h2 className="text-lg font-semibold">近期活動</h2></CardHeader><CardContent className="grid gap-4">{recent.map((item)=><div className="flex items-center justify-between gap-3 text-sm" key={item.id}><div className="min-w-0"><p className="truncate font-semibold">{item.title}</p><p className="truncate text-xs text-ink/40">{item.detail}</p></div><span className={cn("shrink-0 font-semibold tabular-nums",item.amount<0?"text-coral":"text-moss")}>{formatCurrency(item.amount,item.currency)}</span></div>)}</CardContent></Card>
+    </div>
+  </div>;
+}
+
 function WealthMetric({ label, value, detail, tone = "neutral" }: { label: string; value: string; detail: string; tone?: "neutral" | "positive" | "negative" }) {
   return (
     <Card>
-      <CardContent className="pt-5">
+      <CardContent className="p-4 md:p-5">
         <p className="text-xs font-semibold text-ink/50">{label}</p>
-        <p className={cn("mt-2 break-words text-2xl font-bold tracking-tight tabular-nums", tone === "positive" && "text-moss", tone === "negative" && "text-coral")}>{value}</p>
+        <p className={cn("mt-2 break-words text-xl font-bold tracking-tight tabular-nums md:text-2xl", tone === "positive" && "text-moss", tone === "negative" && "text-coral")}>{value}</p>
         <p className="mt-1 text-xs text-ink/45">{detail}</p>
       </CardContent>
     </Card>
@@ -469,6 +552,10 @@ function AssetsHub({ api, onNavigate }: { api: ApiClient; onNavigate: (view: Vie
     (groups[account.institutionName ?? account.connectorId] ??= []).push(account);
     return groups;
   }, {}));
+  const groupedSources = Object.entries(data.accounts.reduce<Record<string, BankAccountRow[]>>((groups, account) => {
+    (groups[account.institutionName ?? account.connectorId] ??= []).push(account);
+    return groups;
+  }, {}));
 
   const sections: { key: AssetSection; label: string }[] = [
     { key: "all", label: "全部" }, { key: "bank", label: "銀行" }, { key: "cards", label: "信用卡" },
@@ -489,9 +576,9 @@ function AssetsHub({ api, onNavigate }: { api: ApiClient; onNavigate: (view: Vie
         <WealthMetric label="信用卡負債" value={formatCurrency(-cardDebt)} detail={`${cards.length} 張卡片`} tone="negative" />
       </div>
 
-      <div className="no-scrollbar flex gap-2 overflow-x-auto rounded-xl bg-white p-1 shadow-sm md:grid md:grid-cols-5">
+      <div className="grid grid-cols-5 gap-1 rounded-xl bg-white p-1 shadow-sm">
         {sections.map((item) => (
-          <button key={item.key} className={cn("min-h-10 shrink-0 rounded-lg px-4 text-sm font-semibold transition", section === item.key ? "bg-ink text-white" : "text-ink/55 hover:bg-ink/5")} onClick={() => setSection(item.key)} type="button">{item.label}</button>
+          <button key={item.key} className={cn("min-h-10 min-w-0 rounded-lg px-1 text-xs font-semibold transition sm:text-sm", section === item.key ? "bg-ink text-white" : "text-ink/55 hover:bg-ink/5")} onClick={() => setSection(item.key)} type="button">{item.label}</button>
         ))}
       </div>
 
@@ -500,7 +587,14 @@ function AssetsHub({ api, onNavigate }: { api: ApiClient; onNavigate: (view: Vie
       {section === "investments" && <Investments api={api} />}
       {section === "manual-assets" && <ManualAssetsPanel api={api} />}
       {section === "all" && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(300px,0.8fr)]">
+        <div className="grid gap-3 xl:hidden">
+          <Card><CardHeader className="flex-row items-center justify-between py-4"><h2 className="text-lg font-semibold">銀行與現金</h2><button className="text-xs font-semibold text-steel" onClick={()=>setSection("bank")} type="button">淨額 {formatCurrency(bankTotal-cardDebt)}</button></CardHeader><CardContent className="grid gap-2">{groupedSources.slice(0,2).map(([institution,accounts])=><div className="rounded-xl bg-paper p-3" key={institution}><div className="mb-2 flex items-center justify-between"><h3 className="font-semibold">{institution}</h3><span className="text-xs font-medium text-moss">已同步</span></div><div className="grid gap-1.5">{accounts.slice(0,2).map((account)=><div className="flex items-center justify-between gap-3 text-sm" key={account.id}><span className="min-w-0 truncate text-ink/50">{account.accountName??formatBankAccountName(account)}</span><span className={cn("shrink-0 font-semibold tabular-nums",account.accountType==="credit"&&"text-coral")}>{formatCurrency(account.accountType==="credit"?-Math.abs(account.balance??0):account.balance??0,account.currency)}</span></div>)}</div></div>)}</CardContent></Card>
+          <Card><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">投資</h2><span className="text-xs font-semibold text-steel">{grossAssets>0?(investmentTotal/grossAssets*100).toFixed(1):0}%</span></CardHeader><CardContent><button className="flex w-full items-center justify-between gap-4 text-left" onClick={()=>setSection("investments")} type="button"><div><p className="font-semibold">主要投資帳戶</p><p className="text-xs text-ink/45">{investments.data?.length??0} 個持倉 · TDCC</p></div><span className="font-bold tabular-nums text-steel">{formatCurrency(investmentTotal)}</span></button></CardContent></Card>
+          <Card><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">其他資產</h2><span className="font-bold tabular-nums text-moss">{formatCurrency(manualTotal)}</span></CardHeader><CardContent className="pt-0"><button className="text-left text-xs text-ink/45" onClick={()=>setSection("manual-assets")} type="button">保險、房產、交通工具 · 更新估值 →</button></CardContent></Card>
+        </div>
+      )}
+      {section === "all" && (
+        <div className="hidden gap-5 xl:grid xl:grid-cols-[minmax(0,2fr)_minmax(300px,0.8fr)]">
           <div className="grid gap-5">
             <Card>
               <CardHeader className="flex-row items-center justify-between border-b border-ink/8">
@@ -559,20 +653,32 @@ function ActivityHub({ api, onNavigate }: { api: ApiClient; onNavigate: (view: V
   const monthTransactions = bankItems.filter((item) => item.date.slice(0, 7) === currentMonth && item.source === "bank");
   const income = monthTransactions.reduce((sum, item) => sum + Math.max(item.amount ?? 0, 0), 0);
   const expense = Math.abs(monthTransactions.reduce((sum, item) => sum + Math.min(item.amount ?? 0, 0), 0));
+  const pendingCount = bankItems.filter((item) => item.status === "待入帳" || item.category === "其他").length;
+  const monthKeys = Array.from({ length: 6 }, (_, index) => {
+    const date = new Date(); date.setMonth(date.getMonth() - (5 - index)); return date.toISOString().slice(0, 7);
+  });
+  const cashFlow = monthKeys.map((month) => ({
+    month,
+    income: bankItems.filter((item) => item.date.startsWith(month)).reduce((sum, item) => sum + Math.max(item.amount ?? 0, 0), 0),
+    expense: Math.abs(bankItems.filter((item) => item.date.startsWith(month)).reduce((sum, item) => sum + Math.min(item.amount ?? 0, 0), 0))
+  }));
+  const maxCashFlow = Math.max(...cashFlow.flatMap((point) => [point.income, point.expense]), 1);
   const sourceMeta: Record<ActivityItem["source"], { label: string; icon: LucideIcon }> = { bank: { label: "銀行", icon: Building2 }, card: { label: "信用卡", icon: CreditCard }, investment: { label: "投資", icon: TrendingUp }, invoice: { label: "發票", icon: FileText } };
   return (
     <div className="grid gap-5">
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
         <WealthMetric label="本月收入" value={`+${formatCurrency(income)}`} detail="銀行交易" tone="positive" />
         <WealthMetric label="本月支出" value={`−${formatCurrency(expense)}`} detail="不重複計入發票" tone="negative" />
-        <WealthMetric label="本月淨流入" value={formatCurrency(income - expense)} detail="收入 − 支出" tone={income >= expense ? "positive" : "negative"} />
+        <div className="hidden md:block"><WealthMetric label="本月淨流入" value={formatCurrency(income - expense)} detail="收入 − 支出" tone={income >= expense ? "positive" : "negative"} /></div>
+        <div className="hidden md:block"><WealthMetric label="待分類" value={`${pendingCount} 筆`} detail="銀行交易" /></div>
       </div>
+      <Card className="hidden md:block"><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">現金流趨勢</h2><span className="rounded-full bg-steel/10 px-3 py-1 text-xs font-semibold text-steel">6 個月　收入／支出</span></CardHeader><CardContent><div className="flex h-36 items-end justify-around gap-5">{cashFlow.map((point)=><div className="flex h-full flex-1 items-end justify-center gap-2" key={point.month}><span className="w-1/3 rounded-t-lg bg-emerald-700" style={{height:`${Math.max(8,point.income/maxCashFlow*100)}%`}}/><span className="w-1/3 rounded-t-lg bg-coral" style={{height:`${Math.max(8,point.expense/maxCashFlow*100)}%`}}/></div>)}</div><p className="mt-3 text-xs text-ink/45">■ 收入　<span className="text-coral">■ 支出</span>　· 點選月份可查看交易與發票明細</p></CardContent></Card>
       <Card>
         <CardHeader className="gap-3 border-b border-ink/8">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold">所有活動</h2><p className="text-xs text-ink/45">銀行、信用卡、投資與發票</p></div><label className="flex min-h-11 items-center gap-2 rounded-lg border border-ink/10 bg-paper px-3 md:w-80"><AppIcon icon={Search} size="sm" className="text-ink/40"/><input className="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder="搜尋商家、帳戶、品項或分類" value={search} onChange={(event) => setSearch(event.target.value)} /></label></div>
-          <div className="no-scrollbar flex gap-2 overflow-x-auto">{([{ key: "all", label: "全部" }, { key: "bank", label: "銀行" }, { key: "card", label: "信用卡" }, { key: "investment", label: "投資" }, { key: "invoice", label: "發票" }] as const).map((filter) => <button className={cn("min-h-10 shrink-0 rounded-lg px-4 text-sm font-semibold", source === filter.key ? "bg-ink text-white" : "bg-paper text-ink/55")} key={filter.key} onClick={() => setSource(filter.key)} type="button">{filter.label}</button>)}</div>
+          <div className="grid grid-cols-5 gap-1">{([{ key: "all", label: "全部" }, { key: "bank", label: "銀行" }, { key: "card", label: "信用卡" }, { key: "investment", label: "投資" }, { key: "invoice", label: "發票" }] as const).map((filter) => <button className={cn("min-h-10 min-w-0 rounded-lg px-1 text-xs font-semibold md:text-sm", source === filter.key ? "bg-ink text-white" : "bg-paper text-ink/55")} key={filter.key} onClick={() => setSource(filter.key)} type="button">{filter.label}</button>)}</div>
         </CardHeader>
-        <div className="divide-y divide-ink/8 md:hidden">{items.length === 0 ? <p className="p-8 text-center text-sm text-ink/50">沒有符合條件的活動。</p> : items.slice(0, 100).map((item) => { const meta=sourceMeta[item.source]; return <div className="flex items-center gap-3 px-4 py-3" key={item.id}><span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel"><AppIcon icon={meta.icon} size="lg"/></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{item.title}</p><p className="truncate text-xs text-ink/45">{meta.label} · {item.category}</p></div><div className="text-right"><p className={cn("text-sm font-semibold tabular-nums", item.amount != null && item.amount < 0 ? "text-coral" : item.source !== "invoice" && "text-moss")}>{item.amount == null ? "—" : formatCurrency(item.amount,item.currency)}</p><p className="text-[11px] text-ink/40">{formatDate(item.date)}</p></div></div>; })}</div>
+        <div className="divide-y divide-ink/8 md:hidden">{items.length === 0 ? <p className="p-8 text-center text-sm text-ink/50">沒有符合條件的活動。</p> : items.slice(0, 7).map((item) => { const meta=sourceMeta[item.source]; return <div className="flex items-center gap-3 px-4 py-3" key={item.id}><span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel"><AppIcon icon={meta.icon} size="lg"/></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{item.title}</p><p className="truncate text-xs text-ink/45">{meta.label} · {item.category}</p></div><div className="text-right"><p className={cn("text-sm font-semibold tabular-nums", item.amount != null && item.amount < 0 ? "text-coral" : item.source !== "invoice" && "text-moss")}>{item.amount == null ? "—" : formatCurrency(item.amount,item.currency)}</p><p className="text-[11px] text-ink/40">{formatDate(item.date)}</p></div></div>; })}</div>
         <div className="hidden md:block"><Table bare columns={["日期","來源","說明／商家","分類","金額","狀態"]} rows={items.slice(0,100).map((item)=>[formatDate(item.date),sourceMeta[item.source].label,<span className="block max-w-xs truncate">{item.title}<span className="block text-xs font-normal text-ink/40">{item.subtitle}</span></span>,item.category,item.amount == null?"—":<span className={item.amount<0?"text-coral":"text-moss"}>{formatCurrency(item.amount,item.currency)}</span>,item.status])} empty="沒有符合條件的活動。"/></div>
       </Card>
       <div className="flex justify-end"><Button variant="ghost" onClick={() => onNavigate("invoices")}>查看完整發票明細 →</Button></div>
@@ -592,7 +698,7 @@ function ApiProvider({
   onNavigate: (v: View) => void;
 }) {
   if (view === "overview") {
-    return <Dashboard api={api} onNavigate={onNavigate} />;
+    return <WealthOverview api={api} onNavigate={onNavigate} />;
   }
 
   if (view === "activity") {
@@ -4725,11 +4831,10 @@ function isApiError(value: unknown): value is ApiError {
 
 function formatCurrency(value: number, currency = "TWD") {
   if (moneyValuesHidden) return "••••••";
-  return new Intl.NumberFormat("zh-TW", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 0
-  }).format(value);
+  const sign = value < 0 ? "−" : "";
+  const number = new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 }).format(Math.abs(value));
+  const symbols: Record<string, string> = { TWD: "NT$", USD: "US$", JPY: "JP¥", EUR: "€" };
+  return `${sign}${symbols[currency] ?? `${currency} `}${number}`;
 }
 
 function formatCompactTwd(value: number) {
