@@ -8,9 +8,13 @@ import {
   ChevronDown,
   CreditCard,
   Database,
+  Eye,
+  EyeOff,
   FileText,
+  History,
   KeyRound,
   Landmark,
+  Menu,
   Pencil,
   Plus,
   RefreshCw,
@@ -22,8 +26,13 @@ import {
   TrendingUp,
   WalletCards
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Button } from "./components/ui/button";
+import { Card, CardContent, CardHeader } from "./components/ui/card";
+import { AppIcon } from "./components/ui/icon";
+import { cn } from "./lib/utils";
 import "./styles.css";
 
 interface NetWorthHistoryRow {
@@ -54,7 +63,22 @@ interface ManualAssetHistoryEntry {
   value: number;
 }
 
-type View = "dashboard" | "invoices" | "investments" | "cards" | "bank" | "assets" | "settings";
+export type PrimaryView = "overview" | "assets" | "activity" | "invoices" | "settings";
+type DetailView = "bank" | "cards" | "investments" | "manual-assets";
+type View = PrimaryView | DetailView;
+export type AssetSection = "all" | "bank" | "cards" | "investments" | "manual-assets";
+export interface MoneyVisibilityState { hidden: boolean; }
+export interface ActivityItem {
+  id: string;
+  source: "bank" | "card" | "investment" | "invoice";
+  date: string;
+  title: string;
+  subtitle: string;
+  amount?: number;
+  currency: string;
+  category: string;
+  status: string;
+}
 type ConnectorId = "einvoice" | "tdcc" | "esun" | "cathaybk";
 type SyncTarget = "default" | "investments" | "bank" | "trades";
 
@@ -226,66 +250,106 @@ interface RuntimeInfo {
 const queryClient = new QueryClient();
 const totalAssetsScopeStorageKey = "taiwan-fin-hub-total-assets-scope";
 const netWorthChartIncludedAssetsStorageKey = "taiwan-fin-hub-net-worth-chart-included-assets";
+const moneyVisibilityStorageKey = "taiwan-fin-hub-money-hidden";
+let moneyValuesHidden = false;
 
 const navItems: {
-  view: View;
+  view: PrimaryView;
   label: string;
   shortLabel: string;
   description: string;
-  icon: ReactNode;
+  icon: LucideIcon;
 }[] = [
-  { view: "dashboard", label: "總覽", shortLabel: "總覽", description: "資產、現金流與最近交易集中檢視。", icon: <BarChart3 /> },
-  { view: "invoices", label: "發票", shortLabel: "發票", description: "搜尋電子發票、商家與品項明細。", icon: <FileText /> },
-  { view: "investments", label: "投資", shortLabel: "投資", description: "追蹤 TDCC 持倉與交易歷史。", icon: <WalletCards /> },
-  { view: "cards", label: "信用卡", shortLabel: "卡片", description: "查看信用卡帳戶與刷卡交易。", icon: <CreditCard /> },
-  { view: "bank", label: "銀行", shortLabel: "銀行", description: "管理銀行帳戶餘額與交易流水。", icon: <Building2 /> },
-  { view: "assets", label: "其他資產", shortLabel: "資產", description: "維護保險、不動產、交通工具與其他資產估值。", icon: <Landmark /> },
-  { view: "settings", label: "設定", shortLabel: "設定", description: "設定連接器、同步資料與匯率。", icon: <Settings /> }
+  { view: "overview", label: "總覽", shortLabel: "總覽", description: "淨資產、同步健康度與近期財務活動。", icon: BarChart3 },
+  { view: "assets", label: "資產", shortLabel: "資產", description: "銀行、信用卡、投資與其他資產集中管理。", icon: WalletCards },
+  { view: "activity", label: "活動", shortLabel: "活動", description: "銀行、刷卡、投資與發票的統一時間軸。", icon: History },
+  { view: "invoices", label: "發票", shortLabel: "發票", description: "搜尋電子發票、商家與品項明細。", icon: FileText },
+  { view: "settings", label: "設定", shortLabel: "設定", description: "設定連接器、同步資料與匯率。", icon: Settings }
 ];
 
+const mobilePrimaryViews: PrimaryView[] = ["overview", "assets", "activity"];
+
+const detailLabels: Record<DetailView, { label: string; description: string }> = {
+  bank: { label: "銀行帳戶", description: "帳戶餘額、現金流與交易分類。" },
+  cards: { label: "信用卡", description: "信用卡帳戶、帳單與刷卡紀錄。" },
+  investments: { label: "投資", description: "投資持倉與交易紀錄。" },
+  "manual-assets": { label: "其他資產", description: "保險、不動產、交通工具與估值紀錄。" }
+};
+
 function App() {
-  const [view, setView] = useState<View>("dashboard");
-  const currentView = navItems.find((item) => item.view === view) ?? navItems[0]!;
+  const [view, setView] = useState<View>("overview");
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const [moneyVisibility, setMoneyVisibility] = useState<MoneyVisibilityState>(() => ({
+    hidden: localStorage.getItem(moneyVisibilityStorageKey) === "true"
+  }));
+  moneyValuesHidden = moneyVisibility.hidden;
+  const primaryView: PrimaryView = view in detailLabels ? "assets" : view as PrimaryView;
+  const currentView = navItems.find((item) => item.view === primaryView) ?? navItems[0]!;
+  const detail = view in detailLabels ? detailLabels[view as DetailView] : undefined;
+
+  function navigate(next: View) {
+    setView(next);
+    setMobileMoreOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function toggleMoneyVisibility() {
+    setMoneyVisibility((current) => {
+      const hidden = !current.hidden;
+      localStorage.setItem(moneyVisibilityStorageKey, String(hidden));
+      return { hidden };
+    });
+  }
 
   return (
     <QueryClientProvider client={queryClient}>
-      <div className="min-h-screen bg-paper text-ink lg:grid lg:grid-cols-[272px_minmax(0,1fr)]">
-        <aside className="hidden border-r border-ink/10 bg-white/90 px-4 py-5 shadow-sm lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
+      <div className="min-h-screen bg-paper text-ink xl:grid xl:grid-cols-[240px_minmax(0,1fr)]">
+        <aside className="hidden border-r border-white/10 bg-ink px-6 py-7 text-white xl:sticky xl:top-0 xl:flex xl:h-screen xl:flex-col">
           <div className="px-2">
             <h1 className="text-xl font-semibold tracking-normal">Taiwan Fin Hub</h1>
-            <p className="mt-1 text-sm text-ink/55">個人財務工作區</p>
+            <p className="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-steel/90">Wealth OS</p>
           </div>
           <nav className="mt-6 grid gap-1">
             {navItems.map((item) => (
               <NavButton
                 key={item.view}
-                active={view === item.view}
+                active={primaryView === item.view}
                 icon={item.icon}
                 label={item.label}
-                onClick={() => setView(item.view)}
+                onClick={() => navigate(item.view)}
+                darkSurface
               />
             ))}
           </nav>
         </aside>
 
-        <div className="min-w-0 pb-20 lg:pb-0">
-          <header className="sticky top-0 z-20 border-b border-ink/10 bg-white/92 backdrop-blur lg:static lg:bg-transparent lg:backdrop-blur-0">
-            <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-4 sm:px-6 lg:px-8">
+        <div className="min-w-0 pb-20 md:pb-0">
+          <div className="no-scrollbar hidden border-b border-ink/10 bg-white px-4 py-2 md:flex md:gap-1 md:overflow-x-auto xl:hidden">
+            {navItems.map((item) => <NavButton key={item.view} active={primaryView === item.view} icon={item.icon} label={item.label} onClick={() => navigate(item.view)} />)}
+          </div>
+          <header className="sticky top-0 z-20 border-b border-ink/10 bg-white/95 backdrop-blur xl:static xl:bg-transparent xl:backdrop-blur-0">
+            <div className="mx-auto flex max-w-[1440px] flex-col gap-3 px-4 py-4 sm:px-6 xl:px-8 xl:py-6">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="hidden text-xs font-medium uppercase text-ink/40 lg:block">Taiwan Fin Hub</p>
-                  <h1 className="truncate text-2xl font-semibold tracking-normal lg:text-3xl">{currentView.label}</h1>
-                  <p className="mt-1 hidden text-sm text-ink/55 sm:block">{currentView.description}</p>
+                  {detail && <button className="mb-1 inline-flex items-center gap-1 text-xs font-medium text-steel" onClick={() => navigate("assets")} type="button">← 返回資產</button>}
+                  <h1 className="truncate text-2xl font-semibold tracking-tight xl:text-3xl">{detail?.label ?? currentView.label}</h1>
+                  <p className="mt-1 hidden text-sm text-ink/55 sm:block">{detail?.description ?? currentView.description}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button aria-label={moneyVisibility.hidden ? "顯示金額" : "隱藏金額"} onClick={toggleMoneyVisibility} size="icon" variant="secondary">
+                    <AppIcon icon={moneyVisibility.hidden ? Eye : EyeOff} size="lg" />
+                  </Button>
+                  <Button className="hidden sm:inline-flex" onClick={() => queryClient.invalidateQueries()} variant="primary"><AppIcon icon={RefreshCw} size="sm" />同步資料</Button>
                 </div>
               </div>
             </div>
           </header>
 
-          <main className="mx-auto max-w-7xl px-4 py-5 sm:px-6 lg:px-8 lg:py-8">
-            <RuntimeAwareContent view={view} onNavigate={setView} />
+          <main className="mx-auto max-w-[1440px] px-4 py-5 sm:px-6 xl:px-8 xl:py-6">
+            <RuntimeAwareContent view={view} onNavigate={navigate} />
           </main>
 
-          <footer className="mx-auto max-w-7xl border-t border-ink/8 px-4 py-6 sm:px-6 lg:px-8">
+          <footer className="mx-auto max-w-[1440px] border-t border-ink/8 px-4 py-6 sm:px-6 xl:px-8">
             <p className="text-xs leading-relaxed text-ink/35">
               <strong className="font-medium text-ink/50">免責聲明：</strong>
               本程式僅供個人研究與自用，未與臺灣集中保管結算所、財政部、金融監督管理委員會、各銀行或任何金融機構合作，亦未獲前述機構授權或背書。本程式所呈現之資料以您自行提供之憑證取得，作者不保證資料之即時性、正確性與完整性，亦不對因使用本程式所產生之任何直接或間接損失負責。請勿將本程式用於任何商業用途。
@@ -293,16 +357,46 @@ function App() {
           </footer>
         </div>
 
-        <nav className="fixed inset-x-0 bottom-0 z-30 flex gap-1 overflow-x-auto border-t border-ink/10 bg-white/95 px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 shadow-[0_-8px_28px_rgba(31,41,51,0.08)] backdrop-blur lg:hidden">
-          {navItems.map((item) => (
+        {mobileMoreOpen && (
+          <div className="fixed inset-0 z-40 md:hidden" role="presentation" onClick={() => setMobileMoreOpen(false)}>
+            <div className="absolute inset-0 bg-ink/30 backdrop-blur-[2px]" />
+            <section
+              aria-label="更多功能"
+              className="absolute inset-x-3 bottom-[calc(5.25rem+env(safe-area-inset-bottom))] rounded-2xl border border-ink/10 bg-white p-3 shadow-xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <p className="px-2 pb-2 pt-1 text-xs font-semibold uppercase tracking-wider text-ink/45">更多功能</p>
+              <div className="grid gap-2">
+                {navItems.filter((item) => item.view === "settings").map((item) => (
+                  <Button
+                    className="h-12 justify-start [&_svg]:size-5"
+                    key={item.view}
+                    onClick={() => navigate(item.view)}
+                    variant={primaryView === item.view ? "default" : "ghost"}
+                  >
+                    <AppIcon icon={item.icon} size="lg" />
+                    {item.label}
+                  </Button>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
+
+        <nav aria-label="主要導覽" className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 gap-1 border-t border-ink/10 bg-ink px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 text-white shadow-[0_-8px_28px_rgba(31,41,51,0.12)] md:hidden">
+          {mobilePrimaryViews.map((mobileView) => {
+            const item = navItems.find((candidate) => candidate.view === mobileView)!;
+            return (
             <BottomNavButton
               key={item.view}
-              active={view === item.view}
+              active={primaryView === item.view}
               icon={item.icon}
               label={item.shortLabel}
-              onClick={() => setView(item.view)}
+              onClick={() => navigate(item.view)}
             />
-          ))}
+            );
+          })}
+          <BottomNavButton active={mobileMoreOpen || !mobilePrimaryViews.includes(primaryView)} icon={Menu} label="更多" onClick={() => setMobileMoreOpen((open) => !open)} />
         </nav>
       </div>
     </QueryClientProvider>
@@ -318,7 +412,7 @@ function RuntimeAwareContent({ view, onNavigate }: { view: View; onNavigate: (v:
   const demoMode = runtime.data?.demoMode === true;
 
   return (
-    <div className="grid gap-5">
+    <div className="grid min-w-0 max-w-full gap-5 overflow-x-hidden">
       {demoMode && <DemoBanner />}
       <ApiProvider api={api} demoMode={demoMode} view={view} onNavigate={onNavigate} />
     </div>
@@ -337,6 +431,155 @@ function DemoBanner() {
   );
 }
 
+function WealthMetric({ label, value, detail, tone = "neutral" }: { label: string; value: string; detail: string; tone?: "neutral" | "positive" | "negative" }) {
+  return (
+    <Card>
+      <CardContent className="pt-5">
+        <p className="text-xs font-semibold text-ink/50">{label}</p>
+        <p className={cn("mt-2 break-words text-2xl font-bold tracking-tight tabular-nums", tone === "positive" && "text-moss", tone === "negative" && "text-coral")}>{value}</p>
+        <p className="mt-1 text-xs text-ink/45">{detail}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function AssetsHub({ api, onNavigate }: { api: ApiClient; onNavigate: (view: View) => void }) {
+  const [section, setSection] = useState<AssetSection>("all");
+  const bank = useQuery({ queryKey: ["bank"], queryFn: () => api.get<BankData>("/api/bank") });
+  const investments = useQuery({ queryKey: ["investments"], queryFn: () => api.get<InvestmentRow[]>("/api/investments") });
+  const manualAssets = useQuery({ queryKey: ["manualAssets"], queryFn: () => api.get<ManualAssetRow[]>("/api/manual-assets") });
+  const fxRates = useQuery({ queryKey: ["exchange-rates"], queryFn: () => api.get<ExchangeRateRow[]>("/api/exchange-rates") });
+
+  if (bank.isLoading || investments.isLoading || manualAssets.isLoading) return <EmptyState title="載入資產中" body="正在彙整銀行、信用卡、投資與其他資產。" />;
+  const error = bank.error ?? investments.error ?? manualAssets.error;
+  if (error) return <EmptyState title="無法載入資產" body={messageFromError(error)} />;
+
+  const data = bank.data ?? { accounts: [], transactions: [] };
+  const rateMap = Object.fromEntries((fxRates.data ?? []).map((rate) => [rate.currency, rate.rateTwd]));
+  const toTwd = (value: number, currency: string) => currency === "TWD" ? value : value * (rateMap[currency] ?? 0);
+  const depositAccounts = data.accounts.filter((account) => account.accountType !== "credit");
+  const cards = data.accounts.filter((account) => account.accountType === "credit");
+  const bankTotal = depositAccounts.reduce((sum, account) => sum + toTwd(account.balance ?? 0, account.currency), 0);
+  const cardDebt = cards.reduce((sum, account) => sum + Math.abs(toTwd(account.balance ?? 0, account.currency)), 0);
+  const investmentTotal = (investments.data ?? []).reduce((sum, item) => sum + toTwd((item.marketValue ?? 0) + (item.cashBalance ?? 0), item.currency), 0);
+  const manualTotal = (manualAssets.data ?? []).reduce((sum, item) => sum + (item.value ?? 0), 0);
+  const grossAssets = bankTotal + investmentTotal + manualTotal;
+  const netWorth = grossAssets - cardDebt;
+  const groupedBanks = Object.entries(depositAccounts.reduce<Record<string, BankAccountRow[]>>((groups, account) => {
+    (groups[account.institutionName ?? account.connectorId] ??= []).push(account);
+    return groups;
+  }, {}));
+
+  const sections: { key: AssetSection; label: string }[] = [
+    { key: "all", label: "全部" }, { key: "bank", label: "銀行" }, { key: "cards", label: "信用卡" },
+    { key: "investments", label: "投資" }, { key: "manual-assets", label: "其他資產" }
+  ];
+
+  return (
+    <div className="grid min-w-0 max-w-full gap-5">
+      <section className="rounded-2xl bg-ink p-5 text-white shadow-sm md:hidden">
+        <p className="text-xs font-semibold uppercase tracking-wider text-white/60">全部資產</p>
+        <p className="mt-2 text-3xl font-bold tracking-tight tabular-nums">{formatCurrency(netWorth)}</p>
+        <p className="mt-2 text-xs text-emerald-300">淨資產 · 已扣除信用卡負債</p>
+      </section>
+      <div className="hidden gap-4 md:grid md:grid-cols-2 xl:grid-cols-4">
+        <WealthMetric label="資產總額" value={formatCurrency(grossAssets)} detail="不含信用卡負債" />
+        <WealthMetric label="銀行與現金" value={formatCurrency(bankTotal)} detail={`${depositAccounts.length} 個帳戶`} tone="positive" />
+        <WealthMetric label="投資" value={formatCurrency(investmentTotal)} detail={`${investments.data?.length ?? 0} 個持倉`} />
+        <WealthMetric label="信用卡負債" value={formatCurrency(-cardDebt)} detail={`${cards.length} 張卡片`} tone="negative" />
+      </div>
+
+      <div className="no-scrollbar flex gap-2 overflow-x-auto rounded-xl bg-white p-1 shadow-sm md:grid md:grid-cols-5">
+        {sections.map((item) => (
+          <button key={item.key} className={cn("min-h-10 shrink-0 rounded-lg px-4 text-sm font-semibold transition", section === item.key ? "bg-ink text-white" : "text-ink/55 hover:bg-ink/5")} onClick={() => setSection(item.key)} type="button">{item.label}</button>
+        ))}
+      </div>
+
+      {section === "bank" && <Bank api={api} onNavigate={onNavigate} />}
+      {section === "cards" && <Cards api={api} />}
+      {section === "investments" && <Investments api={api} />}
+      {section === "manual-assets" && <ManualAssetsPanel api={api} />}
+      {section === "all" && (
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(300px,0.8fr)]">
+          <div className="grid gap-5">
+            <Card>
+              <CardHeader className="flex-row items-center justify-between border-b border-ink/8">
+                <div><h2 className="text-lg font-semibold">銀行帳戶</h2><p className="text-xs text-ink/45">{depositAccounts.length} 個帳戶</p></div>
+                <Button onClick={() => setSection("bank")} size="sm" variant="ghost">查看交易 →</Button>
+              </CardHeader>
+              <div className="divide-y divide-ink/8">
+                {groupedBanks.length === 0 ? <p className="p-6 text-center text-sm text-ink/50">尚無銀行資料。</p> : groupedBanks.map(([institution, accounts]) => (
+                  <div className="p-4" key={institution}>
+                    <div className="mb-2 flex items-center justify-between gap-3"><h3 className="font-semibold">{institution}</h3><span className="text-xs font-medium text-moss">已同步</span></div>
+                    <div className="grid gap-2">
+                      {accounts.map((account) => <div className="flex items-center justify-between gap-4 text-sm" key={account.id}><span className="min-w-0 truncate text-ink/60">{account.accountName ?? formatBankAccountName(account)}</span><span className="shrink-0 font-semibold tabular-nums">{formatCurrency(account.balance ?? 0, account.currency)}</span></div>)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+            <Card>
+              <CardHeader className="flex-row items-center justify-between border-b border-ink/8"><div><h2 className="text-lg font-semibold">投資持倉</h2><p className="text-xs text-ink/45">市值 {formatCurrency(investmentTotal)}</p></div><Button onClick={() => setSection("investments")} size="sm" variant="ghost">查看全部 →</Button></CardHeader>
+              <div className="divide-y divide-ink/8">
+                {(investments.data ?? []).slice(0, 5).map((item) => <div className="grid grid-cols-[64px_minmax(0,1fr)_auto] items-center gap-3 px-5 py-3 text-sm" key={item.id}><span className="font-semibold text-steel">{item.symbol ?? item.assetType.toUpperCase()}</span><span className="min-w-0 truncate font-medium">{item.name}</span><span className="font-semibold tabular-nums">{formatCurrency((item.marketValue ?? 0) + (item.cashBalance ?? 0), item.currency)}</span></div>)}
+              </div>
+            </Card>
+          </div>
+          <div className="grid content-start gap-5">
+            <Card><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">信用卡</h2><Button onClick={() => setSection("cards")} size="sm" variant="ghost">查看交易 →</Button></CardHeader><CardContent><div className="rounded-xl bg-ink p-4 text-white"><p className="text-xs text-white/60">目前負債</p><p className="mt-2 text-2xl font-bold tabular-nums">{formatCurrency(cardDebt)}</p><p className="mt-2 text-xs text-white/55">{cards.length} 張卡片</p></div></CardContent></Card>
+            <Card><CardHeader className="flex-row items-center justify-between"><h2 className="text-lg font-semibold">其他資產</h2><Button onClick={() => setSection("manual-assets")} size="sm" variant="ghost">更新估值</Button></CardHeader><CardContent><p className="text-2xl font-bold tabular-nums text-moss">{formatCurrency(manualTotal)}</p><p className="mt-2 text-xs text-ink/45">保險、不動產、交通工具與其他</p></CardContent></Card>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActivityHub({ api, onNavigate }: { api: ApiClient; onNavigate: (view: View) => void }) {
+  const [source, setSource] = useState<"all" | ActivityItem["source"]>("all");
+  const [search, setSearch] = useState("");
+  const bank = useQuery({ queryKey: ["bank"], queryFn: () => api.get<BankData>("/api/bank") });
+  const invoices = useQuery({ queryKey: ["invoices"], queryFn: () => api.get<InvoiceRow[]>("/api/invoices") });
+  const trades = useQuery({ queryKey: ["investment-transactions"], queryFn: () => api.get<InvestmentTransactionRow[]>("/api/investment-transactions") });
+  if (bank.isLoading || invoices.isLoading || trades.isLoading) return <EmptyState title="載入活動中" body="正在彙整所有資料來源。" />;
+  const error = bank.error ?? invoices.error ?? trades.error;
+  if (error) return <EmptyState title="無法載入活動" body={messageFromError(error)} />;
+  const accounts = new Map((bank.data?.accounts ?? []).map((account) => [account.id, account]));
+  const bankItems: ActivityItem[] = (bank.data?.transactions ?? []).map((transaction) => {
+    const account = accounts.get(transaction.accountId);
+    const isCard = account?.accountType === "credit" || transaction.accountType === "credit";
+    return { id: `bank-${transaction.id}`, source: isCard ? "card" : "bank", date: transaction.postedDate ?? transaction.authorizedAt ?? "", title: transaction.description ?? transaction.counterparty ?? "交易", subtitle: [transaction.institutionName ?? account?.institutionName, transaction.accountName ?? account?.accountName].filter(Boolean).join(" · "), amount: transaction.amount, currency: transaction.currency, category: transaction.classification?.label ?? categorizeBankTransaction(transaction).label, status: transaction.status === "pending" ? "待入帳" : "已入帳" };
+  });
+  const tradeItems: ActivityItem[] = (trades.data ?? []).map((trade) => ({ id: `trade-${trade.id}`, source: "investment", date: trade.tradeDate ?? trade.postedDate ?? "", title: trade.name ?? trade.transactionName ?? trade.symbol ?? "投資交易", subtitle: [trade.brokerName, trade.transactionName].filter(Boolean).join(" · "), amount: trade.amount, currency: trade.currency, category: "投資", status: trade.transactionName ?? "已入帳" }));
+  const invoiceItems: ActivityItem[] = (invoices.data ?? []).map((invoice) => ({ id: `invoice-${invoice.id}`, source: "invoice", date: invoice.invoiceDate, title: invoice.sellerName ?? "電子發票", subtitle: invoice.items?.[0]?.description ?? invoice.invoiceNumber ?? "電子發票", amount: invoice.amount, currency: "TWD", category: "發票", status: invoice.items?.length ? `明細 ${invoice.items.length} 項` : "已同步" }));
+  const allItems = [...bankItems, ...tradeItems, ...invoiceItems].sort((a, b) => b.date.localeCompare(a.date));
+  const q = search.trim().toLocaleLowerCase("zh-TW");
+  const items = allItems.filter((item) => (source === "all" || item.source === source) && (!q || `${item.title} ${item.subtitle} ${item.category}`.toLocaleLowerCase("zh-TW").includes(q)));
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const monthTransactions = bankItems.filter((item) => item.date.slice(0, 7) === currentMonth && item.source === "bank");
+  const income = monthTransactions.reduce((sum, item) => sum + Math.max(item.amount ?? 0, 0), 0);
+  const expense = Math.abs(monthTransactions.reduce((sum, item) => sum + Math.min(item.amount ?? 0, 0), 0));
+  const sourceMeta: Record<ActivityItem["source"], { label: string; icon: LucideIcon }> = { bank: { label: "銀行", icon: Building2 }, card: { label: "信用卡", icon: CreditCard }, investment: { label: "投資", icon: TrendingUp }, invoice: { label: "發票", icon: FileText } };
+  return (
+    <div className="grid gap-5">
+      <div className="grid gap-4 md:grid-cols-3">
+        <WealthMetric label="本月收入" value={`+${formatCurrency(income)}`} detail="銀行交易" tone="positive" />
+        <WealthMetric label="本月支出" value={`−${formatCurrency(expense)}`} detail="不重複計入發票" tone="negative" />
+        <WealthMetric label="本月淨流入" value={formatCurrency(income - expense)} detail="收入 − 支出" tone={income >= expense ? "positive" : "negative"} />
+      </div>
+      <Card>
+        <CardHeader className="gap-3 border-b border-ink/8">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><h2 className="text-lg font-semibold">所有活動</h2><p className="text-xs text-ink/45">銀行、信用卡、投資與發票</p></div><label className="flex min-h-11 items-center gap-2 rounded-lg border border-ink/10 bg-paper px-3 md:w-80"><AppIcon icon={Search} size="sm" className="text-ink/40"/><input className="min-w-0 flex-1 bg-transparent text-sm outline-none" placeholder="搜尋商家、帳戶、品項或分類" value={search} onChange={(event) => setSearch(event.target.value)} /></label></div>
+          <div className="no-scrollbar flex gap-2 overflow-x-auto">{([{ key: "all", label: "全部" }, { key: "bank", label: "銀行" }, { key: "card", label: "信用卡" }, { key: "investment", label: "投資" }, { key: "invoice", label: "發票" }] as const).map((filter) => <button className={cn("min-h-10 shrink-0 rounded-lg px-4 text-sm font-semibold", source === filter.key ? "bg-ink text-white" : "bg-paper text-ink/55")} key={filter.key} onClick={() => setSource(filter.key)} type="button">{filter.label}</button>)}</div>
+        </CardHeader>
+        <div className="divide-y divide-ink/8 md:hidden">{items.length === 0 ? <p className="p-8 text-center text-sm text-ink/50">沒有符合條件的活動。</p> : items.slice(0, 100).map((item) => { const meta=sourceMeta[item.source]; return <div className="flex items-center gap-3 px-4 py-3" key={item.id}><span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel"><AppIcon icon={meta.icon} size="lg"/></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{item.title}</p><p className="truncate text-xs text-ink/45">{meta.label} · {item.category}</p></div><div className="text-right"><p className={cn("text-sm font-semibold tabular-nums", item.amount != null && item.amount < 0 ? "text-coral" : item.source !== "invoice" && "text-moss")}>{item.amount == null ? "—" : formatCurrency(item.amount,item.currency)}</p><p className="text-[11px] text-ink/40">{formatDate(item.date)}</p></div></div>; })}</div>
+        <div className="hidden md:block"><Table bare columns={["日期","來源","說明／商家","分類","金額","狀態"]} rows={items.slice(0,100).map((item)=>[formatDate(item.date),sourceMeta[item.source].label,<span className="block max-w-xs truncate">{item.title}<span className="block text-xs font-normal text-ink/40">{item.subtitle}</span></span>,item.category,item.amount == null?"—":<span className={item.amount<0?"text-coral":"text-moss"}>{formatCurrency(item.amount,item.currency)}</span>,item.status])} empty="沒有符合條件的活動。"/></div>
+      </Card>
+      <div className="flex justify-end"><Button variant="ghost" onClick={() => onNavigate("invoices")}>查看完整發票明細 →</Button></div>
+    </div>
+  );
+}
+
 function ApiProvider({
   api,
   demoMode,
@@ -348,8 +591,12 @@ function ApiProvider({
   view: View;
   onNavigate: (v: View) => void;
 }) {
-  if (view === "dashboard") {
+  if (view === "overview") {
     return <Dashboard api={api} onNavigate={onNavigate} />;
+  }
+
+  if (view === "activity") {
+    return <ActivityHub api={api} onNavigate={onNavigate} />;
   }
 
   if (view === "invoices") {
@@ -369,11 +616,11 @@ function ApiProvider({
   }
 
   if (view === "assets") {
-    return (
-      <div className="grid gap-6">
-        <ManualAssetsPanel api={api} />
-      </div>
-    );
+    return <AssetsHub api={api} onNavigate={onNavigate} />;
+  }
+
+  if (view === "manual-assets") {
+    return <ManualAssetsPanel api={api} />;
   }
 
   return <SettingsView api={api} demoMode={demoMode} />;
@@ -535,6 +782,7 @@ function Dashboard({ api, onNavigate }: { api: ApiClient; onNavigate: (v: View) 
             <div className="divide-y divide-ink/8">
               {recentTxns.map((txn) => {
                 const date = txn.postedDate ?? txn.authorizedAt;
+                const formattedDate = formatDate(date);
                 const isCredit = txn.amount > 0;
                 return (
                   <div key={txn.id} className="flex items-center gap-3 px-5 py-3">
@@ -544,7 +792,7 @@ function Dashboard({ api, onNavigate }: { api: ApiClient; onNavigate: (v: View) 
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{txn.description ?? txn.counterparty ?? "交易"}</p>
                       <p className="text-xs text-ink/45">
-                        {formatBankAccountName(txn) || txn.institutionName || ""}{date ? ` · ${formatDate(date)}` : ""}
+                        {formatBankAccountName(txn) || txn.institutionName || ""}{formattedDate ? ` · ${formattedDate}` : ""}
                       </p>
                     </div>
                     <p className={`shrink-0 text-sm font-semibold tabular-nums ${isCredit ? "text-emerald-600" : "text-red-500"}`}>
@@ -779,19 +1027,18 @@ function ManualAssetsPanel({ api }: { api: ApiClient }) {
   });
 
   return (
-    <section className="rounded-xl border border-ink/10 bg-white shadow-sm">
-      <div className="flex items-center justify-between border-b border-ink/8 px-5 py-4">
+    <Card as="section">
+      <CardHeader className="flex-row items-center justify-between border-b border-ink/8 py-4">
         <div className="flex items-center gap-2">
-          <Landmark className="h-4 w-4 text-steel" />
+          <AppIcon className="text-steel" icon={Landmark} size="lg" />
           <h2 className="text-base font-semibold">其他資產</h2>
         </div>
         {!adding && (
-          <button type="button" onClick={() => setAdding(true)}
-            className="flex items-center gap-1 rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white hover:bg-ink/80">
-            <Plus className="h-3.5 w-3.5" /> 新增
-          </button>
+          <Button type="button" onClick={() => setAdding(true)} size="sm">
+            <AppIcon icon={Plus} size="sm" /> 新增
+          </Button>
         )}
-      </div>
+      </CardHeader>
 
       {adding && (
         <div className="flex flex-wrap items-end gap-3 border-b border-ink/8 px-5 py-4">
@@ -837,7 +1084,7 @@ function ManualAssetsPanel({ api }: { api: ApiClient }) {
           ))}
         </div>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -2138,7 +2385,7 @@ function Investments({ api }: { api: ApiClient }) {
   }
 
   return (
-    <section className="grid gap-5">
+    <section className="grid min-w-0 max-w-full gap-5">
       {/* Summary */}
       <div className="grid gap-3 rounded-xl border border-ink/10 bg-white p-4 shadow-sm sm:grid-cols-2 xl:grid-cols-5">
         <div className="rounded-lg bg-paper px-3 py-2">
@@ -2364,7 +2611,7 @@ function Cards({ api }: { api: ApiClient }) {
   })).sort((a, b) => a.name.localeCompare(b.name, "zh-TW"));
 
   return (
-    <section className="grid gap-5">
+    <section className="grid min-w-0 max-w-full gap-5">
       <div className="grid gap-4 md:grid-cols-3">
         <Metric label="信用卡數" value={cards.length.toLocaleString()} icon={<CreditCard />} />
         <Metric label="目前已用金額" value={formatCurrency(outstandingBalance)} icon={<TrendingUp />} />
@@ -2649,7 +2896,7 @@ function Bank({ api, onNavigate }: { api: ApiClient; onNavigate: (v: View) => vo
   const missingRateCurrencies = [...new Set(bankAccounts.map(a => a.currency).filter(c => c && c !== "TWD" && !rateMap[c]))] as string[];
 
   return (
-    <section className="grid gap-5">
+    <section className="grid min-w-0 max-w-full gap-5">
       {missingRateCurrencies.length > 0 && (
         <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           <span>帳戶含外幣（{missingRateCurrencies.join("、")}）尚未設定匯率，TWD 金額可能不準確。</span>
@@ -3303,6 +3550,7 @@ function sumAccountsByCurrency(accounts: BankAccountRow[], field: "balance" | "a
 }
 
 function formatCurrencyTotals(totals: Record<string, number>) {
+  if (moneyValuesHidden && Object.keys(totals).length > 0) return "••••••";
   const entries = Object.entries(totals).sort(([a], [b]) => a.localeCompare(b));
   if (entries.length === 0) return "-";
   if (entries.length === 1) {
@@ -4280,26 +4528,25 @@ function NavButton({
   active,
   icon,
   label,
-  onClick
+  onClick,
+  darkSurface = false
 }: {
   active: boolean;
-  icon: ReactNode;
+  icon: LucideIcon;
   label: string;
   onClick: () => void;
+  darkSurface?: boolean;
 }) {
   return (
-    <button
-      className={`flex h-10 min-w-fit items-center gap-2 rounded-lg px-3 text-sm font-medium transition lg:min-w-0 ${
-        active ? "bg-ink text-white shadow-sm" : "text-ink/70 hover:bg-ink/5 hover:text-ink"
-      }`}
+    <Button
+      className={cn("w-full justify-start [&_svg]:size-5", darkSurface && (active ? "bg-white/15 text-white hover:bg-white/20" : "text-white/60 hover:bg-white/10 hover:text-white"))}
       onClick={onClick}
       type="button"
+      variant={active ? (darkSurface ? "secondary" : "default") : "ghost"}
     >
-      <span className="h-4 w-4 [&>svg]:h-4 [&>svg]:w-4" aria-hidden="true">
-        {icon}
-      </span>
+      <AppIcon icon={icon} size="lg" />
       <span className="whitespace-nowrap">{label}</span>
-    </button>
+    </Button>
   );
 }
 
@@ -4310,21 +4557,21 @@ function BottomNavButton({
   onClick
 }: {
   active: boolean;
-  icon: ReactNode;
+  icon: LucideIcon;
   label: string;
   onClick: () => void;
 }) {
   return (
     <button
-      className={`flex min-h-12 min-w-16 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 text-[11px] font-medium transition ${
-        active ? "bg-ink text-white" : "text-ink/55 hover:bg-ink/5 hover:text-ink"
-      }`}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steel",
+        active ? "bg-white/15 text-white" : "text-white/55 hover:bg-white/10 hover:text-white"
+      )}
       onClick={onClick}
       type="button"
     >
-      <span className="h-5 w-5 [&>svg]:h-5 [&>svg]:w-5" aria-hidden="true">
-        {icon}
-      </span>
+      <AppIcon icon={icon} size="nav" />
       <span>{label}</span>
     </button>
   );
@@ -4361,15 +4608,17 @@ function IconButton({
 
 function Metric({ label, value, icon }: { label: string; value: string; icon: ReactNode }) {
   return (
-    <article className="rounded-xl border border-ink/10 bg-white p-5 shadow-sm">
+    <Card as="article">
+      <CardContent className="pt-5">
       <div className="flex items-center justify-between gap-4">
         <p className="text-sm font-medium text-ink/65">{label}</p>
-        <span className="rounded-md bg-moss/10 p-2 text-moss [&>svg]:h-5 [&>svg]:w-5" aria-hidden="true">
+        <span className="rounded-lg bg-moss/10 p-2 text-moss [&>svg]:size-5 [&>svg]:shrink-0" aria-hidden="true">
           {icon}
         </span>
       </div>
-      <p className="mt-4 text-3xl font-semibold">{value}</p>
-    </article>
+      <p className="mt-4 break-words text-3xl font-semibold tabular-nums">{value}</p>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -4475,6 +4724,7 @@ function isApiError(value: unknown): value is ApiError {
 }
 
 function formatCurrency(value: number, currency = "TWD") {
+  if (moneyValuesHidden) return "••••••";
   return new Intl.NumberFormat("zh-TW", {
     style: "currency",
     currency,
@@ -4483,6 +4733,7 @@ function formatCurrency(value: number, currency = "TWD") {
 }
 
 function formatCompactTwd(value: number) {
+  if (moneyValuesHidden) return "••••";
   const abs = Math.abs(value);
   if (abs >= 100_000_000) return `${(value / 100_000_000).toFixed(1)}億`;
   if (abs >= 10_000) return `${(value / 10_000).toFixed(0)}萬`;
@@ -4513,18 +4764,33 @@ function bankAccountLast5(sourceId: string) {
 }
 
 function formatDateTime(value?: string) {
-  if (!value) {
-    return "";
-  }
+  const date = parseValidDate(value);
+  if (!date) return "";
+
   return new Intl.DateTimeFormat("zh-TW", {
     dateStyle: "medium",
     timeStyle: "short"
-  }).format(new Date(value));
+  }).format(date);
 }
 
 function formatDate(value?: string) {
-  if (!value) return "";
-  return new Intl.DateTimeFormat("zh-TW", { dateStyle: "short" }).format(new Date(value));
+  const date = parseValidDate(value);
+  if (!date) return "";
+
+  return new Intl.DateTimeFormat("zh-TW", { dateStyle: "short" }).format(date);
+}
+
+function parseValidDate(value?: string) {
+  if (!value) return undefined;
+
+  const date = new Date(value);
+  if (!Number.isNaN(date.getTime())) return date;
+
+  const datePrefix = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!datePrefix) return undefined;
+
+  const fallback = new Date(Number(datePrefix[1]), Number(datePrefix[2]) - 1, Number(datePrefix[3]));
+  return Number.isNaN(fallback.getTime()) ? undefined : fallback;
 }
 
 function messageFromError(error: unknown) {

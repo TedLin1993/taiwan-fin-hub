@@ -9,5 +9,6 @@ browser = { binding = "BROWSER" }
 [[d1_databases]]
 binding = "DB"
 database_name = "taiwan-fin-hub"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "c56987fa-0ab5-4237-bdd2-6dcaef9fd636"
+remote = true
 migrations_dir = "../../packages/db/migrations"
