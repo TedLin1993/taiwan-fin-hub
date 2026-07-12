@@ -10,11 +10,11 @@ import {
   Database,
   Eye,
   EyeOff,
+  Ellipsis,
   FileText,
   History,
   KeyRound,
   Landmark,
-  Menu,
   Pencil,
   Plus,
   RefreshCw,
@@ -24,6 +24,7 @@ import {
   ShieldAlert,
   Trash2,
   TrendingUp,
+  Wallet,
   WalletCards
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -65,7 +66,7 @@ interface ManualAssetHistoryEntry {
 
 export type PrimaryView = "overview" | "assets" | "activity" | "invoices" | "settings";
 type DetailView = "bank" | "cards" | "investments" | "manual-assets";
-type View = PrimaryView | DetailView;
+type View = PrimaryView | DetailView | "more";
 export type AssetSection = "all" | "bank" | "cards" | "investments" | "manual-assets";
 export interface MoneyVisibilityState { hidden: boolean; }
 export interface ActivityItem {
@@ -261,7 +262,7 @@ const navItems: {
   icon: LucideIcon;
 }[] = [
   { view: "overview", label: "總覽", shortLabel: "總覽", description: "淨資產、同步健康度與近期財務活動。", icon: BarChart3 },
-  { view: "assets", label: "資產", shortLabel: "資產", description: "銀行、信用卡、投資與其他資產集中管理。", icon: WalletCards },
+  { view: "assets", label: "資產", shortLabel: "資產", description: "銀行、信用卡、投資與其他資產集中管理。", icon: Wallet },
   { view: "activity", label: "活動", shortLabel: "活動", description: "銀行、刷卡、投資與發票的統一時間軸。", icon: History },
   { view: "invoices", label: "發票", shortLabel: "發票", description: "搜尋電子發票、商家與品項明細。", icon: FileText },
   { view: "settings", label: "設定", shortLabel: "設定", description: "設定連接器、同步資料與匯率。", icon: Settings }
@@ -278,18 +279,16 @@ const detailLabels: Record<DetailView, { label: string; description: string }> =
 
 function App() {
   const [view, setView] = useState<View>("overview");
-  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [moneyVisibility, setMoneyVisibility] = useState<MoneyVisibilityState>(() => ({
     hidden: localStorage.getItem(moneyVisibilityStorageKey) === "true"
   }));
   moneyValuesHidden = moneyVisibility.hidden;
-  const primaryView: PrimaryView = view in detailLabels ? "assets" : view as PrimaryView;
+  const primaryView: PrimaryView = view === "more" ? "settings" : view in detailLabels ? "assets" : view as PrimaryView;
   const currentView = navItems.find((item) => item.view === primaryView) ?? navItems[0]!;
   const detail = view in detailLabels ? detailLabels[view as DetailView] : undefined;
 
   function navigate(next: View) {
     setView(next);
-    setMobileMoreOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -333,15 +332,15 @@ function App() {
                 <div className="min-w-0">
                   {detail && <button className="mb-1 inline-flex items-center gap-1 text-xs font-medium text-steel" onClick={() => navigate("assets")} type="button">← 返回資產</button>}
                   <h1 className="truncate text-2xl font-semibold tracking-tight xl:text-3xl">
-                    {detail?.label ?? <><span className="md:hidden">{primaryView === "overview" ? "資產總覽" : primaryView === "activity" ? "所有活動" : currentView.label}</span><span className="hidden md:inline">{currentView.label}</span></>}
+                    {detail?.label ?? <><span className="md:hidden">{view === "more" ? "更多" : primaryView === "overview" ? "資產總覽" : primaryView === "activity" ? "所有活動" : currentView.label}</span><span className="hidden md:inline">{currentView.label}</span></>}
                   </h1>
-                  <p className="mt-1 hidden text-sm text-ink/55 sm:block">{detail?.description ?? currentView.description}</p>
+                  <p className="mt-1 hidden text-sm text-ink/55 md:block">{detail?.description ?? currentView.description}</p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <Button className="rounded-full" aria-label={moneyVisibility.hidden ? "顯示金額" : "隱藏金額"} onClick={toggleMoneyVisibility} size="icon" variant="secondary">
                     <AppIcon icon={moneyVisibility.hidden ? Eye : EyeOff} size="lg" />
                   </Button>
-                  <Button className="hidden sm:inline-flex" onClick={() => queryClient.invalidateQueries()} variant="primary"><AppIcon icon={RefreshCw} size="sm" />同步資料</Button>
+                  {primaryView === "settings" && <Button className="hidden md:inline-flex" onClick={() => queryClient.invalidateQueries()} variant="primary"><AppIcon icon={RefreshCw} size="sm" />同步資料</Button>}
                 </div>
               </div>
             </div>
@@ -351,39 +350,13 @@ function App() {
             <RuntimeAwareContent view={view} onNavigate={navigate} />
           </main>
 
-          <footer className="mx-auto max-w-[1440px] border-t border-ink/8 px-4 py-6 sm:px-6 xl:px-8">
+          <footer className="mx-auto hidden max-w-[1440px] border-t border-ink/8 px-4 py-6 sm:px-6 md:block xl:px-8">
             <p className="text-xs leading-relaxed text-ink/35">
               <strong className="font-medium text-ink/50">免責聲明：</strong>
               本程式僅供個人研究與自用，未與臺灣集中保管結算所、財政部、金融監督管理委員會、各銀行或任何金融機構合作，亦未獲前述機構授權或背書。本程式所呈現之資料以您自行提供之憑證取得，作者不保證資料之即時性、正確性與完整性，亦不對因使用本程式所產生之任何直接或間接損失負責。請勿將本程式用於任何商業用途。
             </p>
           </footer>
         </div>
-
-        {mobileMoreOpen && (
-          <div className="fixed inset-0 z-40 md:hidden" role="presentation" onClick={() => setMobileMoreOpen(false)}>
-            <div className="absolute inset-0 bg-ink/30 backdrop-blur-[2px]" />
-            <section
-              aria-label="更多功能"
-              className="absolute inset-x-3 bottom-[calc(5.25rem+env(safe-area-inset-bottom))] rounded-2xl border border-ink/10 bg-white p-3 shadow-xl"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <p className="px-2 pb-2 pt-1 text-xs font-semibold uppercase tracking-wider text-ink/45">更多功能</p>
-              <div className="grid gap-2">
-                {navItems.filter((item) => item.view === "settings").map((item) => (
-                  <Button
-                    className="h-12 justify-start [&_svg]:size-5"
-                    key={item.view}
-                    onClick={() => navigate(item.view)}
-                    variant={primaryView === item.view ? "default" : "ghost"}
-                  >
-                    <AppIcon icon={item.icon} size="lg" />
-                    {item.label}
-                  </Button>
-                ))}
-              </div>
-            </section>
-          </div>
-        )}
 
         <nav aria-label="主要導覽" className="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 gap-1 border-t border-ink/10 bg-ink px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 text-white shadow-[0_-8px_28px_rgba(31,41,51,0.12)] md:hidden">
           {mobilePrimaryViews.map((mobileView) => {
@@ -398,7 +371,7 @@ function App() {
             />
             );
           })}
-          <BottomNavButton active={mobileMoreOpen || !mobilePrimaryViews.includes(primaryView)} icon={Menu} label="更多" onClick={() => setMobileMoreOpen((open) => !open)} />
+          <BottomNavButton active={view === "more" || !mobilePrimaryViews.includes(primaryView)} icon={Ellipsis} label="更多" onClick={() => navigate("more")} />
         </nav>
       </div>
     </QueryClientProvider>
@@ -470,7 +443,10 @@ function WealthOverview({ api, onNavigate }: { api: ApiClient; onNavigate: (view
   const unhealthyJobs = (jobs.data ?? []).filter((job) => job.lastStatus === "failed" || job.lastStatus === "needs_user_action");
   const sourceCount = Math.max((jobs.data ?? []).length, 4);
   const healthyCount = Math.max(sourceCount - unhealthyJobs.length, 0);
-  const historyValues = [...(history.data ?? [])].sort((a, b) => a.date.localeCompare(b.date)).slice(-10).map((row) => row.netWorth).filter(Number.isFinite);
+  const historyValues = Object.entries((history.data ?? []).reduce<Record<string, number>>((totals, row) => {
+    totals[row.date] = (totals[row.date] ?? 0) + row.netWorth;
+    return totals;
+  }, {})).sort(([a], [b]) => a.localeCompare(b)).slice(-10).map(([, value]) => value).filter(Number.isFinite);
   const bars = historyValues.length >= 3 ? historyValues : [netWorth * .72, netWorth * .78, netWorth * .75, netWorth * .84, netWorth * .9, netWorth * .87, netWorth * .96, netWorth];
   const maxBar = Math.max(...bars, 1);
   const accountRows = bankData.accounts.slice(0, 4);
@@ -730,7 +706,35 @@ function ApiProvider({
     return <ManualAssetsPanel api={api} />;
   }
 
+  if (view === "more") {
+    return <><div className="md:hidden"><MobileMoreView api={api} demoMode={demoMode} onNavigate={onNavigate} /></div><div className="hidden md:block"><SettingsView api={api} demoMode={demoMode} /></div></>;
+  }
+
   return <SettingsView api={api} demoMode={demoMode} />;
+}
+
+function MobileMoreView({ api, demoMode, onNavigate }: { api: ApiClient; demoMode: boolean; onNavigate: (view: View) => void }) {
+  const jobs = useQuery({ queryKey: ["sync-jobs"], queryFn: () => api.get<SyncJobRow[]>("/api/sync-jobs") });
+  const rules = useQuery({ queryKey: ["classification-rules"], queryFn: () => api.get<ClassificationRuleRow[]>("/api/classification/rules") });
+  const rates = useQuery({ queryKey: ["exchange-rates"], queryFn: () => api.get<ExchangeRateRow[]>("/api/exchange-rates") });
+  const allJobs = jobs.data ?? [];
+  const unhealthy = allJobs.filter((job) => job.lastStatus === "failed" || job.lastStatus === "needs_user_action");
+  const sources = [
+    { id: "einvoice", label: "電子發票" }, { id: "esun", label: "玉山銀行" },
+    { id: "cathaybk", label: "國泰世華" }, { id: "tdcc", label: "集保 e 存摺" }
+  ];
+  const entries = [
+    { label: "同步與連接器", detail: "設定銀行、TDCC 與電子發票", meta: unhealthy.length ? `${unhealthy.length} 警告` : "正常", icon: RefreshCw },
+    { label: "匯率", detail: "管理外幣換算", meta: `${rates.data?.length ?? 0} 種`, icon: Database },
+    { label: "分類規則", detail: "銀行交易自動分類", meta: `${rules.data?.length ?? 0} 條`, icon: Settings }
+  ];
+  return <div className="grid gap-4">
+    {demoMode && <span className="w-fit rounded-full bg-steel/10 px-3 py-1 text-xs font-semibold text-steel">Demo 資料</span>}
+    <Card><CardContent className="pt-5"><p className="text-xs font-semibold text-ink/45">資料健康度</p><p className="mt-2 text-2xl font-bold">{Math.max(sources.length-unhealthy.length,0)} / {sources.length} 來源正常</p>{unhealthy.length>0&&<p className="mt-2 text-sm font-semibold text-coral">{unhealthy.length} 個來源需要處理</p>}</CardContent></Card>
+    <section><h2 className="mb-2 text-sm font-semibold text-ink/50">資料與設定</h2><Card><div className="divide-y divide-ink/8">{entries.map((entry)=><button className="flex min-h-16 w-full items-center gap-3 px-4 py-3 text-left" key={entry.label} onClick={()=>onNavigate("settings")} type="button"><span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel"><AppIcon icon={entry.icon} size="lg"/></span><span className="min-w-0 flex-1"><span className="block font-semibold">{entry.label}</span><span className="block truncate text-xs text-ink/45">{entry.detail}</span></span><span className="shrink-0 text-xs font-semibold text-steel">{entry.meta}　›</span></button>)}</div></Card></section>
+    <section><div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-semibold text-ink/50">資料來源</h2><button className="text-xs font-semibold text-steel" onClick={()=>onNavigate("settings")} type="button">管理</button></div><Card><div className="divide-y divide-ink/8">{sources.map((source)=>{const job=allJobs.find(item=>item.connectorId===source.id);const warning=job?.lastStatus==="failed"||job?.lastStatus==="needs_user_action";return <div className="flex items-center justify-between gap-3 px-4 py-3 text-sm" key={source.id}><span className="font-semibold">{source.label}</span><span className={warning?"text-coral":"text-moss"}>{warning?"需要處理":job?.lastSuccessAt?`正常 · ${formatDate(job.lastSuccessAt)}`:"尚未同步"}</span></div>})}</div></Card></section>
+    <p className="rounded-xl bg-ink/5 p-4 text-xs leading-relaxed text-ink/45">資料僅供個人研究與自用；憑證與同步狀態可在設定中管理。</p>
+  </div>;
 }
 
 function Dashboard({ api, onNavigate }: { api: ApiClient; onNavigate: (v: View) => void }) {
@@ -1967,11 +1971,9 @@ function NetWorthHistoryPanel({ data, loading }: { data?: NetWorthHistoryRow[]; 
     setHoverIndex(Math.round(fraction * (dates.length - 1)));
   }
 
-  const xLabelStep = Math.max(1, Math.floor(dates.length / 6));
-  const xLabelIdxs = dates.reduce<number[]>((acc, _, i) => {
-    if (i === 0 || i === dates.length - 1 || i % xLabelStep === 0) acc.push(i);
-    return acc;
-  }, []);
+  const xLabelIdxs = dates.length <= 6
+    ? dates.map((_, index) => index)
+    : [...new Set(Array.from({ length: 6 }, (_, index) => Math.round(index * (dates.length - 1) / 5)))];
 
   function formatXLabel(date: string) {
     const [, m, d] = date.split("-");
