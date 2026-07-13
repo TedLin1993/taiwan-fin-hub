@@ -1,221 +1,264 @@
-import * as forge from "node-forge";
-
-const BASE_URL = "https://invoiceapp.nat.gov.tw/UIAPAPP/api/";
-const DEFAULT_APP_VERSION = "6.0630.31";
-const DEFAULT_OS = "Android";
-const DEFAULT_API_KEY = "xkRT21hZ3uDJehRthVlDAdfzpAoPLEoKpTAKyR/eB2iMqErmM7U5IVC6G5eHD/MN";
-
-export const RSA_PUBLIC_KEY = `<RSAKeyValue><Modulus>wWj/ElSXlSJCJv/ELn47aYNIx8pWec6RFgVWnW836DQwQjh7pL90av6Mvv5kPjNbM4njxeLeuXx9ZuNP2A+JUhVLkU6zdqB+T2Nyj+zhUa5szkmaJm0ntXJvGN7iAwIvLPE2BcMWGlsPBFhWMoRt8goM06AUcFIzI4dL3iDpUWvm/Og/bzeel7/rb0RVbV86zv4MzqIt7PJM7mnw+SCjH59nEBsKkR96kR3Ye6iwztvAZcIGyTihFW2J0GEq+sPO09XW+oobQt62qIaisbR7rVZcY5Qcu8g6qeVzoz1n77/SeG4BZo/hLR13I874ZUZ+rdbFNoOPj9mj+WSPFIPf6Q==</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>`;
+const BASE_URL = "https://api.einvoice.nat.gov.tw";
+const BARCODE_PATH = "/PB2CAPIVAN/Carrier/AppGetBarcode";
+const INVOICE_PATH = "/PB2CAPIVAN/invServ/InvServ";
+const MOBILE_BARCODE_TYPE = "3J0002";
+const SUCCESS_CODE = "200";
+const MORE_RESULTS_CODE = "996";
 
 export type EInvoiceUser = {
   mobile?: string;
-  userToken?: string;
   mobileBarcode?: string;
   [key: string]: unknown;
 };
 
-export type LoginParams =
-  | {
-      mobile: string;
-      password: string;
-      deviceId?: string;
-      platform?: string;
-      pushToken?: string;
-    }
-  | {
-      Id: string;
-      VerifyCode: string;
-      DeviceID?: string;
-      Platform?: string;
-      PushToken?: string;
-    };
+export type LoginParams = {
+  mobile: string;
+  password: string;
+  deviceId?: string;
+};
+
+type CarrierInvoiceParams = {
+  carrierId?: string;
+  carrierType?: string;
+  cardEncrypt?: string;
+  startDate?: string;
+  endDate?: string;
+};
+
+type CarrierInvoiceDetailParams = {
+  carrierId?: string;
+  carrierType?: string;
+  cardEncrypt?: string;
+  invNum?: string;
+  invDate?: string;
+};
+
+type ApiResponse = Record<string, unknown> & {
+  code?: string | number;
+  msg?: string;
+  details?: unknown;
+};
 
 export class EInvoiceClient {
   currentUser: EInvoiceUser | null;
   host: string;
-  private headers: Record<string, string>;
+  private appId?: string;
+  private deviceId: string;
 
   constructor({
+    appId,
     apiKey,
-    appVersion,
     currentUser,
-    host,
-    os
+    deviceId,
+    host
   }: {
+    appId?: string;
+    /** @deprecated Kept as a migration fallback for configs that stored the AppID as apiKey. */
     apiKey?: string;
-    appVersion?: string;
     currentUser?: EInvoiceUser | null;
+    deviceId?: string;
     host?: string;
-    os?: string;
   } = {}) {
-    this.host = host ?? BASE_URL;
+    this.host = (host ?? BASE_URL).replace(/\/$/, "");
+    this.appId = appId?.trim() || apiKey?.trim() || undefined;
     this.currentUser = currentUser ?? null;
-    this.headers = {
-      "Content-Type": "application/json",
-      ApiKey: apiKey ?? DEFAULT_API_KEY,
-      AppVersion: appVersion ?? DEFAULT_APP_VERSION,
-      OS: os ?? DEFAULT_OS
-    };
+    this.deviceId = deviceId?.trim() || createDeviceId();
   }
 
-  async post(path: string, body?: unknown) {
-    const payload = this.normalizeRequestBody(path, body);
-    const { requestBody, cryptoKey, headers } = this.encryptRequest(payload);
-    const res = await fetch(this.host + path, {
-      method: "POST",
-      headers: { ...this.headers, ...headers },
-      body: requestBody
+  async login(params: LoginParams) {
+    const appId = this.requireAppId();
+    const data = await this.post(BARCODE_PATH, {
+      version: "2.0",
+      action: "getBarcode",
+      appID: appId,
+      phoneNo: params.mobile,
+      timeStamp: unixTimestamp(10),
+      uuid: params.deviceId?.trim() || this.deviceId,
+      verificationCode: params.password
     });
-    const data = await this.readResponse(res, path, cryptoKey);
-    if (path === "User/Login") this.setCurrentUserFromLogin(data);
+    assertSuccessful(data, "取得手機條碼");
+
+    const mobileBarcode = readString(data.cardNo);
+    if (!mobileBarcode) {
+      throw new Error("電子發票 API 未回傳手機條碼，請確認手機號碼與驗證碼。");
+    }
+
+    this.currentUser = { mobile: params.mobile, mobileBarcode };
     return data;
   }
 
-  login(params: LoginParams) {
-    return this.post("User/Login", params);
-  }
+  async checkCarrierInvoices(params: CarrierInvoiceParams) {
+    const carrierId = requiredParam(params.carrierId, "手機條碼");
+    const cardEncrypt = requiredParam(params.cardEncrypt, "手機條碼驗證碼");
+    const startDate = requiredParam(params.startDate, "查詢起日");
+    const endDate = requiredParam(params.endDate, "查詢迄日");
+    const rows: Record<string, unknown>[] = [];
 
-  checkCarrierInvoices(params: unknown) {
-    return this.post("Invoice/ChkCarrierInv", params);
-  }
+    for (let page = 1; page <= 100; page += 1) {
+      const data = await this.post(INVOICE_PATH, {
+        version: "0.6",
+        action: "carrierInvChk",
+        appID: this.requireAppId(),
+        cardType: params.carrierType || MOBILE_BARCODE_TYPE,
+        cardNo: carrierId,
+        cardEncrypt,
+        startDate,
+        endDate,
+        onlyWinningInv: "N",
+        timeStamp: unixTimestamp(10),
+        expTimeStamp: unixTimestamp(180),
+        uuid: this.deviceId,
+        page: String(page)
+      });
+      const code = responseCode(data);
+      if (code !== SUCCESS_CODE && code !== MORE_RESULTS_CODE) {
+        throw apiError(data, "查詢發票");
+      }
 
-  checkCarrierInvoiceDetail(params: unknown) {
-    return this.post("Invoice/ChkCarrierInvDetail", params);
-  }
-
-  private normalizeRequestBody(path: string, body?: unknown) {
-    if (path !== "User/Login") return body;
-    const loginBody = body as Partial<Extract<LoginParams, { mobile: string }>> &
-      Partial<Extract<LoginParams, { Id: string }>>;
-    if (!loginBody || loginBody.Id || loginBody.VerifyCode) return body;
-
-    return {
-      Id: loginBody.mobile,
-      VerifyCode: loginBody.password,
-      DeviceID: loginBody.deviceId ?? "http://OpenUDID.org",
-      Platform: loginBody.platform ?? DEFAULT_OS,
-      PushToken: loginBody.pushToken ?? ""
-    };
-  }
-
-  private encryptRequest(body?: unknown) {
-    const json = JSON.stringify(body ?? { "": "" });
-    const user = this.currentUser;
-    if (user?.mobile && user?.userToken) {
-      const cryptoKey = aesEncryptString(user.mobile, user.userToken);
-      return {
-        cryptoKey,
-        requestBody: aesEncryptString(json, cryptoKey),
-        headers: {
-          encrypt: "mixed",
-          ValidationToken: cryptoKey,
-          Token: user.userToken,
-          UUID: "http://OpenUDID.org",
-          ...(user.mobileBarcode ? { CarrierCode: user.mobileBarcode } : {})
-        }
-      };
+      const pageRows = arrayOfRecords(data.details).map(normalizeInvoiceHeader);
+      rows.push(...pageRows);
+      if (code !== MORE_RESULTS_CODE || pageRows.length === 0) break;
     }
 
-    return {
-      cryptoKey: singleResponseKey(),
-      requestBody: rsaEncrypt(json),
-      headers: { encrypt: "single" }
-    };
+    return { result: dedupeByInvoiceNumber(rows) };
   }
 
-  private async readResponse(res: Response, path: string, cryptoKey?: string) {
-    const encrypted = res.headers.get("encrypt");
-    const raw = await res.text();
-    let text = raw;
+  async checkCarrierInvoiceDetail(params: CarrierInvoiceDetailParams) {
+    const data = await this.post(INVOICE_PATH, {
+      version: "0.5",
+      action: "carrierInvDetail",
+      appID: this.requireAppId(),
+      cardType: params.carrierType || MOBILE_BARCODE_TYPE,
+      cardNo: requiredParam(params.carrierId, "手機條碼"),
+      cardEncrypt: requiredParam(params.cardEncrypt, "手機條碼驗證碼"),
+      invNum: requiredParam(params.invNum, "發票號碼"),
+      invDate: officialInvoiceDate(requiredParam(params.invDate, "發票日期")),
+      timeStamp: unixTimestamp(10),
+      expTimeStamp: unixTimestamp(180),
+      uuid: this.deviceId
+    });
+    assertSuccessful(data, "查詢發票明細");
+    return { result: data };
+  }
 
-    if (raw && encrypted === "single") text = aesDecryptString(raw, singleResponseKey());
-    if (raw && encrypted === "mixed" && cryptoKey) text = aesDecryptString(raw, cryptoKey);
+  private async post(path: string, fields: Record<string, string>) {
+    const res = await fetch(this.host + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+      body: new URLSearchParams(fields).toString()
+    });
+    const text = await res.text();
+    let data: ApiResponse;
 
-    let data: unknown = text;
-    if (text) {
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = text;
-      }
+    try {
+      data = JSON.parse(text) as ApiResponse;
+    } catch {
+      throw new Error(`電子發票 API 回傳格式錯誤（HTTP ${res.status}）。`);
     }
 
     if (!res.ok) {
-      const message =
-        typeof data === "object" && data && "Message" in data
-          ? `: ${String((data as { Message: unknown }).Message)}`
-          : "";
-      throw new Error(`HTTP ${res.status} - ${path}${message}`);
+      throw new Error(`電子發票 API HTTP ${res.status}${data.msg ? `：${data.msg}` : ""}`);
     }
-
     return data;
   }
 
-  private setCurrentUserFromLogin(data: unknown) {
-    const response = data as {
-      result?: { user?: EInvoiceUser };
-      Result?: { User?: EInvoiceUser; user?: EInvoiceUser };
-    };
-    const user = response?.result?.user ?? response?.Result?.User ?? response?.Result?.user;
-    const r = response as any;
-    console.log("[einvoice debug] ReturnCode:", r?.ReturnCode, "Message:", r?.Message);
-    console.log("[einvoice debug] Result:", JSON.stringify(r?.Result));
-    console.log("[einvoice debug] user object:", JSON.stringify(user));
-    if (user?.mobile && user?.userToken) this.currentUser = user;
+  private requireAppId() {
+    if (!this.appId) {
+      throw new Error("尚未設定財政部電子發票 AppID，請先在連接器設定中填寫 AppID。");
+    }
+    return this.appId;
   }
 }
 
-function aesEncryptString(text: string, keyText: string) {
-  const cipher = createAesCipher("encrypt", keyText);
-  cipher.update(forge.util.createBuffer(text, "utf8"));
-  cipher.finish();
-  return forge.util.encode64(cipher.output.getBytes());
+function unixTimestamp(secondsFromNow: number) {
+  return String(Math.floor(Date.now() / 1000) + secondsFromNow);
 }
 
-function aesDecryptString(text: string, keyText: string) {
-  const cipher = createAesCipher("decrypt", keyText);
-  cipher.update(forge.util.createBuffer(forge.util.decode64(text), "raw"));
-  cipher.finish();
-  return cipher.output.toString();
+function createDeviceId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `taiwan-fin-hub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function createAesCipher(direction: "encrypt" | "decrypt", keyText: string) {
-  const key = forge.md.sha256.create().update(keyText, "utf8").digest().getBytes();
-  const iv = forge.md.md5.create().update(keyText, "utf8").digest().getBytes();
-  const cipher =
-    direction === "encrypt"
-      ? forge.cipher.createCipher("AES-CBC", key)
-      : forge.cipher.createDecipher("AES-CBC", key);
-  cipher.start({ iv });
-  return cipher;
+function responseCode(data: ApiResponse) {
+  return data.code === undefined ? "" : String(data.code);
 }
 
-function rsaEncrypt(text: string) {
-  const publicKey = forge.pki.publicKeyFromPem(rsaPublicKeyPem());
-  const bytes = forge.util.encodeUtf8(text);
-  const chunks: string[] = [];
-  for (let offset = 0; offset < bytes.length; offset += 245) {
-    chunks.push(publicKey.encrypt(bytes.slice(offset, offset + 245), "RSAES-PKCS1-V1_5"));
+function assertSuccessful(data: ApiResponse, operation: string) {
+  if (responseCode(data) !== SUCCESS_CODE) throw apiError(data, operation);
+}
+
+function apiError(data: ApiResponse, operation: string) {
+  const code = responseCode(data) || "未知代碼";
+  const message = readString(data.msg) || "未知錯誤";
+  return new Error(`電子發票 API ${code}（${operation}）：${message}`);
+}
+
+function requiredParam(value: string | undefined, label: string) {
+  const normalized = value?.trim();
+  if (!normalized) throw new Error(`缺少${label}。`);
+  return normalized;
+}
+
+function readString(value: unknown) {
+  return typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+}
+
+function arrayOfRecords(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    : [];
+}
+
+function normalizeInvoiceHeader(row: Record<string, unknown>) {
+  return { ...row, invDate: normalizeOfficialDate(row.invDate) };
+}
+
+function normalizeOfficialDate(value: unknown) {
+  if (typeof value === "string") return readableInvoiceDate(value);
+  if (typeof value === "number") return formatLocalDate(new Date(value));
+  if (!value || typeof value !== "object") return "";
+
+  const date = value as Record<string, unknown>;
+  const timestamp = Number(date.time);
+  if (Number.isFinite(timestamp) && timestamp > 0) return formatLocalDate(new Date(timestamp));
+
+  const rawYear = Number(date.year);
+  const rawMonth = Number(date.month);
+  const rawDay = Number(date.date ?? date.dayOfMonth);
+  if ([rawYear, rawMonth, rawDay].every(Number.isFinite)) {
+    // The API serializes java.util.Date fields: year is years since 1900 and month is zero-based.
+    const year = rawYear < 300 ? rawYear + 1900 : rawYear;
+    const month = rawMonth >= 0 && rawMonth <= 11 ? rawMonth + 1 : rawMonth;
+    return `${year}/${String(month).padStart(2, "0")}/${String(rawDay).padStart(2, "0")}`;
   }
-  return forge.util.encode64(chunks.join(""));
+  return "";
 }
 
-function rsaPublicKeyPem() {
-  const key = forge.pki.setRsaPublicKey(
-    new forge.jsbn.BigInteger(forge.util.bytesToHex(forge.util.decode64(rsaXmlValue("Modulus"))), 16),
-    new forge.jsbn.BigInteger(forge.util.bytesToHex(forge.util.decode64(rsaXmlValue("Exponent"))), 16)
-  );
-  return forge.pki.publicKeyToPem(key);
+function formatLocalDate(date: Date) {
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}/${month}/${day}`;
 }
 
-function rsaXmlValue(name: string) {
-  const match = RSA_PUBLIC_KEY.match(new RegExp(`<${name}>([^<]+)</${name}>`));
-  if (!match) throw new Error(`Missing RSA key field: ${name}`);
-  return match[1];
+function officialInvoiceDate(value: string) {
+  return readableInvoiceDate(value).replace(/[-.]/g, "/").slice(0, 10);
 }
 
-function singleResponseKey() {
-  return forge.util.encode64(
-    forge.md.sha256.create().update(RSA_PUBLIC_KEY.slice(0, 16), "utf8").digest().getBytes()
-  );
+function readableInvoiceDate(value: string) {
+  const normalized = value.trim();
+  if (/^\d{8}$/.test(normalized)) {
+    return `${normalized.slice(0, 4)}/${normalized.slice(4, 6)}/${normalized.slice(6, 8)}`;
+  }
+  return normalized;
+}
+
+function dedupeByInvoiceNumber(rows: Record<string, unknown>[]) {
+  const unique = new Map<string, Record<string, unknown>>();
+  rows.forEach((row, index) => {
+    const key = `${readString(row.invNum)}:${readString(row.invDate)}` || String(index);
+    unique.set(key, row);
+  });
+  return Array.from(unique.values());
 }

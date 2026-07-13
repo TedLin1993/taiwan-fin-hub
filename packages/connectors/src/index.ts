@@ -28,6 +28,8 @@ export const invoiceConfigSchema = z.object({
   records: z.array(invoiceRecordSchema).default([]),
   mobile: z.string().min(1).optional(),
   password: z.string().min(1).optional(),
+  appId: z.string().min(1).optional(),
+  /** @deprecated Use appId. Retained so existing encrypted settings can migrate without data loss. */
   apiKey: z.string().min(1).optional(),
   mobileBarcode: z.string().min(1).optional(),
   userToken: z.string().min(1).optional(),
@@ -64,12 +66,12 @@ export const einvoiceConnector: Connector<InvoiceConfig, Omit<Invoice, "id" | "c
 
 async function syncTaiwanEInvoices(config: InvoiceConfig, cursor?: string) {
   const client = new EInvoiceClient({
+    appId: config.appId,
     apiKey: config.apiKey,
     currentUser:
-      config.mobile && config.userToken && config.mobileBarcode
+      config.mobile && config.mobileBarcode
         ? {
             mobile: config.mobile,
-            userToken: config.userToken,
             mobileBarcode: config.mobileBarcode
           }
         : null
@@ -82,12 +84,10 @@ async function syncTaiwanEInvoices(config: InvoiceConfig, cursor?: string) {
         password: config.password!
       });
     } catch (error) {
-      throw new Error(`E-Invoice login failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+      throw new Error(
+        `電子發票登入失敗：${error instanceof Error ? error.message : "發生未知錯誤"}`
+      );
     }
-  }
-
-  if (client.currentUser?.userToken) {
-    config.userToken = client.currentUser.userToken;
   }
 
   if (client.currentUser?.mobileBarcode) {
@@ -96,7 +96,7 @@ async function syncTaiwanEInvoices(config: InvoiceConfig, cursor?: string) {
 
   const carrierId = config.mobileBarcode ?? client.currentUser?.mobileBarcode;
   if (!carrierId) {
-    throw new Error("E-Invoice login did not return a mobile barcode.");
+    throw new Error("電子發票登入未回傳手機條碼。");
   }
 
   const now = new Date();
