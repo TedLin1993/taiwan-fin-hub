@@ -4044,8 +4044,8 @@ interface ConnectorField {
 const connectorFields: Record<ConnectorId, ConnectorField[]> = {
   einvoice: [
     { key: "mobile", label: "手機號碼", type: "text", placeholder: "0912345678" },
-    { key: "password", label: "手機條碼驗證碼", type: "password" },
-    { key: "appId", label: "財政部 AppID", type: "password", placeholder: "請填寫已申請的 AppID" },
+    { key: "password", label: "密碼", type: "password" },
+    { key: "apiKey", label: "API 金鑰（通常不需填寫）", type: "password" },
     { key: "periodsBack", label: "回溯期數", type: "number", placeholder: "1" },
     { key: "fetchDetails", label: "同步明細", type: "checkbox" }
   ],
@@ -4606,11 +4606,6 @@ function ConnectorPanel({
           )}
         </div>
       </div>
-      {connectorId === "einvoice" && (
-        <p className="mt-3 rounded-lg bg-steel/8 px-3 py-2 text-xs leading-5 text-ink/65">
-          同步使用財政部電子發票公開 API；AppID 需先向財政部申請。密碼欄請填手機條碼驗證碼（不是簡訊驗證碼）。
-        </p>
-      )}
       {demoMode && (
         <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
           Demo site 已停用同步；你仍可查看示範資料與介面互動。
