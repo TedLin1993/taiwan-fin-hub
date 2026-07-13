@@ -1,137 +1,67 @@
 // Run with: npx tsx packages/connectors/src/einvoice.selfcheck.ts
-// Exercises the public MOF API contract end-to-end: barcode login -> invoice headers -> details.
+// Exercises the private official App endpoint contract without sending credentials.
 import assert from "node:assert/strict";
-import { einvoiceConnector, parseInvoiceConfig } from "./index";
 import { EInvoiceClient } from "./tw-einvoice-api";
 
-const requests: URLSearchParams[] = [];
+const requests: Array<{ url: string; init: RequestInit }> = [];
 
-(globalThis as unknown as { fetch: typeof fetch }).fetch = (async (_url: string, init: RequestInit) => {
-  const body = new URLSearchParams(String(init.body));
-  requests.push(body);
+(globalThis as unknown as { fetch: typeof fetch }).fetch = (async (url: string, init: RequestInit) => {
+  requests.push({ url, init });
 
-  if (body.get("appID") === "SUSPENDED") {
-    return json({ code: 998, msg: "appID 不符合規定 (停權或尚未申請)" });
-  }
-
-  if (body.get("action") === "getBarcode") {
-    assert.equal(body.get("version"), "2.0");
-    assert.equal(body.get("phoneNo"), "0912345678");
-    assert.equal(body.get("verificationCode"), "barcode-password");
-    return json({ code: 200, msg: "執行成功", cardNo: "/ABCD123" });
-  }
-
-  if (body.get("action") === "carrierInvChk") {
-    assert.equal(body.get("version"), "0.6");
-    assert.equal(body.get("cardType"), "3J0002");
-    assert.equal(body.get("cardNo"), "/ABCD123");
-    assert.equal(body.get("cardEncrypt"), "barcode-password");
-    if (body.get("appID") === "PAGED-APP-ID") {
-      const page = body.get("page");
-      return json({
-        code: page === "1" ? 996 : 200,
-        msg: "執行成功",
-        details: [
-          {
-            invNum: page === "1" ? "BB12345678" : "CC12345678",
-            invDate: "20260709",
-            sellerName: "分頁測試商店",
-            amount: "10"
+  if (url.endsWith("User/Login")) {
+    return json(
+      {
+        Result: {
+          User: {
+            Mobile: "0912345678",
+            UserToken: "test-user-token",
+            MobileBarcode: "/ABCD123"
           }
-        ]
-      });
-    }
-    return json({
-      code: 200,
-      msg: "執行成功",
-      details: [
-        {
-          invNum: "AA12345678",
-          invDate: { year: 126, month: 6, date: 8 },
-          sellerName: "測試商店",
-          amount: "120"
         }
-      ]
-    });
+      },
+      "single"
+    );
   }
 
-  if (body.get("action") === "carrierInvDetail") {
-    assert.equal(body.get("version"), "0.5");
-    assert.equal(body.get("invNum"), "AA12345678");
-    assert.equal(body.get("invDate"), "2026/07/08");
-    return json({
-      code: 200,
-      msg: "執行成功",
-      invNum: "AA12345678",
-      details: [
-        {
-          rowNum: "1",
-          description: "咖啡",
-          quantity: "2",
-          unitPrice: "60",
-          amount: "120"
-        }
-      ]
-    });
-  }
-
-  throw new Error(`Unexpected action: ${body.get("action")}`);
+  return json({ result: [] }, "mixed");
 }) as typeof fetch;
 
 async function main() {
-  const config = parseInvoiceConfig({
-    mobile: "0912345678",
-    password: "barcode-password",
-    appId: "VALID-APP-ID",
-    periodsBack: 1,
-    fetchDetails: true
-  });
-  const result = await einvoiceConnector.sync(config, undefined);
+  const client = new EInvoiceClient();
+  await client.login({ mobile: "0912345678", password: "test-password" });
 
-  assert.equal(config.mobileBarcode, "/ABCD123", "login should persist the returned mobile barcode");
-  assert.equal(result.records.length, 1);
-  assert.equal(result.records[0]?.sourceId, "AA12345678:2026/07/08");
-  assert.equal(result.records[0]?.sellerName, "測試商店");
-  assert.equal(result.records[0]?.amount, 120);
-  assert.equal(result.invoiceLineItems?.length, 1);
-  assert.equal(result.invoiceLineItems?.[0]?.description, "咖啡");
-  assert.equal(result.invoiceLineItems?.[0]?.amount, 120);
-  assert.deepEqual(
-    requests.map((request) => request.get("action")),
-    ["getBarcode", "carrierInvChk", "carrierInvDetail"]
-  );
+  assert.equal(client.currentUser?.mobile, "0912345678");
+  assert.equal(client.currentUser?.userToken, "test-user-token");
+  assert.equal(client.currentUser?.mobileBarcode, "/ABCD123");
 
-  const paged = await new EInvoiceClient({ appId: "PAGED-APP-ID" }).checkCarrierInvoices({
+  await client.checkCarrierInvoices({
     carrierId: "/ABCD123",
-    cardEncrypt: "barcode-password",
+    carrierType: "3J0002",
+    cardEncrypt: "test-password",
     startDate: "2026/07/01",
     endDate: "2026/07/31"
   });
-  assert.equal(paged.result.length, 2, "code 996 should fetch and combine the next page");
-  assert.deepEqual(
-    requests.slice(-2).map((request) => request.get("page")),
-    ["1", "2"]
-  );
 
-  await assert.rejects(
-    new EInvoiceClient({ appId: "SUSPENDED" }).login({
-      mobile: "0912345678",
-      password: "barcode-password"
-    }),
-    /電子發票 API 998.*appID 不符合規定/
-  );
-  await assert.rejects(
-    new EInvoiceClient().login({ mobile: "0912345678", password: "barcode-password" }),
-    /尚未設定財政部電子發票 AppID/
-  );
+  const loginHeaders = new Headers(requests[0]?.init.headers);
+  assert.equal(loginHeaders.get("AppVersion"), "6.800.2");
+  assert.equal(loginHeaders.get("OS"), "Android");
+  assert.equal(loginHeaders.get("encrypt"), "single");
+  assert.ok(loginHeaders.get("ApiKey"));
 
+  const invoiceHeaders = new Headers(requests[1]?.init.headers);
+  assert.equal(invoiceHeaders.get("encrypt"), "mixed");
+  assert.equal(invoiceHeaders.get("Token"), "test-user-token");
+  assert.equal(invoiceHeaders.get("CarrierCode"), "/ABCD123");
+
+  assert.match(requests[0]?.url ?? "", /UIAPAPP\/api\/User\/Login$/);
+  assert.match(requests[1]?.url ?? "", /UIAPAPP\/api\/Invoice\/ChkCarrierInv$/);
   console.log("einvoice.selfcheck: ok");
 }
 
-function json(body: unknown) {
+function json(body: unknown, encrypt: string) {
   return new Response(JSON.stringify(body), {
     status: 200,
-    headers: { "Content-Type": "application/json" }
+    headers: { "Content-Type": "application/json", encrypt }
   });
 }
 
