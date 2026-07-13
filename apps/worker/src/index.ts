@@ -1,5 +1,6 @@
 import {
   einvoiceConnector,
+  EInvoiceProtocolUnavailableError,
   parseConnectorConfig,
   parseCathaybkConfig,
   parseEsunConfig,
@@ -26,7 +27,6 @@ import {
 } from "@taiwan-fin-hub/core";
 import {
   getConnectorSettings,
-  updateConnectorPublicConfig,
   upsertConnectorSettings
 } from "@taiwan-fin-hub/db";
 import { Hono, type Context } from "hono";
@@ -929,42 +929,54 @@ api.put("/connectors/:connectorId/settings", async (c) => {
 
   const now = new Date().toISOString();
   const encryptionKey = configEncryptionKey(c.env);
-  const publicConfigJson = Object.keys(publicConfig).length > 0 ? JSON.stringify(publicConfig) : null;
-
-  if (hasSensitive) {
-    let parsedConfig: unknown;
-    try {
-      const existing = await getConnectorSettings(c.env.DB, connectorId);
-      const storedPublic = existing?.public_config ? JSON.parse(existing.public_config) : {};
-      parsedConfig = parseConnectorConfig(connectorId, { ...storedPublic, ...rawConfig });
-    } catch {
-      return c.json(
-        {
-          success: false,
-          error: {
-            code: "INVALID_CONNECTOR_CONFIG",
-            message: "Connector config does not match the expected shape."
-          }
-        },
-        400
-      );
-    }
-    const encryptedConfig = await encryptJson(parsedConfig, encryptionKey);
-    await upsertConnectorSettings(c.env.DB, {
-      id: crypto.randomUUID(),
-      connectorId,
-      encryptedConfig,
-      publicConfig: publicConfigJson,
-      now
-    });
-  } else {
-    const existing = await getConnectorSettings(c.env.DB, connectorId);
-    if (!existing) {
-      return c.json({ success: false, error: { code: "CONNECTOR_CONFIG_MISSING", message: "Cannot update public config before credentials are set." } }, 400);
-    }
-    const mergedPublic = { ...JSON.parse(existing.public_config ?? "{}"), ...publicConfig };
-    await updateConnectorPublicConfig(c.env.DB, connectorId, JSON.stringify(mergedPublic), now);
+  const existing = await getConnectorSettings(c.env.DB, connectorId);
+  if (!hasSensitive && !existing) {
+    return c.json({ success: false, error: { code: "CONNECTOR_CONFIG_MISSING", message: "Cannot update public config before credentials are set." } }, 400);
   }
+
+  let parsedConfig: unknown;
+  let mergedPublic: Record<string, unknown>;
+  try {
+    const storedConfig = existing
+      ? await decryptJson<Record<string, unknown>>(existing.encrypted_config, encryptionKey)
+      : {};
+    const storedPublic = existing?.public_config ? JSON.parse(existing.public_config) : {};
+    const mergedConfig: Record<string, unknown> = {
+      ...storedConfig,
+      ...storedPublic,
+      ...rawConfig
+    };
+
+    if (connectorId === "einvoice" && einvoiceCredentialsChanged(storedConfig, rawConfig)) {
+      for (const key of [
+        "userToken", "mobileBarcode", "sid", "token", "iv", "svrCode", "loginAppId",
+        "loginLiat", "loginSsMe", "ltoken", "hkey", "serverTimeOffset"
+      ]) delete mergedConfig[key];
+    }
+
+    parsedConfig = parseConnectorConfig(connectorId, mergedConfig);
+    mergedPublic = { ...storedPublic, ...publicConfig };
+  } catch {
+    return c.json(
+      {
+        success: false,
+        error: {
+          code: "INVALID_CONNECTOR_CONFIG",
+          message: "Connector config does not match the expected shape."
+        }
+      },
+      400
+    );
+  }
+
+  const encryptedConfig = await encryptJson(parsedConfig, encryptionKey);
+  await upsertConnectorSettings(c.env.DB, {
+    id: existing?.id ?? crypto.randomUUID(),
+    connectorId,
+    encryptedConfig,
+    publicConfig: Object.keys(mergedPublic).length > 0 ? JSON.stringify(mergedPublic) : null,
+    now
+  });
 
   return c.json({
     connectorId,
@@ -1132,6 +1144,9 @@ async function syncRouteResponse(
     if (error instanceof NeedsUserActionError) {
       return jsonError("USER_ACTION_REQUIRED", error.message, 400);
     }
+    if (error instanceof EInvoiceProtocolUnavailableError) {
+      return jsonError("CONNECTOR_PROTOCOL_UNAVAILABLE", error.message, 503);
+    }
     throw error;
   }
 }
@@ -1146,7 +1161,7 @@ async function syncEinvoice(
   const settings = await requireConnectorSettings(env.DB, connectorId);
   const config = await decryptJson<unknown>(settings.encrypted_config, configEncryptionKey(env));
   const parsedConfig = parseInvoiceConfig({ ...(config as Record<string, unknown>), ...overrides });
-  const originalInvoiceConfig = invoiceConfigSnapshot(config as { fetchDetails?: boolean; userToken?: string; mobileBarcode?: string });
+  const originalInvoiceConfig = invoiceConfigSnapshot(config as Record<string, unknown>);
   console.log(`[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ?? "none"})`);
   const result = await einvoiceConnector.sync(parsedConfig, settings.sync_cursor ?? undefined);
   const invoiceLineItems = result.invoiceLineItems ?? [];
@@ -1542,6 +1557,9 @@ async function withManualSyncLock(
     const outcome = await task();
     await markManualSyncSuccess(env.DB, connectorId, scope);
     return outcome;
+  } catch (error) {
+    await markManualSyncFailure(env.DB, connectorId, scope, error);
+    throw error;
   } finally {
     await releaseSyncJobLock(env.DB, canonicalSyncLockRowId(connectorId), runId);
   }
@@ -1696,10 +1714,10 @@ async function completeSyncJob(db: D1Database, job: SyncJobRow, outcome: SyncOut
 
 async function failSyncJob(db: D1Database, job: SyncJobRow, error: unknown) {
   const now = new Date();
-  const status: SyncStatus = error instanceof NeedsUserActionError ? "needs_user_action" : "failed";
+  const status: SyncStatus = isUserActionError(error) ? "needs_user_action" : "failed";
   const enabled = status === "needs_user_action" ? 0 : 1;
   const nextRunAt = status === "failed"
-    ? new Date(now.getTime() + 60 * 60 * 1000).toISOString()
+    ? new Date(now.getTime() + job.interval_minutes * 60 * 1000).toISOString()
     : job.next_run_at;
 
   await db
@@ -1740,12 +1758,39 @@ async function markManualSyncSuccess(db: D1Database, connectorId: ConnectorId, s
     .run();
 }
 
+async function markManualSyncFailure(
+  db: D1Database,
+  connectorId: ConnectorId,
+  scope: SyncScope,
+  error: unknown
+) {
+  const status: SyncStatus = isUserActionError(error) ? "needs_user_action" : "failed";
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      `UPDATE sync_jobs
+       SET last_status = ?,
+           last_error = ?,
+           last_run_at = ?,
+           enabled = CASE WHEN ? = 'needs_user_action' THEN 0 ELSE enabled END,
+           updated_at = ?
+       WHERE connector_id = ?
+         AND scope = ?`
+    )
+    .bind(status, safeErrorMessage(error), now, status, now, connectorId, scope)
+    .run();
+}
+
 function canonicalSyncLockRowId(connectorId: ConnectorId) {
   return `${connectorId}:all`;
 }
 
 function isUserActionError(error: unknown) {
-  if (error instanceof NeedsUserActionError || error instanceof TdccOtpExpiredError) return true;
+  if (
+    error instanceof NeedsUserActionError ||
+    error instanceof TdccOtpExpiredError ||
+    error instanceof EInvoiceProtocolUnavailableError
+  ) return true;
   const message = error instanceof Error ? error.message : String(error);
   return /OTP|verification|requires.*login|requires.*session|requires.*user action/i.test(message);
 }
@@ -1753,6 +1798,19 @@ function isUserActionError(error: unknown) {
 function safeErrorMessage(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/\s+/g, " ").slice(0, 300);
+}
+
+function einvoiceCredentialsChanged(
+  storedConfig: Record<string, unknown>,
+  submittedConfig: Record<string, unknown>
+) {
+  return ["mobile", "password", "apiKey"].some(
+    (key) =>
+      key in submittedConfig &&
+      submittedConfig[key] !== undefined &&
+      submittedConfig[key] !== "" &&
+      submittedConfig[key] !== storedConfig[key]
+  );
 }
 
 api.onError((error) => {
@@ -1778,23 +1836,18 @@ function stableId(...parts: string[]) {
   return parts.join(":");
 }
 
-function invoiceConfigSnapshot(config: { fetchDetails?: boolean; userToken?: string; mobileBarcode?: string }) {
-  return {
-    fetchDetails: config.fetchDetails,
-    mobileBarcode: config.mobileBarcode,
-    userToken: config.userToken
-  };
+function invoiceConfigSnapshot(config: Record<string, unknown>) {
+  return Object.fromEntries([
+    "protocol", "fetchDetails", "mobileBarcode", "userToken", "loginClientCode", "sid", "token", "iv", "svrCode",
+    "loginAppId", "loginLiat", "loginSsMe", "ltoken", "hkey", "serverTimeOffset"
+  ].map((key) => [key, config[key]]));
 }
 
 function invoiceConfigChanged(
-  before: { fetchDetails?: boolean; userToken?: string; mobileBarcode?: string },
-  after: { fetchDetails?: boolean; userToken?: string; mobileBarcode?: string }
+  before: Record<string, unknown>,
+  after: Record<string, unknown>
 ) {
-  return (
-    before.fetchDetails !== after.fetchDetails ||
-    before.userToken !== after.userToken ||
-    before.mobileBarcode !== after.mobileBarcode
-  );
+  return Object.keys(before).some((key) => before[key] !== after[key]);
 }
 
 function invoiceLineItemStatement(

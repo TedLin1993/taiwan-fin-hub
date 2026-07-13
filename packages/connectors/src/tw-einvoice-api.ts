@@ -32,6 +32,15 @@ export type LoginParams =
       PushToken?: string;
     };
 
+export class EInvoiceProtocolUnavailableError extends Error {
+  constructor(
+    message = "財政部電子發票服務拒絕目前的 App 登入協定（代碼 6603）。這不是帳號密碼錯誤，也不是暫時忙碌；重複同步不會恢復，需改用新版協定或財政部正式 AppID API。"
+  ) {
+    super(message);
+    this.name = "EInvoiceProtocolUnavailableError";
+  }
+}
+
 export class EInvoiceClient {
   currentUser: EInvoiceUser | null;
   host: string;
@@ -91,7 +100,14 @@ export class EInvoiceClient {
   async login(params: LoginParams) {
     const data = await this.post("User/Login", params);
     if (!this.currentUser) {
-      throw new Error(responseMessage(data) || "登入回應未包含使用者資料，請確認帳號、密碼與 App 版本。");
+      const returnCode = responseReturnCode(data);
+      const message = responseMessage(data);
+      if (returnCode === "6603" || message === "目前系統繁忙，請稍後再試。") {
+        throw new EInvoiceProtocolUnavailableError();
+      }
+      throw new Error(
+        `${returnCode ? `代碼 ${returnCode}：` : ""}${message || "登入回應未包含使用者資料，請確認帳號、密碼與 App 版本。"}`
+      );
     }
     return data;
   }
@@ -214,6 +230,14 @@ function responseMessage(data: unknown) {
     response.Description,
     response.description
   );
+}
+
+function responseReturnCode(data: unknown) {
+  const response = asRecord(data);
+  const value = response?.ReturnCode ?? response?.returnCode;
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
 }
 
 function forcedUpgradeVersion(data: unknown) {

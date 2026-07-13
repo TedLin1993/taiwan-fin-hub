@@ -2,7 +2,11 @@
 // Exercises the private official App endpoint contract without sending credentials.
 import assert from "node:assert/strict";
 import forge from "node-forge";
-import { EInvoiceClient, RSA_PUBLIC_KEY } from "./tw-einvoice-api";
+import {
+  EInvoiceClient,
+  EInvoiceProtocolUnavailableError,
+  RSA_PUBLIC_KEY
+} from "./tw-einvoice-api";
 
 const OUTDATED_PROTOCOL_VERSION = "6.800.2";
 const REQUIRED_PROTOCOL_VERSION = "7.9000.40";
@@ -13,6 +17,13 @@ const requests: Array<{ url: string; init: RequestInit }> = [];
 
   if (url.endsWith("User/Login")) {
     const requestHeaders = new Headers(init.headers);
+    if (requestHeaders.get("ApiKey") === "protocol-unavailable") {
+      return json({
+        Result: null,
+        ReturnCode: 6603,
+        Message: "目前系統繁忙，請稍後再試。"
+      });
+    }
     // Simulate the service's forced-upgrade response whenever the client is not
     // using the protocol version advertised by the service.
     if (requestHeaders.get("AppVersion") !== REQUIRED_PROTOCOL_VERSION) {
@@ -74,6 +85,15 @@ async function main() {
   assert.match(requests[0]?.url ?? "", /UIAPAPP\/api\/User\/Login$/);
   assert.match(requests[1]?.url ?? "", /UIAPAPP\/api\/User\/Login$/);
   assert.match(requests[2]?.url ?? "", /UIAPAPP\/api\/Invoice\/ChkCarrierInv$/);
+
+  const protocolClient = new EInvoiceClient({ apiKey: "protocol-unavailable" });
+  await assert.rejects(
+    () => protocolClient.login({ mobile: "0912345678", password: "test-password" }),
+    (error: unknown) =>
+      error instanceof EInvoiceProtocolUnavailableError &&
+      /代碼 6603/.test(error.message) &&
+      /不是帳號密碼錯誤/.test(error.message)
+  );
   console.log("einvoice.selfcheck: ok");
 }
 
