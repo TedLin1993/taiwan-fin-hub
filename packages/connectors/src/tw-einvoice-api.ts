@@ -1,7 +1,9 @@
 import forge from "node-forge";
 
 const BASE_URL = "https://invoiceapp.nat.gov.tw/UIAPAPP/api/";
-const DEFAULT_APP_VERSION = "6.800.2";
+// This is the API protocol version advertised by the service's 6608 upgrade
+// response. It is not the same as the version shown in Google Play.
+const DEFAULT_APP_VERSION = "7.9000.40";
 const DEFAULT_OS = "Android";
 const DEFAULT_API_KEY = "xkRT21hZ3uDJehRthVlDAdfzpAoPLEoKpTAKyR/eB2iMqErmM7U5IVC6G5eHD/MN";
 
@@ -60,15 +62,30 @@ export class EInvoiceClient {
 
   async post(path: string, body?: unknown) {
     const payload = this.normalizeRequestBody(path, body);
+    let data = await this.send(path, payload);
+
+    // The private App API returns a plain JSON 6608 response (while still
+    // setting `encrypt: single`) when its protocol version changes. Follow the
+    // version advertised by the service and retry login once so a future App
+    // release does not require another emergency hard-coded version update.
+    const requiredVersion = path === "User/Login" ? forcedUpgradeVersion(data) : undefined;
+    if (requiredVersion && requiredVersion !== this.headers.AppVersion) {
+      this.headers.AppVersion = requiredVersion;
+      data = await this.send(path, payload);
+    }
+
+    if (path === "User/Login") this.setCurrentUserFromLogin(data);
+    return data;
+  }
+
+  private async send(path: string, payload: unknown) {
     const { requestBody, cryptoKey, headers } = this.encryptRequest(payload);
     const res = await fetch(this.host + path, {
       method: "POST",
       headers: { ...this.headers, ...headers },
       body: requestBody
     });
-    const data = await this.readResponse(res, path, cryptoKey);
-    if (path === "User/Login") this.setCurrentUserFromLogin(data);
-    return data;
+    return this.readResponse(res, path, cryptoKey);
   }
 
   async login(params: LoginParams) {
@@ -197,6 +214,22 @@ function responseMessage(data: unknown) {
     response.Description,
     response.description
   );
+}
+
+function forcedUpgradeVersion(data: unknown) {
+  const response = asRecord(data);
+  const returnCode = firstString(response?.ReturnCode, response?.returnCode);
+  if (returnCode !== "6608") return undefined;
+
+  const rawInfo = response?.Info ?? response?.info;
+  let info = asRecord(rawInfo);
+  if (!info && typeof rawInfo === "string") {
+    const parsed = parseJson(rawInfo);
+    info = parsed.parsed ? asRecord(parsed.value) : null;
+  }
+
+  const version = firstString(info?.VersionNumber, info?.versionNumber);
+  return version && /^[0-9A-Za-z._-]{1,32}$/.test(version) ? version : undefined;
 }
 
 function asRecord(value: unknown) {
