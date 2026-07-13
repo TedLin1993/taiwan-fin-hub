@@ -1,7 +1,11 @@
 import type { Connector, Invoice, InvoiceLineItem } from "@taiwan-fin-hub/core";
 import { z } from "zod";
-import { currentPeriodIndex, getDetailItems, getInvoices, periodFromIndex } from "./invoice-data";
-import { EInvoiceClient } from "./tw-einvoice-api";
+import { currentPeriodIndex, periodFromIndex } from "./invoice-data";
+import { EInvoiceV2Client, type EInvoiceV2Session } from "./tw-einvoice-v2";
+
+export { EInvoiceProtocolUnavailableError } from "./tw-einvoice-api";
+export { EInvoiceV2Client, decryptLoginData, encryptLoginData, signInvoiceJwt } from "./tw-einvoice-v2";
+export type { EInvoiceV2Options, EInvoiceV2Session } from "./tw-einvoice-v2";
 
 export { tdccConnector, createTdccConnector, tdccConfigSchema, parseTdccConfig, syncTdccTradeHistory, TdccOtpExpiredError } from "./tdcc";
 export type { TdccConfig, TdccHolding, TdccCashBalance, TdccCashMovement, TdccClient } from "./tdcc";
@@ -26,11 +30,26 @@ const invoiceRecordSchema = z.object({
 
 export const invoiceConfigSchema = z.object({
   records: z.array(invoiceRecordSchema).default([]),
+  protocol: z.enum(["legacy", "v2"]).default("v2").transform(() => "v2" as const),
   mobile: z.string().min(1).optional(),
   password: z.string().min(1).optional(),
   apiKey: z.string().min(1).optional(),
   mobileBarcode: z.string().min(1).optional(),
   userToken: z.string().min(1).optional(),
+  androidId: z.string().min(1).optional(),
+  ptoken: z.string().optional(),
+  loginClientCode: z.string().optional(),
+  loginType: z.number().int().min(0).max(9).default(0),
+  sid: z.string().optional(),
+  token: z.string().optional(),
+  iv: z.string().optional(),
+  svrCode: z.string().optional(),
+  loginAppId: z.string().optional(),
+  loginLiat: z.number().int().optional(),
+  loginSsMe: z.string().optional(),
+  ltoken: z.string().optional(),
+  hkey: z.string().optional(),
+  serverTimeOffset: z.number().int().optional(),
   periodsBack: z.number().int().min(1).max(24).default(1),
   fetchDetails: z.boolean().default(true)
 });
@@ -63,41 +82,57 @@ export const einvoiceConnector: Connector<InvoiceConfig, Omit<Invoice, "id" | "c
 };
 
 async function syncTaiwanEInvoices(config: InvoiceConfig, cursor?: string) {
-  const client = new EInvoiceClient({
-    apiKey: config.apiKey,
-    currentUser:
-      config.mobile && config.userToken && config.mobileBarcode
-        ? {
-            mobile: config.mobile,
-            userToken: config.userToken,
-            mobileBarcode: config.mobileBarcode
-          }
-        : null
-  });
+  return syncTaiwanEInvoicesV2(config, cursor);
+}
 
-  if (!client.currentUser) {
+async function syncTaiwanEInvoicesV2(config: InvoiceConfig, cursor?: string) {
+  if (!config.mobile || !config.password) {
+    throw new Error("新版電子發票需要手機號碼與密碼。");
+  }
+
+  const client = new EInvoiceV2Client({
+    androidId: config.androidId,
+    loginClientCode: config.loginClientCode,
+    ptoken: config.ptoken
+  });
+  let session: EInvoiceV2Session;
+  if (config.sid && config.token && config.loginAppId && config.loginLiat != null && config.loginSsMe) {
+    session = {
+      sid: config.sid,
+      token: config.token,
+      iv: config.iv,
+      svrCode: config.svrCode,
+      clientCode: config.loginClientCode,
+      loginAppId: config.loginAppId,
+      loginLiat: config.loginLiat,
+      loginSsMe: config.loginSsMe,
+      ltoken: config.ltoken,
+      hkey: config.hkey,
+      serverTimeOffset: config.serverTimeOffset,
+      carrierCode: config.mobileBarcode
+    };
+  } else {
     try {
-      await client.login({
-        mobile: config.mobile!,
-        password: config.password!
+      session = await client.login({
+        mobile: config.mobile,
+        password: config.password,
+        androidId: config.androidId,
+        loginClientCode: config.loginClientCode,
+        ptoken: config.ptoken,
+        loginType: config.loginType,
+        carrierCode: config.mobileBarcode
       });
     } catch (error) {
       throw new Error(`電子發票登入失敗：${error instanceof Error ? error.message : "發生未知錯誤"}`);
     }
+    Object.assign(config, session);
+    config.loginClientCode = session.clientCode ?? config.loginClientCode;
+    config.mobileBarcode = session.carrierCode ?? config.mobileBarcode;
   }
 
-  if (client.currentUser?.userToken) {
-    config.userToken = client.currentUser.userToken;
-  }
-
-  if (client.currentUser?.mobileBarcode) {
-    config.mobileBarcode = client.currentUser.mobileBarcode;
-  }
-
-  const carrierId = config.mobileBarcode ?? client.currentUser?.mobileBarcode;
-  if (!carrierId) {
-    throw new Error("電子發票登入未回傳手機條碼。");
-  }
+  const carrierCode = config.mobileBarcode ?? session.carrierCode;
+  if (!carrierCode) throw new Error("新版電子發票登入未回傳手機條碼。");
+  session.carrierCode = carrierCode;
 
   const now = new Date();
   const currentIndex = currentPeriodIndex(now);
@@ -108,30 +143,16 @@ async function syncTaiwanEInvoices(config: InvoiceConfig, cursor?: string) {
 
   for (const periodIndex of periodIndexes) {
     const period = periodFromIndex(periodIndex, now);
-    const payload = await client.checkCarrierInvoices({
-      carrierId,
-      carrierType: "3J0002",
-      cardEncrypt: config.password,
-      startDate: period.startDate,
-      endDate: period.endDate
-    });
-
-    const invoices = getInvoices(payload);
+    const payload = await client.queryCarrierInvoices(session, period.startDate, period.endDate);
+    const invoices = getV2Invoices(payload);
     for (const invoice of invoices) {
-      let detail: unknown;
-      let detailItems: ReturnType<typeof getDetailItems> = [];
       const sourceId = invoiceSourceId(invoice.invNum, invoice.invDate, invoice.id);
-
-      if (config.fetchDetails && invoice.invNum && invoice.invDate) {
+      let detail: unknown;
+      let detailItems: ReturnType<typeof getV2DetailItems> = [];
+      if (config.fetchDetails && invoice.invNum && invoice.detailInvDate) {
         try {
-          detail = await client.checkCarrierInvoiceDetail({
-            carrierId,
-            carrierType: "3J0002",
-            cardEncrypt: config.password,
-            invNum: invoice.invNum,
-            invDate: invoice.invDate
-          });
-          detailItems = getDetailItems(detail);
+          detail = await client.queryCarrierInvoiceDetail(session, invoice.invNum, invoice.detailInvDate);
+          detailItems = getV2DetailItems(detail);
           detailItems.forEach((item, index) => {
             invoiceLineItems.push({
               invoiceSourceId: sourceId,
@@ -146,24 +167,16 @@ async function syncTaiwanEInvoices(config: InvoiceConfig, cursor?: string) {
           });
         } catch (error) {
           detailErrorCount += 1;
-          detail = {
-            error: error instanceof Error ? error.message : "Unable to fetch invoice detail."
-          };
+          detail = { error: error instanceof Error ? error.message : "Unable to fetch invoice detail." };
         }
       }
-
       records.push({
         sourceId,
         invoiceNumber: invoice.invNum || undefined,
         invoiceDate: normalizeInvoiceDate(invoice.invDate),
         sellerName: invoice.sellerName,
         amount: Math.max(0, Math.trunc(invoice.amount)),
-        raw: {
-          invoice,
-          period,
-          detail,
-          detailItems
-        }
+        raw: { invoice, period, detail, detailItems }
       });
     }
   }
@@ -179,6 +192,108 @@ async function syncTaiwanEInvoices(config: InvoiceConfig, cursor?: string) {
       periodsBack: config.periodsBack
     })
   };
+}
+
+function getV2Invoices(payload: unknown) {
+  const rows = findArray(payload, [
+    "invoices", "invoice", "invoiceList", "invList", "headers", "header", "invoiceHeaders", "details", "result", "data", "list"
+  ]);
+  return rows
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    .map((item, index) => {
+      const invoiceDate = parseV2InvoiceDate(item.invDate ?? item.invoiceDate ?? item.date);
+      return {
+        id: firstStringValue(item.invNum, item.invoiceNumber, item.id) || `v2-${index}`,
+        invNum: firstStringValue(item.invNum, item.invoiceNumber),
+        invDate: invoiceDate.iso,
+        detailInvDate: invoiceDate.apiDate,
+        sellerName: firstStringValue(item.sellerName, item.seller, item.sellerNameE) || "未知商店",
+        amount: parseNumericValue(item.amount, item.total, item.totalAmount),
+        randomNumber: firstStringValue(item.randomNumber),
+        invPeriod: firstStringValue(item.invPeriod, item.invTerm),
+        sellerID: firstStringValue(item.sellerID, item.sellerBan),
+        encrypt: firstStringValue(item.encrypt),
+        isQrCode: item.isQrCode === true || item.isScanInv === true,
+        isBuyerType: item.isBuyerType === true || item.isBuyerType === "Y"
+      };
+    });
+}
+
+function parseV2InvoiceDate(value: unknown) {
+  if (typeof value === "string" && value.trim()) {
+    const iso = normalizeInvoiceDate(value);
+    return { iso, apiDate: formatTaipeiApiDate(new Date(iso)) };
+  }
+
+  const record = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+  const epoch = Number(record?.time);
+  if (Number.isFinite(epoch) && epoch > 0) {
+    const date = new Date(epoch);
+    return { iso: date.toISOString(), apiDate: formatTaipeiApiDate(date) };
+  }
+
+  const rocYear = Number(record?.year);
+  const month = Number(record?.month);
+  const day = Number(record?.date);
+  if (Number.isFinite(rocYear) && Number.isFinite(month) && Number.isFinite(day)) {
+    const year = rocYear < 1911 ? rocYear + 1911 : rocYear;
+    const apiDate = `${year}/${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}`;
+    return { iso: normalizeInvoiceDate(apiDate), apiDate };
+  }
+
+  return { iso: "", apiDate: "" };
+}
+
+function formatTaipeiApiDate(date: Date) {
+  if (Number.isNaN(date.getTime())) return "";
+  const taipei = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  return `${taipei.getUTCFullYear()}/${String(taipei.getUTCMonth() + 1).padStart(2, "0")}/${String(taipei.getUTCDate()).padStart(2, "0")}`;
+}
+
+function getV2DetailItems(payload: unknown) {
+  const rows = findArray(payload, ["details", "items", "itemList", "invoiceDetails", "result", "data", "list"]);
+  return rows
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    .map((item, index) => ({
+      id: firstStringValue(item.rowNum, item.id) || String(index),
+      amount: firstStringValue(item.amount, item.subtotal),
+      description: firstStringValue(item.description, item.itemName, item.name) || "未命名品項",
+      quantity: firstStringValue(item.quantity, item.qty),
+      unitPrice: firstStringValue(item.unitPrice, item.price)
+    }));
+}
+
+function findArray(value: unknown, keys: string[], depth = 0): unknown[] {
+  if (depth > 5 || value == null) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  for (const key of keys) {
+    if (Array.isArray(record[key])) return record[key] as unknown[];
+  }
+  for (const child of Object.values(record)) {
+    const found = findArray(child, keys, depth + 1);
+    if (found.length) return found;
+  }
+  return [];
+}
+
+function firstStringValue(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return "";
+}
+
+function parseNumericValue(...values: unknown[]) {
+  for (const value of values) {
+    const parsed = Number(String(value ?? "").replace(/,/g, ""));
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
 }
 
 function parseOptionalNumber(value: string) {

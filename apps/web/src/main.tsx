@@ -4045,7 +4045,6 @@ const connectorFields: Record<ConnectorId, ConnectorField[]> = {
   einvoice: [
     { key: "mobile", label: "手機號碼", type: "text", placeholder: "0912345678" },
     { key: "password", label: "密碼", type: "password" },
-    { key: "apiKey", label: "API 金鑰（通常不需填寫）", type: "password" },
     { key: "periodsBack", label: "回溯期數", type: "number", placeholder: "1" },
     { key: "fetchDetails", label: "同步明細", type: "checkbox" }
   ],
@@ -4402,7 +4401,9 @@ function ConnectorPanel({
   const fields = connectorFields[connectorId];
   const [values, setValues] = useState<Record<string, string | boolean>>(() => {
     const defaults: Record<string, string | boolean> = {};
-    if (connectorId === "einvoice") defaults.fetchDetails = true;
+    if (connectorId === "einvoice") {
+      defaults.fetchDetails = true;
+    }
     return defaults;
   });
   const [otp, setOtp] = useState("");
@@ -4523,9 +4524,10 @@ function ConnectorPanel({
     },
     onSuccess: (_data, target) => {
       invalidateAfterSync(target ?? "default");
-      queryClient.invalidateQueries({ queryKey: ["sync-jobs"] });
     },
-    onError: (mutationError) => setError(messageFromError(mutationError))
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["sync-jobs"] });
+    }
   });
   const syncErrorMessage = sync.isError ? messageFromError(sync.error) : "";
   const otpRequired = connectorId === "tdcc" && (otpForced || /OTP/i.test(syncErrorMessage));
@@ -4631,6 +4633,7 @@ function ConnectorPanel({
       )}
       <SyncJobStatus
         job={syncJob}
+        currentError={syncErrorMessage}
         loading={syncJobs.isLoading}
         updating={updateSyncJob.isPending}
         onToggle={(enabled) => updateSyncJob.mutate({ enabled })}
@@ -4702,6 +4705,7 @@ function ConnectorPanel({
 
 function SyncJobStatus({
   job,
+  currentError,
   loading,
   updating,
   onToggle,
@@ -4709,6 +4713,7 @@ function SyncJobStatus({
   onInterval
 }: {
   job?: SyncJobRow;
+  currentError?: string;
   loading: boolean;
   updating: boolean;
   onToggle: (enabled: boolean) => void;
@@ -4792,8 +4797,10 @@ function SyncJobStatus({
           </button>
         )}
       </div>
-      {job?.lastError && (
-        <p className="mt-1 text-xs text-coral">{job.lastError}</p>
+      {(currentError || job?.lastError) && (
+        <p className="mt-1 text-xs text-coral">
+          {currentError ? `本次同步：${currentError}` : `上次同步：${job?.lastError}`}
+        </p>
       )}
     </div>
   );
