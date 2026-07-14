@@ -2,7 +2,11 @@
   import { toStore } from "svelte/store";
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { Database, KeyRound, RefreshCw, Save, WalletCards } from "@lucide/svelte";
+  import Card from "../components/ui/Card.svelte";
   import Button from "../components/ui/Button.svelte";
+  import Checkbox from "../components/ui/Checkbox.svelte";
+  import Input from "../components/ui/Input.svelte";
+  import Select from "../components/ui/Select.svelte";
   import type { ApiClient } from "../lib/api";
   import { queryKeys } from "../lib/api";
   import type { ConnectorField, ConnectorId, ConnectorSettings, SyncJobRow, SyncTarget } from "../lib/types";
@@ -83,7 +87,7 @@
   }
 </script>
 
-<article class="rounded-xl border border-ink/10 bg-white p-4 shadow-xs">
+<Card as="article" class="p-4">
   <div class="flex flex-wrap items-start justify-between gap-3">
     <div>
       <h2 class="text-lg font-semibold">{title}</h2>
@@ -104,19 +108,19 @@
   {#if demoMode}<p class="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">Demo site 已停用同步；你仍可查看示範資料與介面互動。</p>{/if}
   {#if connectorId === "tdcc"}<details class="mt-3 rounded-md border border-ink/10 bg-paper text-sm text-ink/70" open><summary class="cursor-pointer select-none px-3 py-2 font-medium text-ink/80">使用說明</summary><ol class="list-decimal space-y-1.5 px-3 pb-3 pt-1 pl-8"><li>先在手機下載並登入「集保e存摺」，確認可看到股票與基金資料。</li><li>填入身分證字號與集保 App 密碼，儲存後再按同步。</li><li>首次同步需要驗證碼，請查看手機簡訊或電子信箱。</li><li>完成後即可看到持倉；日後同步通常不需重新輸入驗證碼。</li></ol></details>{/if}
   <div class="mt-3 rounded-md border border-ink/10 bg-paper px-3 py-2 text-sm text-ink/70">
-    <div class="flex flex-wrap items-center justify-between gap-2"><div class="flex flex-wrap items-center gap-x-3 gap-y-1"><span class="font-medium">自動同步：{job?.enabled ? "開" : "關"}</span>{#if job}<span>狀態：{job.running ? "同步中" : job.lastStatus === "success" ? "正常" : job.lastStatus === "failed" ? "失敗" : job.lastStatus === "needs_user_action" ? "需要處理" : "尚未同步"}</span>{#if job.lastRunAt}<span>上次：{formatDateTime(job.lastRunAt)}</span>{/if}{#if job.enabled}<span class="flex items-center gap-1.5"><select class="rounded border border-ink/15 bg-white px-1 py-0.5 text-xs" value={intervalOptions.find((option) => option.minutes === job.intervalMinutes)?.minutes ?? 1440} onchange={(e) => $updateJob.mutate({ intervalMinutes: Number((e.currentTarget as HTMLSelectElement).value) })}>{#each intervalOptions as option}<option value={option.minutes}>{option.label}</option>{/each}</select>{#if job.intervalMinutes >= 1440 && job.nextRunAt}<input type="time" class="rounded border border-ink/15 bg-white px-1 py-0.5 text-xs" value={new Date(job.nextRunAt).toTimeString().slice(0, 5)} onchange={scheduleTime} /><span class="text-ink/50">同步</span>{/if}</span>{/if}{/if}</div>{#if job}<button class="rounded-md border border-ink/15 bg-white px-2.5 py-1 text-xs font-medium" disabled={$updateJob.isPending} onclick={() => $updateJob.mutate({ enabled: !job.enabled })}>{job.enabled ? "關閉" : "開啟"}</button>{/if}</div>
+    <div class="flex flex-wrap items-center justify-between gap-2"><div class="flex flex-wrap items-center gap-x-3 gap-y-1"><span class="font-medium">自動同步：{job?.enabled ? "開" : "關"}</span>{#if job}<span>狀態：{job.running ? "同步中" : job.lastStatus === "success" ? "正常" : job.lastStatus === "failed" ? "失敗" : job.lastStatus === "needs_user_action" ? "需要處理" : "尚未同步"}</span>{#if job.lastRunAt}<span>上次：{formatDateTime(job.lastRunAt)}</span>{/if}{#if job.enabled}<span class="flex items-center gap-1.5"><Select class="h-8 w-auto px-2 text-xs" value={intervalOptions.find((option) => option.minutes === job.intervalMinutes)?.minutes ?? 1440} onchange={(e: Event) => $updateJob.mutate({ intervalMinutes: Number((e.currentTarget as HTMLSelectElement).value) })}>{#each intervalOptions as option}<option value={option.minutes}>{option.label}</option>{/each}</Select>{#if job.intervalMinutes >= 1440 && job.nextRunAt}<Input type="time" class="h-8 w-auto text-xs" value={new Date(job.nextRunAt).toTimeString().slice(0, 5)} onchange={scheduleTime} /><span class="text-muted-foreground">同步</span>{/if}</span>{/if}{/if}</div>{#if job}<Button size="sm" variant="outline" disabled={$updateJob.isPending} onclick={() => $updateJob.mutate({ enabled: !job.enabled })}>{job.enabled ? "關閉" : "開啟"}</Button>{/if}</div>
     {#if error || job?.lastError}<p class="mt-1 text-xs text-coral">{error ? `本次同步：${error}` : `上次同步：${job?.lastError}`}</p>{/if}
   </div>
   <div class="mt-4 grid gap-3">
     {#each fields as field}
       {#if field.type === "checkbox"}
-        <label class="flex items-center gap-2 text-sm"><input type="checkbox" checked={Boolean(values[field.key])} onchange={(e) => values[field.key] = (e.currentTarget as HTMLInputElement).checked} />{field.label}</label>
+        <label class="flex items-center gap-2 text-sm"><Checkbox checked={Boolean(values[field.key])} onchange={(e: Event) => values[field.key] = (e.currentTarget as HTMLInputElement).checked} />{field.label}</label>
       {:else}
-        <label class="grid gap-1 text-sm">{field.label}<input class="rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm outline-hidden" type={field.type} placeholder={field.placeholder} bind:value={values[field.key]} /></label>
+        <label class="grid gap-1 text-sm">{field.label}<Input type={field.type} placeholder={field.placeholder} value={String(values[field.key] ?? "")} oninput={(e: Event) => values[field.key] = (e.currentTarget as HTMLInputElement).value} /></label>
       {/if}
     {/each}
   </div>
-  {#if otpRequired}<div class="mt-3 rounded-md border border-coral/40 bg-coral/10 p-3"><p class="text-sm font-medium text-ink/80">TDCC 需要驗證碼，請查看{otpChannel === "sms" ? "手機簡訊" : "電子信箱"}。</p><div class="mt-2 flex flex-wrap gap-2"><input class="min-w-40 flex-1 rounded-md border border-ink/15 bg-white px-3 py-2 text-sm outline-hidden" placeholder="輸入驗證碼" bind:value={otp} /><Button size="sm" disabled={$verifyOtp.isPending} onclick={() => $verifyOtp.mutate()}><RefreshCw class="size-4" />驗證並同步</Button></div></div>{/if}
+  {#if otpRequired}<div class="mt-3 rounded-md border border-destructive/40 bg-destructive/10 p-3"><p class="text-sm font-medium text-ink/80">TDCC 需要驗證碼，請查看{otpChannel === "sms" ? "手機簡訊" : "電子信箱"}。</p><div class="mt-2 flex flex-wrap gap-2"><Input class="min-w-40 flex-1" placeholder="輸入驗證碼" bind:value={otp} /><Button size="sm" disabled={$verifyOtp.isPending} onclick={() => $verifyOtp.mutate()}><RefreshCw class="size-4" />驗證並同步</Button></div></div>{/if}
   {#if error}<p class="mt-3 rounded-md bg-paper px-3 py-2 text-sm text-coral">{error}</p>{/if}
   <p class="mt-3 text-xs text-ink/50">輸入完帳號密碼後，請先按「儲存設定」，再按「同步」。</p>
-</article>
+</Card>

@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { ArrowDownRight, ArrowUpRight, TrendingUp } from "@lucide/svelte";
-  import { curveMonotoneX } from "d3-shape";
+  import { ArrowDownLeft, ArrowUpRight, TrendingUp } from "@lucide/svelte";
   import { LineChart } from "layerchart";
   import Card from "../components/ui/Card.svelte";
   import CardContent from "../components/ui/CardContent.svelte";
   import CardHeader from "../components/ui/CardHeader.svelte";
+  import TabsList from "../components/ui/TabsList.svelte";
+  import TabsTrigger from "../components/ui/TabsTrigger.svelte";
   import { ChartContainer, ChartTooltip, type ChartConfig } from "../components/ui/chart";
   import { formatCompactTwd, formatCurrency, formatDate } from "../lib/format.svelte";
   import {
@@ -45,9 +46,10 @@
   const chartSeries = $derived(
     displayMode === "sum"
       ? [{ key: "selectedTotal", label: "淨資產", value: "selectedTotal", color: "var(--color-selectedTotal)" }]
-      : NET_WORTH_ASSET_SERIES
+      : [...NET_WORTH_ASSET_SERIES
           .filter(({ key }) => includedAssets.includes(key))
-          .map(({ key, label }) => ({ key, label, value: key, color: `var(--color-${key})` }))
+          .map(({ key, label }) => ({ key, label, value: key, color: `var(--color-${key})` })),
+        { key: "selectedTotal", label: "總和", value: "selectedTotal", color: "var(--color-selectedTotal)", props: { strokeDasharray: "6 4", strokeWidth: 2.5 } }]
   );
 
   onMount(() => {
@@ -91,51 +93,51 @@
 {/snippet}
 
 <Card class="min-w-0 max-w-full overflow-hidden">
-  <CardHeader class="gap-4">
-    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-      <div>
-        <h2 class="flex items-center gap-2 text-lg font-semibold">
-          <TrendingUp class="size-4 text-steel" />淨資產趨勢
-        </h2>
+  <CardHeader class="gap-3 p-4 md:p-5">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex flex-wrap items-center gap-3">
+        <h2 class="flex items-center gap-2 text-base font-semibold"><TrendingUp class="size-4 text-steel" />資產走勢</h2>
+        <div class="flex flex-wrap items-center gap-1.5" aria-label="資產類型篩選">
+          <span class="text-xs font-medium text-ink/40">包含</span>
+          {#each NET_WORTH_ASSET_SERIES as option}
+            {@const active = includedAssets.includes(option.key)}
+            {@const available = availableAssets.has(option.key)}
+            <button
+              class={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition ${active && available ? "border-ink/15 bg-white text-ink shadow-xs" : "border-ink/8 bg-paper text-ink/45"} ${available ? "hover:border-steel/25 hover:text-steel" : "cursor-not-allowed opacity-40"}`}
+              disabled={!available}
+              aria-pressed={active}
+              onclick={() => toggleAsset(option.key)}
+            ><span class="size-2 rounded-full" style={`background:${option.color}`}></span>{option.label}</button>
+          {/each}
+        </div>
+        <TabsList class="h-8 border border-border p-0.5 text-xs">
+          {#each [{ key: "sum", label: "總和" }, { key: "breakdown", label: "分類" }] as option}
+            <TabsTrigger class="h-7 px-2 py-0.5 text-xs" active={displayMode === option.key} onclick={() => displayMode = option.key as NetWorthDisplayMode}>{option.label}</TabsTrigger>
+          {/each}
+        </TabsList>
+      </div>
+      <div class="flex items-center gap-2">
         {#if chartData.length > 0}
-          <div class="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span class="text-2xl font-bold tracking-tight tabular-nums">{formatCurrency(latestValue)}</span>
-            <span class={`inline-flex items-center gap-1 text-xs font-semibold ${changeValue >= 0 ? "text-moss" : "text-coral"}`}>
-              {#if changeValue >= 0}<ArrowUpRight class="size-3.5" />{:else}<ArrowDownRight class="size-3.5" />{/if}
-              {changeValue >= 0 ? "+" : ""}{formatCompactTwd(changeValue)}（{changePercent >= 0 ? "+" : ""}{changePercent.toFixed(1)}%）
-            </span>
-          </div>
+          <span class={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold ${changeValue >= 0 ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-500"}`}>
+            {#if changeValue >= 0}<ArrowUpRight class="size-3.5" />{:else}<ArrowDownLeft class="size-3.5" />{/if}
+            {changePercent >= 0 ? "+" : ""}{changePercent.toFixed(1)}%
+          </span>
         {/if}
+        <TabsList class="grid h-8 grid-cols-5 border border-border p-0.5 text-xs">
+          {#each timeframes as option}
+            <TabsTrigger class="h-7 px-2 py-0.5 text-xs" active={timeframe === option} onclick={() => timeframe = option}>{option === "ALL" ? "全部" : option}</TabsTrigger>
+          {/each}
+        </TabsList>
       </div>
-      <div class="inline-flex w-fit rounded-lg border border-ink/10 bg-ink/3 p-1 text-xs font-medium">
-        {#each [{ key: "sum", label: "總和" }, { key: "breakdown", label: "分類" }] as option}
-          <button
-            class={`rounded-md px-3 py-1.5 transition ${displayMode === option.key ? "bg-white text-ink shadow-xs" : "text-ink/55 hover:text-ink"}`}
-            onclick={() => displayMode = option.key as NetWorthDisplayMode}
-          >{option.label}</button>
-        {/each}
-      </div>
-    </div>
-    <div class="flex flex-wrap gap-1.5" aria-label="資產類型篩選">
-      {#each NET_WORTH_ASSET_SERIES as option}
-        {@const active = includedAssets.includes(option.key)}
-        {@const available = availableAssets.has(option.key)}
-        <button
-          class={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${active && available ? "border-transparent bg-steel/15 text-steel" : "border-ink/8 bg-white text-ink/45"} ${available ? "hover:border-steel/25 hover:text-steel" : "cursor-not-allowed opacity-40"}`}
-          disabled={!available}
-          aria-pressed={active}
-          onclick={() => toggleAsset(option.key)}
-        >{option.label}</button>
-      {/each}
     </div>
   </CardHeader>
-  <CardContent class="min-w-0 overflow-hidden px-3 sm:px-5">
+  <CardContent class="min-w-0 overflow-hidden px-3 pb-4 sm:px-5 sm:pb-5">
     {#if loading}
       <div class="flex h-64 items-center justify-center text-sm text-ink/45">載入趨勢中…</div>
     {:else if chartData.length === 0}
       <div class="flex h-64 items-center justify-center rounded-lg bg-ink/2 text-sm text-ink/45">尚無淨資產歷史資料。</div>
     {:else}
-      <ChartContainer config={chartConfig} class="h-72 min-h-72 w-full min-w-0 sm:h-80 sm:min-h-80">
+      <ChartContainer config={chartConfig} class="h-52 min-h-52 w-full min-w-0 sm:h-56 sm:min-h-56">
         <LineChart
           data={chartData}
           x={xValue}
@@ -149,14 +151,15 @@
           props={{
             xAxis: { format: formatAxisDate, tickSpacing: 72, tickMarks: false },
             yAxis: { format: (value: unknown) => formatCompactTwd(Number(value)), tickSpacing: 52, tickMarks: false, grid: true },
-            spline: { curve: curveMonotoneX, strokeWidth: 2.5 },
+            spline: { strokeWidth: 2.5 },
             highlight: { points: true, lines: true }
           }}
         />
       </ChartContainer>
-      <div class="mt-3 flex min-w-0 flex-col items-stretch gap-3 border-t border-ink/8 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+      <div class="mt-2 flex min-w-0 flex-wrap items-center gap-3 border-t border-ink/8 pt-3">
         {#if displayMode === "breakdown"}
           <div class="flex flex-wrap gap-x-4 gap-y-2 text-xs text-ink/55">
+            <span class="inline-flex items-center gap-1.5"><span class="w-4 border-t-2 border-dashed border-ink"></span>總和</span>
             {#each NET_WORTH_ASSET_SERIES.filter(({ key }) => includedAssets.includes(key)) as item}
               <span class="inline-flex items-center gap-1.5"><span class="size-2 rounded-full" style={`background:${item.color}`}></span>{item.label}</span>
             {/each}
@@ -164,14 +167,6 @@
         {:else}
           <span class="text-xs text-ink/45">已選資產的每日合計</span>
         {/if}
-        <div class="grid w-full grid-cols-5 rounded-lg bg-ink/3 p-1 text-xs font-medium sm:ml-auto sm:flex sm:w-auto">
-          {#each timeframes as option}
-            <button
-              class={`rounded-md px-2 py-1 transition sm:px-2.5 ${timeframe === option ? "bg-white text-ink shadow-xs" : "text-ink/45 hover:text-ink"}`}
-              onclick={() => timeframe = option}
-            >{option === "ALL" ? "全部" : option}</button>
-          {/each}
-        </div>
       </div>
     {/if}
   </CardContent>

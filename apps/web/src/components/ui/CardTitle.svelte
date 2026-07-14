@@ -3,4 +3,4 @@
   import { cn } from "../../lib/utils";
   let { children, class: className = "" }: { children?: Snippet; class?: string } = $props();
 </script>
-<div class={cn("p-5 pt-0", className)}>{@render children?.()}</div>
+<h3 class={cn("font-semibold leading-none tracking-tight", className)}>{@render children?.()}</h3>

@@ -8,7 +8,7 @@ describe("Button", () => {
     const { getByRole } = render(Button, { props: { variant: "primary", onclick } });
     const button = getByRole("button");
 
-    expect(button).toHaveClass("bg-steel");
+    expect(button).toHaveClass("bg-primary");
     await fireEvent.click(button);
     expect(onclick).toHaveBeenCalledTimes(1);
   });
