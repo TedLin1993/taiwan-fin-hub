@@ -75,3 +75,15 @@ export async function updateConnectorCursor(
     .bind(cursor, now, connectorId)
     .run();
 }
+
+export {
+  acquireSyncJobLock,
+  completeSyncJob,
+  failSyncJob,
+  findNextDueSyncJob,
+  markManualSyncFailure,
+  markManualSyncSuccess,
+  releaseSyncJobLock,
+  renewSyncJobLock
+} from "./sync-jobs";
+export type { SyncJobRow, SyncStatus, SyncTrigger } from "./sync-jobs";

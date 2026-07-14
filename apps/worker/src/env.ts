@@ -1,0 +1,21 @@
+import type { ConnectorId } from "@taiwan-fin-hub/core";
+
+export interface Env {
+  DB: D1Database;
+  ASSETS: Fetcher;
+  BROWSER: Fetcher;
+  CONFIG_ENCRYPTION_KEY?: string;
+  TEAM_DOMAIN?: string;
+  POLICY_AUD?: string;
+  POLICY_AUDS?: string;
+  DEMO_MODE?: string | boolean;
+}
+
+export type Variables = {
+  connectorId: ConnectorId;
+};
+
+export type AppBindings = {
+  Bindings: Env;
+  Variables: Variables;
+};

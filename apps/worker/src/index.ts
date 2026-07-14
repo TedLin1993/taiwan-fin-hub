@@ -22,61 +22,59 @@ import {
   type InvestmentTransaction,
   type InvoiceLineItem,
   type NetWorthHistoryPoint,
-  isConnectorId,
-  supportedConnectorIds
+  isConnectorId
 } from "@taiwan-fin-hub/core";
 import {
+  acquireSyncJobLock,
+  completeSyncJob,
+  failSyncJob,
+  findNextDueSyncJob,
   getConnectorSettings,
+  markManualSyncFailure,
+  markManualSyncSuccess,
+  releaseSyncJobLock,
+  renewSyncJobLock,
+  type SyncJobRow,
+  type SyncStatus,
+  type SyncTrigger,
   upsertConnectorSettings
 } from "@taiwan-fin-hub/db";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { verifyAccessIdentity } from "./access-auth";
+import { resolveClassifications, type ClassificationResult } from "./classification";
 import { encryptJson, decryptJson } from "./crypto";
+import type { AppBindings, Env } from "./env";
+import {
+  apiErrorResponse,
+  demoReadOnlyMiddleware,
+  isDemoMode,
+  jsonError,
+  parsePagination,
+  setPaginationHeaders
+} from "./http";
 import { readValidateNumberFromImage } from "./validate-number-ocr";
+import { registerExchangeRateRoutes } from "./routes/exchange-rates";
+import { registerClassificationRoutes } from "./routes/classification";
+import { registerInvoiceRoutes } from "./routes/invoices";
+import { registerManualAssetRoutes } from "./routes/manual-assets";
 
-interface Env {
-  DB: D1Database;
-  ASSETS: Fetcher;
-  BROWSER: Fetcher;
-  CONFIG_ENCRYPTION_KEY?: string;
-  TEAM_DOMAIN?: string;
-  POLICY_AUD?: string;
-  POLICY_AUDS?: string;
-  DEMO_MODE?: string | boolean;
-}
-
-type Variables = {
-  connectorId: ConnectorId;
-};
-
-type SyncTrigger = "manual" | "scheduled";
-type SyncScope = string;
-type SyncStatus = "success" | "failed" | "needs_user_action";
+type SyncScope =
+  | "all"
+  | "investments"
+  | "bank"
+  | "trades"
+  | "investments+bank"
+  | "investments+trades"
+  | "bank+trades";
 
 const SYNC_SCOPE_ALL = "all";
 const TDCC_SCOPE_INVESTMENTS = "investments";
 const TDCC_SCOPE_BANK = "bank";
 const TDCC_SCOPE_TRADES = "trades";
-
-type SyncJobRow = {
-  id: string;
-  connector_id: ConnectorId;
-  scope: SyncScope;
-  enabled: number;
-  interval_minutes: number;
-  next_run_at: string;
-  locked_until: string | null;
-  locked_by: string | null;
-  lock_trigger: SyncTrigger | null;
-  lock_scope: SyncScope | null;
-  last_run_at: string | null;
-  last_success_at: string | null;
-  last_status: SyncStatus | null;
-  last_error: string | null;
-  created_at: string;
-  updated_at: string;
-};
+const SYNC_LOCK_LEASE_MS = 30 * 60 * 1000;
+const SYNC_LOCK_HEARTBEAT_MS = 5 * 60 * 1000;
+const MAX_SCHEDULED_JOBS_PER_TICK = 3;
 
 type SyncOutcome = {
   success: true;
@@ -99,11 +97,11 @@ class NeedsUserActionError extends Error {
   }
 }
 
-const app = new Hono<{ Bindings: Env; Variables: Variables }>();
-const api = new Hono<{ Bindings: Env; Variables: Variables }>();
+export const app = new Hono<AppBindings>();
+export const api = new Hono<AppBindings>();
 
 const settingsBodySchema = z.object({
-  config: z.unknown()
+  config: z.record(z.unknown())
 });
 
 const PUBLIC_FIELDS: Record<string, string[]> = {
@@ -131,19 +129,7 @@ const syncJobUpdateSchema = z.object({
   nextRunAt: z.string().datetime().optional(),
   intervalMinutes: z.number().int().min(10).optional()
 }).refine(d => d.enabled !== undefined || d.nextRunAt !== undefined || d.intervalMinutes !== undefined);
-
-function jsonError(code: string, message: string, status = 400) {
-  return Response.json(
-    {
-      success: false,
-      error: {
-        code,
-        message
-      }
-    },
-    { status }
-  );
-}
+const scheduledSyncScopeSchema = z.literal("all");
 
 function requireAccessSecrets(env: Env): asserts env is Env & { TEAM_DOMAIN: string } {
   if (!env.TEAM_DOMAIN || (!env.POLICY_AUD && !env.POLICY_AUDS)) {
@@ -157,13 +143,6 @@ function configEncryptionKey(env: Env) {
   }
 
   return env.CONFIG_ENCRYPTION_KEY;
-}
-
-function isDemoMode(env: Env) {
-  if (env.DEMO_MODE === true) return true;
-  if (typeof env.DEMO_MODE !== "string") return false;
-
-  return ["1", "true", "yes", "on"].includes(env.DEMO_MODE.trim().toLowerCase());
 }
 
 api.use("*", async (c, next) => {
@@ -191,6 +170,8 @@ api.use("*", async (c, next) => {
   await next();
 });
 
+api.use("*", demoReadOnlyMiddleware);
+
 api.get("/runtime", (c) =>
   c.json({
     demoMode: isDemoMode(c.env)
@@ -216,25 +197,10 @@ api.use("/connectors/:connectorId/*", async (c, next) => {
   await next();
 });
 
-api.use("/connectors/:connectorId/*", async (c, next) => {
-  const path = new URL(c.req.url).pathname;
-  const isSyncRequest = c.req.method === "POST" && /^\/api\/connectors\/[^/]+\/sync(?:\/|$)/.test(path);
-  if (!isDemoMode(c.env) || !isSyncRequest) {
-    await next();
-    return;
-  }
-
-  return c.json(
-    {
-      success: false,
-      error: {
-        code: "DEMO_MODE",
-        message: "Demo site disables connector sync."
-      }
-    },
-    403
-  );
-});
+registerManualAssetRoutes(api);
+registerExchangeRateRoutes(api);
+registerInvoiceRoutes(api);
+registerClassificationRoutes(api);
 
 api.get("/summary", async (c) => {
   const [invoiceRow, investmentRow, bankAccountRow, bankBalanceRow] = await Promise.all([
@@ -275,60 +241,6 @@ api.get("/summary", async (c) => {
   });
 });
 
-api.get("/invoices", async (c) => {
-  const invoices = await c.env.DB.prepare(
-    `SELECT
-      id,
-      connector_id AS connectorId,
-      source_id AS sourceId,
-      invoice_number AS invoiceNumber,
-      invoice_date AS invoiceDate,
-      seller_name AS sellerName,
-      amount
-    FROM invoices
-    ORDER BY invoice_date DESC, updated_at DESC`
-  ).all();
-
-  const items = await c.env.DB.prepare(
-    `SELECT
-      id,
-      invoice_id AS invoiceId,
-      source_id AS sourceId,
-      line_number AS lineNumber,
-      description,
-      quantity,
-      unit_price AS unitPrice,
-      amount
-    FROM invoice_line_items
-    ORDER BY invoice_id ASC, line_number ASC, source_id ASC`
-  ).all<{
-    id: string;
-    invoiceId: string;
-    sourceId: string;
-    lineNumber: number;
-    description: string;
-    quantity: number | null;
-    unitPrice: number | null;
-    amount: number;
-  }>();
-
-  const itemsByInvoiceId = new Map<string, typeof items.results>();
-  for (const item of items.results) {
-    const current = itemsByInvoiceId.get(item.invoiceId) ?? [];
-    current.push(item);
-    itemsByInvoiceId.set(item.invoiceId, current);
-  }
-
-  return c.json(
-    invoices.results.map((invoice) => ({
-      ...invoice,
-      invoiceNumber: invoice.invoiceNumber ?? undefined,
-      sellerName: invoice.sellerName ?? undefined,
-      items: itemsByInvoiceId.get(String(invoice.id)) ?? []
-    }))
-  );
-});
-
 api.post("/ocr/validate-number", async (c) => {
   const contentType = c.req.header("Content-Type")?.split(";")[0]?.trim().toLowerCase();
   if (!contentType || !["image/jpeg", "image/jpg"].includes(contentType)) {
@@ -363,91 +275,8 @@ api.post("/ocr/validate-number", async (c) => {
   });
 });
 
-api.get("/invoice-detail", async (c) => {
-  const invoiceId = c.req.query("invoiceId");
-  if (!invoiceId) {
-    return c.json(
-      {
-        success: false,
-        error: {
-          code: "INVALID_REQUEST",
-          message: "invoiceId query parameter is required."
-        }
-      },
-      400
-    );
-  }
-
-  return invoiceDetailResponse(c, invoiceId);
-});
-
-api.get("/invoices/:invoiceId", async (c) => invoiceDetailResponse(c, c.req.param("invoiceId")));
-
-async function invoiceDetailResponse(
-  c: Context<{ Bindings: Env; Variables: Variables }>,
-  invoiceId: string
-) {
-  const invoice = await c.env.DB.prepare(
-    `SELECT
-      id,
-      connector_id AS connectorId,
-      source_id AS sourceId,
-      invoice_number AS invoiceNumber,
-      invoice_date AS invoiceDate,
-      seller_name AS sellerName,
-      amount
-    FROM invoices
-    WHERE id = ?`
-  )
-    .bind(invoiceId)
-    .first<{
-      id: string;
-      connectorId: string;
-      sourceId: string;
-      invoiceNumber: string | null;
-      invoiceDate: string;
-      sellerName: string | null;
-      amount: number;
-    }>();
-
-  if (!invoice) {
-    return c.json(
-      {
-        success: false,
-        error: {
-          code: "INVOICE_NOT_FOUND",
-          message: "Invoice was not found."
-        }
-      },
-      404
-    );
-  }
-
-  const items = await c.env.DB.prepare(
-    `SELECT
-      id,
-      source_id AS sourceId,
-      line_number AS lineNumber,
-      description,
-      quantity,
-      unit_price AS unitPrice,
-      amount
-    FROM invoice_line_items
-    WHERE invoice_id = ?
-    ORDER BY line_number ASC, source_id ASC`
-  )
-    .bind(invoiceId)
-    .all();
-
-  return c.json({
-    ...invoice,
-    invoiceNumber: invoice.invoiceNumber ?? undefined,
-    sellerName: invoice.sellerName ?? undefined,
-    items: items.results
-  });
-}
-
 api.get("/investments", async (c) => {
+  const { limit, offset } = parsePagination(c.req.query(), 100);
   const result = await c.env.DB.prepare(
     `SELECT
       id,
@@ -465,13 +294,17 @@ api.get("/investments", async (c) => {
       WHERE p2.connector_id = investment_positions.connector_id
         AND p2.asset_type = investment_positions.asset_type
     )
-    ORDER BY as_of_date DESC, asset_type ASC, name ASC`
-  ).all();
+    ORDER BY as_of_date DESC, asset_type ASC, name ASC
+    LIMIT ? OFFSET ?`
+  ).bind(limit + 1, offset).all();
 
-  return c.json(result.results);
+  const hasMore = result.results.length > limit;
+  setPaginationHeaders((name, value) => c.header(name, value), { offset, limit, hasMore });
+  return c.json(result.results.slice(0, limit));
 });
 
 api.get("/investment-transactions", async (c) => {
+  const { limit, offset } = parsePagination(c.req.query(), 100);
   const result = await c.env.DB.prepare(
     `SELECT
       id,
@@ -494,162 +327,16 @@ api.get("/investment-transactions", async (c) => {
       currency
     FROM investment_transactions
     ORDER BY COALESCE(trade_date, posted_date) DESC, updated_at DESC
-    LIMIT 500`
-  ).all();
+    LIMIT ? OFFSET ?`
+  ).bind(limit + 1, offset).all();
 
-  return c.json(result.results);
-});
-
-// classification -------------------------------------------------------------------
-
-// c.req.param("*") is unreliable in Hono 4 when the wildcard captures slashes.
-// Extract targetId from the raw path instead.
-function extractOverrideTargetId(reqPath: string, targetType: string): string {
-  const prefix = `/classification/overrides/${targetType}/`;
-  const idx = reqPath.indexOf(prefix);
-  return idx >= 0 ? reqPath.slice(idx + prefix.length) : "";
-}
-
-type ClassificationResult = {
-  categoryId: string;
-  label: string;
-  source: "override" | "user_rule" | "system_rule" | "fallback";
-  ruleId?: string;
-};
-
-type ClassifiedTxn = { id: string; description?: string | null; counterparty?: string | null; sourceId: string };
-
-function matchesRule(
-  rule: { field: string; operator: string; pattern: string },
-  txn: ClassifiedTxn
-): boolean {
-  const any = [txn.description, txn.counterparty, txn.sourceId].filter(Boolean).join(" ").toLowerCase();
-  const text =
-    rule.field === "description" ? (txn.description ?? "").toLowerCase() :
-    rule.field === "counterparty" ? (txn.counterparty ?? "").toLowerCase() :
-    rule.field === "source_id" ? txn.sourceId.toLowerCase() :
-    any;
-  if (rule.operator === "contains") return text.includes(rule.pattern.toLowerCase());
-  if (rule.operator === "equals") return text === rule.pattern.toLowerCase();
-  if (rule.operator === "starts_with") return text.startsWith(rule.pattern.toLowerCase());
-  if (rule.operator === "regex") { try { return new RegExp(rule.pattern, "i").test(text); } catch { return false; } }
-  return false;
-}
-
-async function resolveClassifications(db: D1Database, txns: ClassifiedTxn[]): Promise<Map<string, ClassificationResult>> {
-  if (txns.length === 0) return new Map();
-  // ponytail: browsers normalize \ to / in URL paths, so override target_ids may use / while DB ids use \
-  const normId = (id: string) => id.replace(/\\/g, "/");
-  const txnIds = new Set(txns.map((t) => normId(t.id)));
-  // ponytail: load all overrides for target type; avoids D1 100-param IN limit
-  const [overrides, rules] = await Promise.all([
-    db.prepare(
-      `SELECT o.target_id, o.category_id, c.label
-       FROM classification_overrides o
-       JOIN classification_categories c ON c.id = o.category_id
-       WHERE o.target_type = 'bank_transaction'`
-    ).all<{ target_id: string; category_id: string; label: string }>(),
-    db.prepare(
-      `SELECT r.id, r.category_id, c.label, r.target_type, r.field, r.operator, r.pattern, r.is_system
-       FROM classification_rules r
-       JOIN classification_categories c ON c.id = r.category_id
-       WHERE r.enabled = 1
-       ORDER BY r.priority DESC, r.updated_at DESC, r.id ASC`
-    ).all<{ id: string; category_id: string; label: string; target_type: string | null; field: string; operator: string; pattern: string; is_system: number }>()
-  ]);
-  const overrideMap = new Map(overrides.results.filter((o) => txnIds.has(o.target_id)).map((o) => [o.target_id, o]));
-  const result = new Map<string, ClassificationResult>();
-  for (const txn of txns) {
-    const ov = overrideMap.get(normId(txn.id));
-    if (ov) { result.set(txn.id, { categoryId: ov.category_id, label: ov.label, source: "override" }); continue; }
-    let matched: ClassificationResult | null = null;
-    for (const rule of rules.results) {
-      if (rule.target_type && rule.target_type !== "bank_transaction") continue;
-      if (matchesRule(rule, txn)) {
-        matched = { categoryId: rule.category_id, label: rule.label, source: rule.is_system ? "system_rule" : "user_rule", ruleId: rule.id };
-        break;
-      }
-    }
-    result.set(txn.id, matched ?? { categoryId: "other", label: "其他", source: "fallback" });
-  }
-  return result;
-}
-
-api.get("/classification/categories", async (c) => {
-  const rows = await c.env.DB.prepare(
-    `SELECT id, label, sort_order AS sortOrder, is_system AS isSystem FROM classification_categories ORDER BY sort_order ASC, id ASC`
-  ).all();
-  return c.json(rows.results);
-});
-
-api.get("/classification/rules", async (c) => {
-  const rows = await c.env.DB.prepare(
-    `SELECT id, category_id AS categoryId, target_type AS targetType, field, operator, pattern, priority, enabled, is_system AS isSystem, source, description FROM classification_rules ORDER BY priority DESC, updated_at DESC, id ASC`
-  ).all();
-  return c.json(rows.results);
-});
-
-api.put("/classification/overrides/:targetType/*", async (c) => {
-  const targetType = c.req.param("targetType");
-  const targetId = extractOverrideTargetId(c.req.path, targetType);
-  const body = await c.req.json<{ categoryId: string }>();
-  if (!body.categoryId || !targetId) return jsonError("INVALID_REQUEST", "categoryId and targetId are required");
-  const now = new Date().toISOString();
-  await c.env.DB.prepare(
-    `INSERT INTO classification_overrides (id, target_type, target_id, category_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(target_type, target_id) DO UPDATE SET category_id = excluded.category_id, updated_at = excluded.updated_at`
-  ).bind(`override:${targetType}:${targetId}`, targetType, targetId, body.categoryId, now, now).run();
-  return c.json({ success: true });
-});
-
-api.delete("/classification/overrides/:targetType/*", async (c) => {
-  const targetType = c.req.param("targetType");
-  const targetId = extractOverrideTargetId(c.req.path, targetType);
-  if (!targetId) return jsonError("INVALID_REQUEST", "targetId is required");
-  await c.env.DB.prepare(`DELETE FROM classification_overrides WHERE target_type = ? AND target_id = ?`)
-    .bind(targetType, targetId).run();
-  return c.json({ success: true });
-});
-
-api.post("/classification/rules", async (c) => {
-  const body = await c.req.json<{ categoryId: string; targetType?: string; field: string; operator: string; pattern: string; priority?: number; description?: string }>();
-  if (!body.categoryId || !body.field || !body.operator || !body.pattern) {
-    return jsonError("INVALID_REQUEST", "categoryId, field, operator, pattern are required");
-  }
-  const now = new Date().toISOString();
-  const id = `user:${crypto.randomUUID()}`;
-  await c.env.DB.prepare(
-    `INSERT INTO classification_rules (id, category_id, target_type, field, operator, pattern, priority, enabled, is_system, source, description, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, 'user', ?, ?, ?)`
-  ).bind(id, body.categoryId, body.targetType ?? null, body.field, body.operator, body.pattern, body.priority ?? 200, body.description ?? null, now, now).run();
-  return c.json({ id, success: true });
-});
-
-api.put("/classification/rules/:ruleId", async (c) => {
-  const ruleId = c.req.param("ruleId");
-  const body = await c.req.json<{ categoryId?: string; pattern?: string; priority?: number; enabled?: boolean; description?: string }>();
-  const sets: string[] = [];
-  const vals: unknown[] = [];
-  if (body.categoryId) { sets.push("category_id = ?"); vals.push(body.categoryId); }
-  if (body.pattern !== undefined) { sets.push("pattern = ?"); vals.push(body.pattern); }
-  if (body.priority !== undefined) { sets.push("priority = ?"); vals.push(body.priority); }
-  if (body.enabled !== undefined) { sets.push("enabled = ?"); vals.push(body.enabled ? 1 : 0); }
-  if (body.description !== undefined) { sets.push("description = ?"); vals.push(body.description); }
-  if (sets.length === 0) return jsonError("INVALID_REQUEST", "nothing to update");
-  const now = new Date().toISOString();
-  sets.push("updated_at = ?"); vals.push(now); vals.push(ruleId);
-  await c.env.DB.prepare(`UPDATE classification_rules SET ${sets.join(", ")} WHERE id = ?`).bind(...vals).run();
-  return c.json({ success: true });
-});
-
-api.delete("/classification/rules/:ruleId", async (c) => {
-  await c.env.DB.prepare(`DELETE FROM classification_rules WHERE id = ? AND is_system = 0`)
-    .bind(c.req.param("ruleId")).run();
-  return c.json({ success: true });
+  const hasMore = result.results.length > limit;
+  setPaginationHeaders((name, value) => c.header(name, value), { offset, limit, hasMore });
+  return c.json(result.results.slice(0, limit));
 });
 
 api.get("/bank", async (c) => {
+  const { limit, offset } = parsePagination(c.req.query(), 100);
   const [accounts, transactions] = await Promise.all([
     c.env.DB.prepare(
       `SELECT
@@ -701,24 +388,29 @@ api.get("/bank", async (c) => {
       JOIN bank_accounts account ON account.id = txn.account_id
       WHERE account.canonical_account_id IS NULL
       ORDER BY COALESCE(txn.posted_date, txn.authorized_at) DESC, txn.updated_at DESC
-      LIMIT 100`
-    ).all()
+      LIMIT ? OFFSET ?`
+    ).bind(limit + 1, offset).all()
   ]);
+
+  const hasMore = transactions.results.length > limit;
+  const transactionPage = transactions.results.slice(0, limit);
 
   let classificationMap: Map<string, ClassificationResult>;
   try {
     classificationMap = await resolveClassifications(
       c.env.DB,
-      transactions.results.map((t) => ({ id: String(t.id), description: t.description as string | null, counterparty: t.counterparty as string | null, sourceId: String(t.sourceId) }))
+      transactionPage.map((t) => ({ id: String(t.id), description: t.description as string | null, counterparty: t.counterparty as string | null, sourceId: String(t.sourceId) }))
     );
   } catch (e) {
     console.error("[classify] resolveClassifications failed:", e);
     classificationMap = new Map();
   }
 
+  setPaginationHeaders((name, value) => c.header(name, value), { offset, limit, hasMore });
+
   return c.json({
     accounts: accounts.results.map(normalizeBankAccountDisplay),
-    transactions: transactions.results.map((t) => ({
+    transactions: transactionPage.map((t) => ({
       ...normalizeBankTransactionDisplay(t),
       classification: classificationMap.get(String(t.id))
     }))
@@ -726,6 +418,7 @@ api.get("/bank", async (c) => {
 });
 
 api.get("/bank/bills", async (c) => {
+  const { limit, offset } = parsePagination(c.req.query(), 50);
   const rows = await c.env.DB.prepare(
     `SELECT
       b.id,
@@ -743,16 +436,25 @@ api.get("/bank/bills", async (c) => {
       b.currency
     FROM credit_card_bills b
     JOIN bank_accounts a ON a.id = b.account_id
-    ORDER BY b.billing_period DESC, b.account_id ASC`
-  ).all();
-  return c.json(rows.results);
+    ORDER BY b.billing_period DESC, b.account_id ASC
+    LIMIT ? OFFSET ?`
+  ).bind(limit + 1, offset).all();
+  const hasMore = rows.results.length > limit;
+  setPaginationHeaders((name, value) => c.header(name, value), { offset, limit, hasMore });
+  return c.json(rows.results.slice(0, limit));
 });
 
 api.get("/history/net-worth", async (c) => {
+  const { limit, offset } = parsePagination(c.req.query(), 100);
   const rows = await c.env.DB.prepare(
-    `SELECT date, net_worth AS netWorth, asset_type AS assetType, source FROM net_worth_history ORDER BY date ASC`
-  ).all<{ date: string; netWorth: number; assetType: string; source: string }>();
-  return c.json(rows.results);
+    `SELECT date, net_worth AS netWorth, asset_type AS assetType, source
+     FROM net_worth_history
+     ORDER BY date DESC, source ASC, asset_type ASC
+     LIMIT ? OFFSET ?`
+  ).bind(limit + 1, offset).all<{ date: string; netWorth: number; assetType: string; source: string }>();
+  const hasMore = rows.results.length > limit;
+  setPaginationHeaders((name, value) => c.header(name, value), { offset, limit, hasMore });
+  return c.json(rows.results.slice(0, limit).reverse());
 });
 
 api.post("/history/net-worth/rebuild-bank", async (c) => {
@@ -769,124 +471,6 @@ api.post("/history/net-worth/rebuild-bank", async (c) => {
   const dates = enumerateDates(range.from, range.to);
   await rebuildBankDepositHistory(c.env.DB, dates);
   return c.json({ success: true, dates: dates.length, from: range.from, to: range.to });
-});
-
-// manual assets ---------------------------------------------------------------
-
-api.get("/manual-assets", async (c) => {
-  const assets = await c.env.DB.prepare(
-    `SELECT id, name, category, note, created_at AS createdAt FROM manual_assets ORDER BY created_at ASC`
-  ).all<{ id: string; name: string; category: string; note: string | null; createdAt: string }>();
-
-  // latest value for each asset from net_worth_history
-  const history = await c.env.DB.prepare(
-    `SELECT asset_type AS assetId, net_worth AS value, date
-     FROM net_worth_history
-     WHERE source = 'manual'
-     GROUP BY asset_type
-     HAVING date = MAX(date)`
-  ).all<{ assetId: string; value: number; date: string }>();
-
-  const valueMap = Object.fromEntries(history.results.map((r) => [r.assetId, { value: r.value, date: r.date }]));
-  return c.json(assets.results.map((a) => ({ ...a, ...valueMap[a.id] })));
-});
-
-api.post("/manual-assets", async (c) => {
-  const body = await c.req.json<{ name: string; category: string; note?: string; value: number; date: string }>();
-  if (!body.name || !body.category || typeof body.value !== "number" || !body.date) {
-    return c.json({ error: "name, category, value, date required" }, 400);
-  }
-  const now = new Date().toISOString();
-  const id = `manual:${crypto.randomUUID()}`;
-  await c.env.DB.batch([
-    c.env.DB.prepare(`INSERT INTO manual_assets (id, name, category, note, created_at) VALUES (?, ?, ?, ?, ?)`)
-      .bind(id, body.name, body.category, body.note ?? null, now),
-    c.env.DB.prepare(
-      `INSERT INTO net_worth_history (id, date, net_worth, asset_type, source, snapshotted_at)
-       VALUES (?, ?, ?, ?, 'manual', ?)
-       ON CONFLICT(source, asset_type, date) DO UPDATE SET net_worth = excluded.net_worth, snapshotted_at = excluded.snapshotted_at`
-    ).bind(`manual:${id}:${body.date}`, body.date, body.value, id, now),
-  ]);
-  return c.json({ id });
-});
-
-api.put("/manual-assets/:id", async (c) => {
-  const id = c.req.param("id");
-  const body = await c.req.json<{ name?: string; category?: string; note?: string }>();
-  const sets: string[] = [];
-  const vals: unknown[] = [];
-  if (body.name) { sets.push("name = ?"); vals.push(body.name); }
-  if (body.category) { sets.push("category = ?"); vals.push(body.category); }
-  if ("note" in body) { sets.push("note = ?"); vals.push(body.note ?? null); }
-  if (sets.length === 0) return c.json({ error: "nothing to update" }, 400);
-  vals.push(id);
-  await c.env.DB.prepare(`UPDATE manual_assets SET ${sets.join(", ")} WHERE id = ?`).bind(...vals).run();
-  return c.json({ success: true });
-});
-
-api.delete("/manual-assets/:id", async (c) => {
-  const id = c.req.param("id");
-  await c.env.DB.batch([
-    c.env.DB.prepare(`DELETE FROM net_worth_history WHERE source = 'manual' AND asset_type = ?`).bind(id),
-    c.env.DB.prepare(`DELETE FROM manual_assets WHERE id = ?`).bind(id),
-  ]);
-  return c.json({ success: true });
-});
-
-api.get("/manual-assets/:id/history", async (c) => {
-  const id = c.req.param("id");
-  const rows = await c.env.DB.prepare(
-    `SELECT date, net_worth AS value FROM net_worth_history WHERE source = 'manual' AND asset_type = ? ORDER BY date DESC`
-  ).bind(id).all<{ date: string; value: number }>();
-  return c.json(rows.results);
-});
-
-api.post("/manual-assets/:id/history", async (c) => {
-  const id = c.req.param("id");
-  const body = await c.req.json<{ value: number; date: string }>();
-  if (typeof body.value !== "number" || !body.date) return c.json({ error: "value and date required" }, 400);
-  const now = new Date().toISOString();
-  await c.env.DB.prepare(
-    `INSERT INTO net_worth_history (id, date, net_worth, asset_type, source, snapshotted_at)
-     VALUES (?, ?, ?, ?, 'manual', ?)
-     ON CONFLICT(source, asset_type, date) DO UPDATE SET net_worth = excluded.net_worth, snapshotted_at = excluded.snapshotted_at`
-  ).bind(`manual:${id}:${body.date}`, body.date, body.value, id, now).run();
-  return c.json({ success: true });
-});
-
-api.delete("/manual-assets/:id/history/:date", async (c) => {
-  const id = c.req.param("id");
-  const date = c.req.param("date");
-  await c.env.DB.prepare(
-    `DELETE FROM net_worth_history WHERE source = 'manual' AND asset_type = ? AND date = ?`
-  ).bind(id, date).run();
-  return c.json({ success: true });
-});
-
-// exchange rates ---------------------------------------------------------------
-
-api.get("/exchange-rates", async (c) => {
-  const rows = await c.env.DB.prepare(
-    `SELECT currency, rate_to_twd AS rateTwd, updated_at AS updatedAt FROM exchange_rates ORDER BY currency ASC`
-  ).all<{ currency: string; rateTwd: number; updatedAt: string }>();
-  return c.json(rows.results);
-});
-
-api.put("/exchange-rates", async (c) => {
-  const body = await c.req.json<{ rates: Record<string, number> }>();
-  const now = new Date().toISOString();
-  const entries = Object.entries(body.rates ?? {}).filter(([, v]) => typeof v === "number" && v > 0);
-  if (entries.length > 0) {
-    await c.env.DB.batch(
-      entries.map(([currency, rate]) =>
-        c.env.DB.prepare(
-          `INSERT INTO exchange_rates (currency, rate_to_twd, updated_at) VALUES (?, ?, ?)
-           ON CONFLICT(currency) DO UPDATE SET rate_to_twd = excluded.rate_to_twd, updated_at = excluded.updated_at`
-        ).bind(currency.toUpperCase(), rate, now)
-      )
-    );
-  }
-  return c.json({ success: true });
 });
 
 api.get("/connectors/:connectorId/settings", async (c) => {
@@ -917,7 +501,7 @@ api.put("/connectors/:connectorId/settings", async (c) => {
     );
   }
 
-  const rawConfig = body.data.config as Record<string, unknown>;
+  const rawConfig = body.data.config;
   const publicKeys = PUBLIC_FIELDS[connectorId] ?? [];
   const publicConfig: Record<string, unknown> = {};
   const sensitiveConfig: Record<string, unknown> = {};
@@ -986,17 +570,6 @@ api.put("/connectors/:connectorId/settings", async (c) => {
 });
 
 api.get("/sync-jobs", async (c) => {
-  const now = new Date().toISOString();
-  const nextDay = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  await c.env.DB.batch(
-    supportedConnectorIds.map((id) =>
-      c.env.DB.prepare(
-        `INSERT OR IGNORE INTO sync_jobs (id, connector_id, scope, enabled, interval_minutes, next_run_at, created_at, updated_at)
-         VALUES (?, ?, 'all', 0, 1440, ?, ?, ?)`
-      ).bind(`${id}:all`, id, nextDay, now, now)
-    )
-  );
-
   const rows = await c.env.DB.prepare(
     `SELECT
        id,
@@ -1047,7 +620,11 @@ api.patch("/sync-jobs/:connectorId/:scope", async (c) => {
     return jsonError("CONNECTOR_NOT_FOUND", "Connector id is not supported.", 404);
   }
 
-  const scope = c.req.param("scope");
+  const scopeResult = scheduledSyncScopeSchema.safeParse(c.req.param("scope"));
+  if (!scopeResult.success) {
+    return jsonError("SYNC_JOB_NOT_FOUND", "Scheduled sync scope is not supported.", 404);
+  }
+  const scope = scopeResult.data;
   const body = syncJobUpdateSchema.safeParse(await c.req.json().catch(() => null));
   if (!body.success) {
     return jsonError("INVALID_REQUEST_BODY", "Request body must include an enabled boolean.");
@@ -1127,12 +704,12 @@ api.post("/connectors/cathaybk/sync", async (c) => {
   return syncRouteResponse(c, withManualSyncLock(c.env, "cathaybk", SYNC_SCOPE_ALL, () => syncCathaybk(c.env, "manual")));
 });
 
-async function tdccSyncBody(c: Context<{ Bindings: Env; Variables: Variables }>) {
+async function tdccSyncBody(c: Context<AppBindings>) {
   return tdccSyncBodySchema.parse(await c.req.json().catch(() => ({})));
 }
 
 async function syncRouteResponse(
-  c: Context<{ Bindings: Env; Variables: Variables }>,
+  c: Context<AppBindings>,
   result: Promise<SyncOutcome>
 ) {
   try {
@@ -1496,7 +1073,7 @@ async function syncTdccTrades(
 function tdccOutcomeScope(scopes: Set<string>): SyncScope {
   const allScopes = [TDCC_SCOPE_INVESTMENTS, TDCC_SCOPE_BANK, TDCC_SCOPE_TRADES];
   if (allScopes.every((scope) => scopes.has(scope))) return SYNC_SCOPE_ALL;
-  return allScopes.filter((scope) => scopes.has(scope)).join("+") || SYNC_SCOPE_ALL;
+  return (allScopes.filter((scope) => scopes.has(scope)).join("+") || SYNC_SCOPE_ALL) as SyncScope;
 }
 
 async function requireConnectorSettings(env: Env["DB"], connectorId: ConnectorId) {
@@ -1542,47 +1119,66 @@ async function withManualSyncLock(
   task: () => Promise<SyncOutcome>
 ) {
   const runId = crypto.randomUUID();
+  const lockRowId = canonicalSyncLockRowId(connectorId);
   const locked = await acquireSyncJobLock(env.DB, {
-    lockRowId: canonicalSyncLockRowId(connectorId),
+    lockRowId,
     scope,
     trigger: "manual",
-    runId
+    runId,
+    leaseMs: SYNC_LOCK_LEASE_MS
   });
 
   if (!locked) {
     throw new SyncAlreadyRunningError(connectorId);
   }
 
+  const stopHeartbeat = startSyncLockHeartbeat(env.DB, lockRowId, runId);
   try {
     const outcome = await task();
     await markManualSyncSuccess(env.DB, connectorId, scope);
     return outcome;
   } catch (error) {
-    await markManualSyncFailure(env.DB, connectorId, scope, error);
+    const status: SyncStatus = isUserActionError(error) ? "needs_user_action" : "failed";
+    await markManualSyncFailure(env.DB, connectorId, scope, {
+      status,
+      errorMessage: safeErrorMessage(error)
+    });
     throw error;
   } finally {
-    await releaseSyncJobLock(env.DB, canonicalSyncLockRowId(connectorId), runId);
+    stopHeartbeat();
+    await releaseSyncJobLock(env.DB, lockRowId, runId);
   }
 }
 
 async function runSchedulerTick(env: Env, controller: ScheduledController) {
-  const runId = crypto.randomUUID();
-  const due = await findNextDueSyncJob(env.DB);
-  if (!due) return;
+  for (let index = 0; index < MAX_SCHEDULED_JOBS_PER_TICK; index += 1) {
+    const due = await findNextDueSyncJob<ConnectorId>(env.DB);
+    if (!due) return;
+    await runScheduledJob(env, controller, due);
+  }
+}
 
+async function runScheduledJob(
+  env: Env,
+  controller: ScheduledController,
+  due: SyncJobRow<ConnectorId>
+) {
+  const runId = crypto.randomUUID();
   const lockRowId = canonicalSyncLockRowId(due.connector_id);
   const locked = await acquireSyncJobLock(env.DB, {
     lockRowId,
     scope: due.scope,
     trigger: "scheduled",
-    runId
+    runId,
+    leaseMs: SYNC_LOCK_LEASE_MS
   });
   if (!locked) return;
 
+  const stopHeartbeat = startSyncLockHeartbeat(env.DB, lockRowId, runId);
   const startedAt = Date.now();
   try {
     const outcome = await runDueSyncJob(env, due);
-    await completeSyncJob(env.DB, due, outcome);
+    await completeSyncJob(env.DB, due);
     console.log(JSON.stringify({
       event: "sync_run_finished",
       runId,
@@ -1595,7 +1191,8 @@ async function runSchedulerTick(env: Env, controller: ScheduledController) {
       durationMs: Date.now() - startedAt
     }));
   } catch (error) {
-    await failSyncJob(env.DB, due, error);
+    const status: SyncStatus = isUserActionError(error) ? "needs_user_action" : "failed";
+    await failSyncJob(env.DB, due, { status, errorMessage: safeErrorMessage(error) });
     console.error(JSON.stringify({
       event: "sync_run_failed",
       runId,
@@ -1603,16 +1200,28 @@ async function runSchedulerTick(env: Env, controller: ScheduledController) {
       connectorId: due.connector_id,
       scope: due.scope,
       trigger: "scheduled",
-      status: error instanceof NeedsUserActionError ? "needs_user_action" : "failed",
+      status,
       message: safeErrorMessage(error),
       durationMs: Date.now() - startedAt
     }));
   } finally {
+    stopHeartbeat();
     await releaseSyncJobLock(env.DB, lockRowId, runId);
   }
 }
 
-async function runDueSyncJob(env: Env, job: SyncJobRow) {
+function startSyncLockHeartbeat(db: D1Database, lockRowId: string, runId: string) {
+  const timer = setInterval(() => {
+    void renewSyncJobLock(db, { lockRowId, runId, leaseMs: SYNC_LOCK_LEASE_MS })
+      .then((renewed) => {
+        if (!renewed) console.error(`[sync] lock heartbeat lost for ${lockRowId}`);
+      })
+      .catch((error) => console.error(`[sync] lock heartbeat failed for ${lockRowId}`, error));
+  }, SYNC_LOCK_HEARTBEAT_MS);
+  return () => clearInterval(timer);
+}
+
+async function runDueSyncJob(env: Env, job: SyncJobRow<ConnectorId>) {
   if (job.connector_id === "einvoice") {
     return syncEinvoice(env, "scheduled", { fetchDetails: true });
   }
@@ -1630,155 +1239,6 @@ async function runDueSyncJob(env: Env, job: SyncJobRow) {
   }
 
   throw new NeedsUserActionError("Scheduled connector is not supported.");
-}
-
-async function findNextDueSyncJob(db: D1Database) {
-  const now = new Date().toISOString();
-  const row = await db
-    .prepare(
-      `SELECT *
-       FROM sync_jobs
-       WHERE enabled = 1
-         AND next_run_at <= ?
-       ORDER BY next_run_at ASC, id ASC
-       LIMIT 1`
-    )
-    .bind(now)
-    .first<SyncJobRow>();
-
-  return row ?? null;
-}
-
-async function acquireSyncJobLock(
-  db: D1Database,
-  input: {
-    lockRowId: string;
-    scope: SyncScope;
-    trigger: SyncTrigger;
-    runId: string;
-  }
-) {
-  const now = new Date();
-  const lockedUntil = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
-  const result = await db
-    .prepare(
-      `UPDATE sync_jobs
-       SET locked_by = ?,
-           locked_until = ?,
-           lock_trigger = ?,
-           lock_scope = ?,
-           updated_at = ?
-       WHERE id = ?
-         AND (locked_until IS NULL OR locked_until < ?)`
-    )
-    .bind(input.runId, lockedUntil, input.trigger, input.scope, now.toISOString(), input.lockRowId, now.toISOString())
-    .run();
-
-  return result.meta.changes === 1;
-}
-
-async function releaseSyncJobLock(db: D1Database, lockRowId: string, runId: string) {
-  await db
-    .prepare(
-      `UPDATE sync_jobs
-       SET locked_by = NULL,
-           locked_until = NULL,
-           lock_trigger = NULL,
-           lock_scope = NULL,
-           updated_at = ?
-       WHERE id = ?
-         AND locked_by = ?`
-    )
-    .bind(new Date().toISOString(), lockRowId, runId)
-    .run();
-}
-
-async function completeSyncJob(db: D1Database, job: SyncJobRow, outcome: SyncOutcome) {
-  const now = new Date();
-  const nextRunAt = new Date(now.getTime() + job.interval_minutes * 60 * 1000).toISOString();
-  await db
-    .prepare(
-      `UPDATE sync_jobs
-       SET last_status = 'success',
-           last_error = NULL,
-           last_run_at = ?,
-           last_success_at = ?,
-           next_run_at = ?,
-           updated_at = ?
-       WHERE id = ?`
-    )
-    .bind(now.toISOString(), now.toISOString(), nextRunAt, now.toISOString(), job.id)
-    .run();
-
-}
-
-async function failSyncJob(db: D1Database, job: SyncJobRow, error: unknown) {
-  const now = new Date();
-  const status: SyncStatus = isUserActionError(error) ? "needs_user_action" : "failed";
-  const enabled = status === "needs_user_action" ? 0 : 1;
-  const nextRunAt = status === "failed"
-    ? new Date(now.getTime() + job.interval_minutes * 60 * 1000).toISOString()
-    : job.next_run_at;
-
-  await db
-    .prepare(
-      `UPDATE sync_jobs
-       SET last_status = ?,
-           last_error = ?,
-           last_run_at = ?,
-           next_run_at = ?,
-           enabled = ?,
-           updated_at = ?
-       WHERE id = ?`
-    )
-    .bind(status, safeErrorMessage(error), now.toISOString(), nextRunAt, enabled, now.toISOString(), job.id)
-    .run();
-
-}
-
-async function markManualSyncSuccess(db: D1Database, connectorId: ConnectorId, scope: SyncScope) {
-  const jobId = `${connectorId}:${scope}`;
-  const job = await db.prepare("SELECT * FROM sync_jobs WHERE id = ?").bind(jobId).first<SyncJobRow>();
-  if (!job) return;
-
-  const now = new Date();
-  const nextRunAt = new Date(now.getTime() + job.interval_minutes * 60 * 1000).toISOString();
-  await db
-    .prepare(
-      `UPDATE sync_jobs
-       SET last_status = 'success',
-           last_error = NULL,
-           last_run_at = ?,
-           last_success_at = ?,
-           next_run_at = ?,
-           updated_at = ?
-       WHERE id = ?`
-    )
-    .bind(now.toISOString(), now.toISOString(), nextRunAt, now.toISOString(), jobId)
-    .run();
-}
-
-async function markManualSyncFailure(
-  db: D1Database,
-  connectorId: ConnectorId,
-  scope: SyncScope,
-  error: unknown
-) {
-  const status: SyncStatus = isUserActionError(error) ? "needs_user_action" : "failed";
-  const now = new Date().toISOString();
-  await db
-    .prepare(
-      `UPDATE sync_jobs
-       SET last_status = ?,
-           last_error = ?,
-           last_run_at = ?,
-           enabled = CASE WHEN ? = 'needs_user_action' THEN 0 ELSE enabled END,
-           updated_at = ?
-       WHERE connector_id = ?
-         AND scope = ?`
-    )
-    .bind(status, safeErrorMessage(error), now, status, now, connectorId, scope)
-    .run();
 }
 
 function canonicalSyncLockRowId(connectorId: ConnectorId) {
@@ -1813,10 +1273,7 @@ function einvoiceCredentialsChanged(
   );
 }
 
-api.onError((error) => {
-  console.error("[sync] error:", error);
-  return jsonError("INTERNAL_ERROR", error.message, 500);
-});
+api.onError(apiErrorResponse);
 
 app.route("/api", api);
 
