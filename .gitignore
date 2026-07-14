@@ -16,6 +16,10 @@ dist/
 .env.*
 !.env.example
 
+# Private Cloudflare resource bindings
+wrangler.private.toml
+apps/worker/wrangler.local.toml
+
 *.local
 *.tsbuildinfo
 .DS_Store

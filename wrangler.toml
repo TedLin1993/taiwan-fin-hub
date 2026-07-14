@@ -15,5 +15,6 @@ crons = ["*/10 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "taiwan-fin-hub"
-database_id = "c56987fa-0ab5-4237-bdd2-6dcaef9fd636"
+# database_id is intentionally omitted from this public configuration.
+# Cloudflare automatically provisions or resolves the D1 binding on deploy.
 migrations_dir = "packages/db/migrations"
