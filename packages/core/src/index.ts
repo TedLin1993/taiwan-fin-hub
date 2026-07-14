@@ -158,16 +158,21 @@ export interface Summary {
   invoiceCount: number;
   investmentCount: number;
   totalInvestmentValue: number;
+  bankAccountCount: number;
+  totalBankBalance: number;
 }
 
 export interface ConnectorSettingsMetadata {
   connectorId: string;
   configured: boolean;
   updatedAt?: string;
+  publicConfig?: Record<string, unknown> | null;
 }
 
 export interface SyncResponse {
   success: true;
+  connectorId: ConnectorId;
+  scope: string;
   records: number;
   detailRecords?: number;
   cursorUpdated: boolean;

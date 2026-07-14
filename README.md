@@ -93,6 +93,8 @@ npm run dev
 
 若需從本機部署至既有的 D1，請複製 `wrangler.toml` 為被忽略的 `wrangler.private.toml`、加入 `database_id`，並以 `wrangler --config wrangler.private.toml` 執行遠端遷移或部署。
 
+後端目錄責任、API 約定與驗證指令請參考 [`docs/002-backend-architecture.md`](docs/002-backend-architecture.md)。
+
 ---
 
 ## 更新

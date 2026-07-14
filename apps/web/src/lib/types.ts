@@ -1,3 +1,9 @@
+import type {
+  ApiErrorResponse,
+  ConnectorId as CoreConnectorId,
+  Summary as CoreSummary
+} from "@taiwan-fin-hub/core";
+
 export interface NetWorthHistoryRow { date: string; netWorth: number; assetType: string; source: string; }
 export interface ExchangeRateRow { currency: string; rateTwd: number; updatedAt: string; }
 export interface ManualAssetRow { id: string; name: string; category: string; note: string | null; createdAt: string; value?: number; date?: string; }
@@ -14,10 +20,10 @@ export interface ActivityItem {
   title: string; subtitle: string; amount?: number; currency: string; category: string;
   categoryId?: string; transactionId?: string; status: string;
 }
-export type ConnectorId = "einvoice" | "tdcc" | "esun" | "cathaybk";
+export type ConnectorId = CoreConnectorId;
 export type SyncTarget = "default" | "investments" | "bank" | "trades";
 
-export interface Summary { invoiceCount: number; investmentCount: number; totalInvestmentValue: number; bankAccountCount: number; totalBankBalance: number; }
+export type Summary = CoreSummary;
 export interface InvoiceLineItemRow { id: string; invoiceId?: string; sourceId: string; lineNumber: number; description: string; quantity?: number; unitPrice?: number; amount: number; }
 export interface InvoiceRow { id: string; connectorId: ConnectorId; sourceId: string; invoiceDate: string; invoiceNumber?: string; sellerName?: string; amount: number; items: InvoiceLineItemRow[]; }
 export interface InvestmentRow { id: string; assetType: "stock" | "etf" | "fund"; symbol?: string; name: string; quantity?: number; marketValue?: number; cashBalance?: number; currency: string; asOfDate: string; }
@@ -48,7 +54,7 @@ export interface SyncJobRow {
   lastRunAt: string | null; lastSuccessAt: string | null; lastStatus: "success" | "failed" | "needs_user_action" | null;
   lastError: string | null; updatedAt: string; running: boolean;
 }
-export interface ApiError { success: false; error: { code: string; message: string; }; }
+export type ApiError = ApiErrorResponse;
 export interface RuntimeInfo { demoMode: boolean; }
 export interface ConnectorField { key: string; label: string; type: "text" | "password" | "number" | "checkbox"; placeholder?: string; }
 export interface ClassificationRuleRow { id: string; categoryId: string; targetType: string; field: string; operator: string; pattern: string; priority: number; enabled: boolean; description?: string; createdAt?: string; }
