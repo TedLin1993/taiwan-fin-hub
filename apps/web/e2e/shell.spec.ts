@@ -42,6 +42,44 @@ test("renders the mobile bottom navigation", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "更多", exact: true })).toBeVisible();
 });
 
+test("uses app-like scrolling and history only in standalone display mode", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("html")).not.toHaveClass(/is-standalone/);
+  await expect(page.locator("html")).toHaveCSS("touch-action", "auto");
+
+  await page.addInitScript(() => {
+    const nativeMatchMedia = window.matchMedia.bind(window);
+    window.matchMedia = (query: string) => {
+      if (query !== "(display-mode: standalone)") return nativeMatchMedia(query);
+      return {
+        matches: true,
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => true,
+      };
+    };
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+
+  await expect(page.locator("html")).toHaveClass(/is-standalone/);
+  await expect(page.locator("html")).toHaveCSS("overflow", "hidden");
+  await expect(page.locator("body")).toHaveCSS("overflow", "hidden");
+  await expect(page.locator("#root")).toHaveCSS("touch-action", "pan-x pan-y");
+  await expect(page.locator("#root")).toHaveCSS("overflow-y", "auto");
+  await expect(page.locator("#root")).toHaveCSS("overscroll-behavior", "none");
+
+  const historyLength = await page.evaluate(() => window.history.length);
+  await page.getByRole("button", { name: "資產", exact: true }).last().click();
+  await expect(page).toHaveURL(/#\/assets$/);
+  await expect(page.getByRole("heading", { name: "資產", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
+});
+
 test("opens a primary view from its hash route", async ({ page }) => {
   await page.goto("/#/invoices");
   await expect(page.getByRole("heading", { name: "發票", exact: true })).toBeVisible();

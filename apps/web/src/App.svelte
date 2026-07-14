@@ -50,6 +50,13 @@
   const detail = $derived(isDetail(view) ? detailLabels[view] : undefined);
   const mobileSetting = $derived(isMobileSetting(view) ? mobileSettingsLabels[view] : undefined);
 
+  const isStandalone = () => document.documentElement.classList.contains("is-standalone");
+  function scrollToTop() {
+    const options: ScrollToOptions = { top: 0, behavior: "smooth" };
+    if (isStandalone()) document.getElementById("root")?.scrollTo(options);
+    else window.scrollTo(options);
+  }
+
   onMount(() => {
     const routeView = parseViewHash(window.location.hash);
     if (routeView) view = routeView;
@@ -59,7 +66,7 @@
       const next = parseViewHash(window.location.hash);
       if (next) {
         view = next;
-        window.scrollTo({ top: 0, behavior: "smooth" });
+        scrollToTop();
       }
     };
     window.addEventListener("hashchange", handleHashChange);
@@ -72,8 +79,15 @@
   });
   function navigate(next: View) {
     view = next;
-    if (window.location.hash !== viewHash(next)) window.location.hash = viewHash(next);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    const nextHash = viewHash(next);
+    if (window.location.hash !== nextHash) {
+      if (isStandalone()) {
+        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${nextHash}`);
+      } else {
+        window.location.hash = nextHash;
+      }
+    }
+    scrollToTop();
   }
   function toggleMoneyVisibility() { moneyState.hidden = !moneyState.hidden; localStorage.setItem("taiwan-fin-hub-money-hidden", String(moneyState.hidden)); }
 </script>
