@@ -1,37 +1,27 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
-  import Button from "../components/ui/Button.svelte";
-  import Badge from "../components/ui/Badge.svelte";
-  import Card from "../components/ui/Card.svelte";
-  import CardHeader from "../components/ui/CardHeader.svelte";
-  import CardContent from "../components/ui/CardContent.svelte";
-  import EmptyState from "../components/ui/EmptyState.svelte";
-  import type { ApiClient } from "../lib/api";
-  import { queryKeys } from "../lib/api";
-  import type {
-    BankData,
-    ExchangeRateRow,
-    InvestmentRow,
-    InvestmentTransactionRow,
-    InvoiceRow,
-    ManualAssetRow,
-    NetWorthHistoryRow,
-    SyncJobRow,
-    View
-  } from "../lib/types";
-  import { formatBankAccountName, formatCompactTwd, formatCurrency, formatDate, normalizeFinancialDate, rateMap, transactionValueTwd } from "../lib/format.svelte";
+  import Button from "../../components/ui/Button.svelte";
+  import Badge from "../../components/ui/Badge.svelte";
+  import Card from "../../components/ui/Card.svelte";
+  import CardHeader from "../../components/ui/CardHeader.svelte";
+  import CardContent from "../../components/ui/CardContent.svelte";
+  import EmptyState from "../../components/ui/EmptyState.svelte";
+  import type { ApiClient } from "../../lib/api";
+  import { bankQuery, exchangeRatesQuery, investmentsQuery, investmentTransactionsQuery, invoicesQuery, manualAssetsQuery, netWorthHistoryQuery, syncJobsQuery } from "../../lib/queries";
+  import type { View } from "../../lib/types";
+  import { formatBankAccountName, formatCompactTwd, formatCurrency, formatDate, normalizeFinancialDate, rateMap, transactionValueTwd } from "../../lib/format.svelte";
   import NetWorthHistoryChart from "./NetWorthHistoryChart.svelte";
 
   let { api, navigate }: { api: ApiClient; navigate: (view: View) => void } = $props();
 
-  const bank = createQuery<BankData>({ queryKey: queryKeys.bank, queryFn: () => api.get<BankData>("/api/bank") });
-  const investments = createQuery<InvestmentRow[]>({ queryKey: queryKeys.investments, queryFn: () => api.get<InvestmentRow[]>("/api/investments") });
-  const invoices = createQuery<InvoiceRow[]>({ queryKey: queryKeys.invoices, queryFn: () => api.get<InvoiceRow[]>("/api/invoices") });
-  const trades = createQuery<InvestmentTransactionRow[]>({ queryKey: queryKeys.investmentTransactions, queryFn: () => api.get<InvestmentTransactionRow[]>("/api/investment-transactions") });
-  const manualAssets = createQuery<ManualAssetRow[]>({ queryKey: queryKeys.manualAssets, queryFn: () => api.get<ManualAssetRow[]>("/api/manual-assets") });
-  const rates = createQuery<ExchangeRateRow[]>({ queryKey: queryKeys.exchangeRates, queryFn: () => api.get<ExchangeRateRow[]>("/api/exchange-rates") });
-  const jobs = createQuery<SyncJobRow[]>({ queryKey: queryKeys.syncJobs, queryFn: () => api.get<SyncJobRow[]>("/api/sync-jobs") });
-  const history = createQuery<NetWorthHistoryRow[]>({ queryKey: queryKeys.netWorthHistory, queryFn: () => api.get<NetWorthHistoryRow[]>("/api/history/net-worth") });
+  const bank = createQuery(bankQuery(() => api));
+  const investments = createQuery(investmentsQuery(() => api));
+  const invoices = createQuery(invoicesQuery(() => api));
+  const trades = createQuery(investmentTransactionsQuery(() => api));
+  const manualAssets = createQuery(manualAssetsQuery(() => api));
+  const rates = createQuery(exchangeRatesQuery(() => api));
+  const jobs = createQuery(syncJobsQuery(() => api));
+  const history = createQuery(netWorthHistoryQuery(() => api));
 
   const bankData = $derived($bank.data ?? { accounts: [], transactions: [] });
   const rateValues = $derived(rateMap($rates.data));
@@ -110,7 +100,7 @@
         <p class="mt-3 text-4xl font-bold tracking-tight tabular-nums md:text-[40px]">{formatCurrency(netWorth)}</p>
         <p class="mt-3 text-sm font-semibold text-emerald-300">淨資產 · 已扣除 {formatCurrency(cardDebt)} 信用卡負債</p>
         <div class="mt-5 flex h-3 overflow-hidden rounded-full bg-white/10">
-          {#each allocation as item}
+          {#each allocation as item (item.label)}
             <span class={`h-full ${item.bar}`} style={`width:${pct(item.value)}%`}></span>
           {/each}
         </div>
@@ -129,7 +119,7 @@
     </div>
 
     <div class="grid grid-cols-3 gap-2 md:grid-cols-4 md:gap-4">
-      {#each allocation as item}
+      {#each allocation as item (item.label)}
         <Card>
           <CardContent class="p-3 md:p-5">
             <p class="text-xs font-semibold text-ink/50 md:mt-0">{item.label === "其他" ? "其他資產" : item.label}</p>
@@ -159,7 +149,7 @@
           <Button variant="ghost" size="sm" onclick={() => navigate("assets")}>查看全部 →</Button>
         </CardHeader>
         <CardContent class="grid gap-5">
-          {#each allocation as item}
+          {#each allocation as item (item.label)}
             <div>
               <div class="flex items-center justify-between gap-3">
                 <div><span class="text-sm font-semibold">{item.label}</span><span class="ml-2 text-xs text-ink/40">{item.detail}</span></div>
@@ -183,7 +173,7 @@
       <Card>
         <CardHeader class="flex-row items-center justify-between"><h2 class="text-lg font-semibold">銀行與信用卡</h2><Button variant="ghost" size="sm" onclick={() => navigate("assets")}>查看資產 →</Button></CardHeader>
         <CardContent class="grid gap-4">
-          {#each accountRows as account}
+          {#each accountRows as account (account.id)}
             <div class="grid grid-cols-[120px_minmax(0,1fr)_auto_auto] gap-3 text-sm">
               <span class="font-semibold">{account.institutionName ?? account.connectorId}</span>
               <span class="truncate text-ink/45">{account.accountName ?? formatBankAccountName(account)}</span>
@@ -196,7 +186,7 @@
       <Card>
         <CardHeader><h2 class="text-lg font-semibold">近期活動</h2></CardHeader>
         <CardContent class="grid gap-4">
-          {#each recent as item}
+          {#each recent as item (item.id)}
             <div class="flex items-center justify-between gap-3 text-sm">
               <div class="min-w-0"><p class="truncate font-semibold">{item.title}</p><p class="truncate text-xs text-ink/40">{item.detail}</p></div>
               <span class={`shrink-0 font-semibold tabular-nums ${item.amount != null && item.amount < 0 ? "text-coral" : item.amount != null ? "text-moss" : "text-ink/40"}`}>{item.amount == null ? "—" : `${item.amount >= 0 ? "+" : ""}${formatCurrency(item.amount, item.currency)}`}</span>

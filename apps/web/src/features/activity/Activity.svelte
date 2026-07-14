@@ -1,28 +1,30 @@
 <script lang="ts">
+  import { SvelteDate } from "svelte/reactivity";
   import { createMutation, createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { Search, Building2, CreditCard, FileText, TrendingUp } from "@lucide/svelte";
-  import Card from "../components/ui/Card.svelte";
-  import CardHeader from "../components/ui/CardHeader.svelte";
-  import CardContent from "../components/ui/CardContent.svelte";
-  import Button from "../components/ui/Button.svelte";
-  import Checkbox from "../components/ui/Checkbox.svelte";
-  import EmptyState from "../components/ui/EmptyState.svelte";
-  import Badge from "../components/ui/Badge.svelte";
-  import Input from "../components/ui/Input.svelte";
-  import Select from "../components/ui/Select.svelte";
-  import TabsList from "../components/ui/TabsList.svelte";
-  import TabsTrigger from "../components/ui/TabsTrigger.svelte";
+  import Card from "../../components/ui/Card.svelte";
+  import CardHeader from "../../components/ui/CardHeader.svelte";
+  import CardContent from "../../components/ui/CardContent.svelte";
+  import Button from "../../components/ui/Button.svelte";
+  import Checkbox from "../../components/ui/Checkbox.svelte";
+  import EmptyState from "../../components/ui/EmptyState.svelte";
+  import Badge from "../../components/ui/Badge.svelte";
+  import Input from "../../components/ui/Input.svelte";
+  import Select from "../../components/ui/Select.svelte";
+  import TabsList from "../../components/ui/TabsList.svelte";
+  import TabsTrigger from "../../components/ui/TabsTrigger.svelte";
   import ActivityCategoryChart from "./ActivityCategoryChart.svelte";
-  import type { ApiClient } from "../lib/api";
-  import { queryKeys } from "../lib/api";
-  import type { ActivityItem, BankData, ExchangeRateRow, InvoiceRow, InvestmentTransactionRow, View } from "../lib/types";
-  import { buildActivityCategorySlices, activityCashAmountTwd } from "../lib/activity-chart";
-  import { formatCompactTwd, formatCurrency, formatDate, formatNumber, normalizeFinancialDate, rateMap } from "../lib/format.svelte";
+  import type { ApiClient } from "../../lib/api";
+  import { queryKeys } from "../../lib/api";
+  import { bankQuery, exchangeRatesQuery, investmentTransactionsQuery, invoicesQuery } from "../../lib/queries";
+  import type { ActivityItem, View } from "../../lib/types";
+  import { buildActivityCategorySlices, activityCashAmountTwd } from "../../lib/activity-chart";
+  import { formatCompactTwd, formatCurrency, formatDate, formatNumber, normalizeFinancialDate, rateMap } from "../../lib/format.svelte";
   let { api, navigate }: { api: ApiClient; navigate: (view: View) => void } = $props();
-  const bank = createQuery<BankData>({ queryKey: queryKeys.bank, queryFn: () => api.get<BankData>("/api/bank") });
-  const invoices = createQuery<InvoiceRow[]>({ queryKey: queryKeys.invoices, queryFn: () => api.get<InvoiceRow[]>("/api/invoices") });
-  const trades = createQuery<InvestmentTransactionRow[]>({ queryKey: queryKeys.investmentTransactions, queryFn: () => api.get<InvestmentTransactionRow[]>("/api/investment-transactions") });
-  const rates = createQuery<ExchangeRateRow[]>({ queryKey: queryKeys.exchangeRates, queryFn: () => api.get<ExchangeRateRow[]>("/api/exchange-rates") });
+  const bank = createQuery(bankQuery(() => api));
+  const invoices = createQuery(invoicesQuery(() => api));
+  const trades = createQuery(investmentTransactionsQuery(() => api));
+  const rates = createQuery(exchangeRatesQuery(() => api));
   const qc = useQueryClient();
   let source = $state<"all" | "bank" | "card" | "invoice">("all");
   let search = $state("");
@@ -51,7 +53,7 @@
   const selectedMonthLabel = $derived(`${Number(selectedMonth.slice(5))} 月`);
   const pendingCount = $derived(rawItems.filter((item) => (item.source === "bank" || item.source === "card") && (item.status === "pending" || item.categoryId === "other")).length);
   const cashFlowMonths = Array.from({ length: 6 }, (_, index) => {
-    const date = new Date();
+    const date = new SvelteDate();
     date.setMonth(date.getMonth() - (5 - index));
     return date.toISOString().slice(0, 7);
   });
@@ -93,7 +95,7 @@
     <section class="grid min-w-0 gap-3">
       <div class="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div class="min-w-0"><h2 class="text-lg font-semibold">每月分類比例</h2><p class="mt-1 text-xs text-ink/45">收入與支出分開計算，發票不重複列入</p></div>
-        <Select aria-label="選擇活動月份" class="h-11 w-full min-w-0 font-semibold sm:w-auto sm:shrink-0" value={selectedMonth} onchange={(event: Event) => chooseMonth((event.currentTarget as HTMLSelectElement).value)}>{#each months as month}<option value={month}>{month.slice(0, 4)} 年 {Number(month.slice(5))} 月</option>{/each}</Select>
+        <Select aria-label="選擇活動月份" class="h-11 w-full min-w-0 font-semibold sm:w-auto sm:shrink-0" value={selectedMonth} onchange={(event: Event) => chooseMonth((event.currentTarget as HTMLSelectElement).value)}>{#each months as month (month)}<option value={month}>{month.slice(0, 4)} 年 {Number(month.slice(5))} 月</option>{/each}</Select>
       </div>
       <div class="grid min-w-0 gap-3 lg:grid-cols-2">
         <ActivityCategoryChart flow="income" slices={incomeSlices} selectedCategory={selectedCategory?.flow === "income" ? selectedCategory.category : undefined} onSelect={(category) => chooseCategory("income", category)} />
@@ -105,7 +107,7 @@
       <CardHeader class="flex-row items-center justify-between"><h2 class="text-lg font-semibold">現金流趨勢</h2><Badge variant="secondary">6 個月　收入／支出</Badge></CardHeader>
       <CardContent>
         <div class="grid grid-cols-6 gap-3">
-          {#each cashFlow as point}
+          {#each cashFlow as point (point.month)}
             <button aria-pressed={selectedMonth === point.month} class={`grid min-w-0 rounded-xl px-2 pb-2 pt-3 transition ${selectedMonth === point.month ? "bg-steel/10 ring-2 ring-steel/30" : "hover:bg-paper"}`} onclick={() => chooseMonth(point.month)}>
               <div class="flex h-28 items-end justify-center gap-2"><span class="w-1/3 rounded-t-lg bg-emerald-700" style={`height:${Math.max(8, point.income / maxCashFlow * 100)}%`}></span><span class="w-1/3 rounded-t-lg bg-coral" style={`height:${Math.max(8, point.expense / maxCashFlow * 100)}%`}></span></div>
               <span class="mt-2 text-xs font-semibold">{Number(point.month.slice(5))} 月</span><span class="mt-1 truncate text-[10px] text-moss">+{formatCompactTwd(point.income)}</span><span class="truncate text-[10px] text-coral">−{formatCompactTwd(point.expense)}</span>
@@ -120,14 +122,14 @@
       <CardHeader class="min-w-0 gap-3 border-b border-ink/8">
         <div class="flex min-w-0 flex-col gap-3 md:flex-row md:items-center md:justify-between"><div class="min-w-0"><h2 class="truncate text-lg font-semibold">{selectedCategory ? `${selectedMonthLabel} · ${selectedCategory.category}` : `${selectedMonthLabel}所有活動`}</h2><p class="text-xs text-ink/45">銀行、信用卡、投資與發票</p></div><div class="relative md:w-80"><Search class="pointer-events-none absolute left-3 top-1/2 z-10 size-4 -translate-y-1/2 text-muted-foreground" /><Input class="h-11 pl-9" placeholder="搜尋商家、帳戶、品項或分類" bind:value={search} /></div></div>
         {#if selectedCategory}<div class="flex items-center justify-between rounded-lg bg-steel/10 px-3 py-2 text-sm"><span><strong>{selectedCategory.category}</strong> · {selectedCategory.flow === "income" ? "收入" : "支出"}</span><button class="min-h-8 px-2 text-xs font-semibold text-steel" onclick={() => selectedCategory = null}>顯示全部</button></div>{/if}
-        <TabsList class="grid h-auto w-full grid-cols-4">{#each [{key:"all",label:"全部"},{key:"bank",label:"銀行"},{key:"card",label:"信用卡"},{key:"invoice",label:"發票"}] as filter}<TabsTrigger class={`min-h-9 min-w-0 px-1 text-xs md:text-sm ${source === filter.key ? "bg-ink text-white" : ""}`} active={source === filter.key} onclick={() => { source = filter.key as typeof source; selectedCategory = null; }}>{filter.label}</TabsTrigger>{/each}</TabsList>
+        <TabsList class="grid h-auto w-full grid-cols-4">{#each [{key:"all",label:"全部"},{key:"bank",label:"銀行"},{key:"card",label:"信用卡"},{key:"invoice",label:"發票"}] as filter (filter.key)}<TabsTrigger class={`min-h-9 min-w-0 px-1 text-xs md:text-sm ${source === filter.key ? "bg-ink text-white" : ""}`} active={source === filter.key} onclick={() => { source = filter.key as typeof source; selectedCategory = null; }}>{filter.label}</TabsTrigger>{/each}</TabsList>
       </CardHeader>
       <CardContent class="min-w-0 p-0">
         <div class="min-w-0 divide-y divide-ink/8 md:hidden">
-          {#if filtered.length === 0}<p class="p-8 text-center text-sm text-ink/50">沒有符合條件的活動。</p>{:else}{#each filtered.slice(0, 100) as item}{@const amount = renderedAmount(item)}<div class="flex min-w-0 items-center gap-3 px-4 py-3"><span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel">{#if item.source === "bank"}<Building2 class="size-5" />{:else if item.source === "card"}<CreditCard class="size-5" />{:else if item.source === "invoice"}<FileText class="size-5" />{:else}<TrendingUp class="size-5" />{/if}</span><div class="min-w-0 flex-1"><p class="truncate text-sm font-semibold">{item.title}</p><p class="mt-0.5 truncate text-xs text-ink/45">{sourceLabel(item.source)} · {formatDate(item.date)}</p>{#if item.transactionId}<Select aria-label={`更新 ${item.title} 分類`} class="mt-1 h-8 max-w-36 px-2 py-1 text-xs font-medium text-steel" value={item.categoryId} onchange={(e: Event) => openCategory(item, (e.currentTarget as HTMLSelectElement).value)}>{#each Object.entries(categories) as [key, label]}<option value={key}>{label}</option>{/each}</Select>{/if}</div><p class={`max-w-[42%] shrink-0 truncate text-sm font-semibold tabular-nums ${(amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}>{amount == null ? "—" : `${amount >= 0 && item.source !== "invoice" ? "+" : ""}${formatCurrency(amount, item.currency)}`}</p></div>{/each}{/if}
+          {#if filtered.length === 0}<p class="p-8 text-center text-sm text-ink/50">沒有符合條件的活動。</p>{:else}{#each filtered.slice(0, 100) as item (item.source + "-" + item.id)}{@const amount = renderedAmount(item)}<div class="flex min-w-0 items-center gap-3 px-4 py-3"><span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel">{#if item.source === "bank"}<Building2 class="size-5" />{:else if item.source === "card"}<CreditCard class="size-5" />{:else if item.source === "invoice"}<FileText class="size-5" />{:else}<TrendingUp class="size-5" />{/if}</span><div class="min-w-0 flex-1"><p class="truncate text-sm font-semibold">{item.title}</p><p class="mt-0.5 truncate text-xs text-ink/45">{sourceLabel(item.source)} · {formatDate(item.date)}</p>{#if item.transactionId}<Select aria-label={`更新 ${item.title} 分類`} class="mt-1 h-8 max-w-36 px-2 py-1 text-xs font-medium text-steel" value={item.categoryId} onchange={(e: Event) => openCategory(item, (e.currentTarget as HTMLSelectElement).value)}>{#each Object.entries(categories) as [key, label] (key)}<option value={key}>{label}</option>{/each}</Select>{/if}</div><p class={`max-w-[42%] shrink-0 truncate text-sm font-semibold tabular-nums ${(amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}>{amount == null ? "—" : `${amount >= 0 && item.source !== "invoice" ? "+" : ""}${formatCurrency(amount, item.currency)}`}</p></div>{/each}{/if}
         </div>
         <div class="hidden overflow-x-auto md:block">
-          <table class="w-full min-w-[820px] text-left text-sm"><thead class="bg-paper text-xs font-semibold text-ink/45"><tr><th class="px-5 py-3">日期</th><th class="px-4 py-3">來源</th><th class="px-4 py-3">說明／商家</th><th class="px-4 py-3">分類</th><th class="px-4 py-3 text-right">金額</th><th class="px-5 py-3">狀態</th></tr></thead><tbody class="divide-y divide-ink/8">{#if filtered.length === 0}<tr><td class="px-5 py-8 text-center text-ink/50" colspan="6">沒有符合條件的活動。</td></tr>{:else}{#each filtered.slice(0, 100) as item}{@const amount = renderedAmount(item)}<tr><td class="whitespace-nowrap px-5 py-3 text-ink/55">{formatDate(item.date)}</td><td class="px-4 py-3">{sourceLabel(item.source)}</td><td class="max-w-xs px-4 py-3"><p class="truncate font-semibold">{item.title}</p><p class="truncate text-xs text-ink/40">{item.subtitle}</p></td><td class="px-4 py-3">{#if item.transactionId}<Select aria-label={`更新 ${item.title} 分類`} class="h-9 w-auto px-2 text-sm font-medium text-steel" value={item.categoryId} onchange={(e: Event) => openCategory(item, (e.currentTarget as HTMLSelectElement).value)}>{#each Object.entries(categories) as [key, label]}<option value={key}>{label}</option>{/each}</Select>{:else}{item.category}{/if}</td><td class={`whitespace-nowrap px-4 py-3 text-right font-semibold tabular-nums ${(amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}>{amount == null ? "—" : formatCurrency(amount, item.currency)}</td><td class="whitespace-nowrap px-5 py-3 text-ink/55">{item.status === "pending" ? "待入帳" : item.status === "posted" ? "已入帳" : item.status}</td></tr>{/each}{/if}</tbody></table>
+          <table class="w-full min-w-[820px] text-left text-sm"><thead class="bg-paper text-xs font-semibold text-ink/45"><tr><th class="px-5 py-3">日期</th><th class="px-4 py-3">來源</th><th class="px-4 py-3">說明／商家</th><th class="px-4 py-3">分類</th><th class="px-4 py-3 text-right">金額</th><th class="px-5 py-3">狀態</th></tr></thead><tbody class="divide-y divide-ink/8">{#if filtered.length === 0}<tr><td class="px-5 py-8 text-center text-ink/50" colspan="6">沒有符合條件的活動。</td></tr>{:else}{#each filtered.slice(0, 100) as item (item.source + "-" + item.id)}{@const amount = renderedAmount(item)}<tr><td class="whitespace-nowrap px-5 py-3 text-ink/55">{formatDate(item.date)}</td><td class="px-4 py-3">{sourceLabel(item.source)}</td><td class="max-w-xs px-4 py-3"><p class="truncate font-semibold">{item.title}</p><p class="truncate text-xs text-ink/40">{item.subtitle}</p></td><td class="px-4 py-3">{#if item.transactionId}<Select aria-label={`更新 ${item.title} 分類`} class="h-9 w-auto px-2 text-sm font-medium text-steel" value={item.categoryId} onchange={(e: Event) => openCategory(item, (e.currentTarget as HTMLSelectElement).value)}>{#each Object.entries(categories) as [key, label] (key)}<option value={key}>{label}</option>{/each}</Select>{:else}{item.category}{/if}</td><td class={`whitespace-nowrap px-4 py-3 text-right font-semibold tabular-nums ${(amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}>{amount == null ? "—" : formatCurrency(amount, item.currency)}</td><td class="whitespace-nowrap px-5 py-3 text-ink/55">{item.status === "pending" ? "待入帳" : item.status === "posted" ? "已入帳" : item.status}</td></tr>{/each}{/if}</tbody></table>
         </div>
       </CardContent>
     </Card>

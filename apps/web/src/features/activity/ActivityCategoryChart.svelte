@@ -1,11 +1,11 @@
 <script lang="ts">
   import { PieChart } from "layerchart";
-  import Card from "../components/ui/Card.svelte";
-  import CardContent from "../components/ui/CardContent.svelte";
-  import CardHeader from "../components/ui/CardHeader.svelte";
-  import { ChartContainer, ChartTooltip, type ChartConfig } from "../components/ui/chart";
-  import { formatCompactTwd, formatCurrency } from "../lib/format.svelte";
-  import type { ActivityCategorySlice, ActivityFlow } from "../lib/activity-chart";
+  import Card from "../../components/ui/Card.svelte";
+  import CardContent from "../../components/ui/CardContent.svelte";
+  import CardHeader from "../../components/ui/CardHeader.svelte";
+  import { ChartContainer, ChartTooltip, type ChartConfig } from "../../components/ui/chart";
+  import { formatCompactTwd, formatCurrency } from "../../lib/format.svelte";
+  import type { ActivityCategorySlice, ActivityFlow } from "../../lib/activity-chart";
 
   let {
     flow,
@@ -72,7 +72,7 @@
           </div>
         </div>
         <div class="grid min-w-0 gap-1.5">
-          {#each slices as slice}
+          {#each slices as slice (slice.category)}
             <button
               aria-pressed={selectedCategory === slice.category}
               class={`grid min-h-11 min-w-0 grid-cols-[12px_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2 text-left transition ${selectedCategory === slice.category ? "bg-steel/10 ring-1 ring-steel/20" : "hover:bg-paper"}`}

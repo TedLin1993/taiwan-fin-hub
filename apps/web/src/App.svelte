@@ -2,17 +2,18 @@
   import { onMount, type Component } from "svelte";
   import { BarChart3, Wallet, History, FileText, Settings, Ellipsis, Eye, EyeOff, RefreshCw } from "@lucide/svelte";
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
+  import { parseViewHash, viewHash } from "./app/navigation";
   import Button from "./components/ui/Button.svelte";
   import Icon from "./components/ui/Icon.svelte";
-  import Overview from "./features/Overview.svelte";
-  import Assets from "./features/Assets.svelte";
-  import Activity from "./features/Activity.svelte";
-  import Invoices from "./features/Invoices.svelte";
-  import Investments from "./features/Investments.svelte";
-  import Cards from "./features/Cards.svelte";
-  import Bank from "./features/Bank.svelte";
-  import ManualAssets from "./features/ManualAssets.svelte";
-  import SettingsView from "./features/Settings.svelte";
+  import Overview from "./features/overview/Overview.svelte";
+  import Assets from "./features/assets/Assets.svelte";
+  import Activity from "./features/activity/Activity.svelte";
+  import Invoices from "./features/invoices/Invoices.svelte";
+  import Investments from "./features/assets/Investments.svelte";
+  import Cards from "./features/assets/Cards.svelte";
+  import Bank from "./features/assets/Bank.svelte";
+  import ManualAssets from "./features/assets/ManualAssets.svelte";
+  import SettingsView from "./features/settings/Settings.svelte";
   import { createApiClient } from "./lib/api";
   import { moneyState } from "./lib/format.svelte";
   import type { DetailView, MobileSettingsView, PrimaryView, RuntimeInfo, View } from "./lib/types";
@@ -49,11 +50,31 @@
   const detail = $derived(isDetail(view) ? detailLabels[view] : undefined);
   const mobileSetting = $derived(isMobileSetting(view) ? mobileSettingsLabels[view] : undefined);
 
-  onMount(async () => {
-    try { runtime = await api.get<RuntimeInfo>("/api/runtime"); } catch { runtime = { demoMode: false }; }
+  onMount(() => {
+    const routeView = parseViewHash(window.location.hash);
+    if (routeView) view = routeView;
+    else window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${viewHash(view)}`);
+
+    const handleHashChange = () => {
+      const next = parseViewHash(window.location.hash);
+      if (next) {
+        view = next;
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    };
+    window.addEventListener("hashchange", handleHashChange);
+
+    void api.get<RuntimeInfo>("/api/runtime")
+      .then((info) => runtime = info)
+      .catch(() => runtime = { demoMode: false });
     moneyState.hidden = localStorage.getItem("taiwan-fin-hub-money-hidden") === "true";
+    return () => window.removeEventListener("hashchange", handleHashChange);
   });
-  function navigate(next: View) { view = next; window.scrollTo({ top: 0, behavior: "smooth" }); }
+  function navigate(next: View) {
+    view = next;
+    if (window.location.hash !== viewHash(next)) window.location.hash = viewHash(next);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
   function toggleMoneyVisibility() { moneyState.hidden = !moneyState.hidden; localStorage.setItem("taiwan-fin-hub-money-hidden", String(moneyState.hidden)); }
 </script>
 
@@ -62,7 +83,7 @@
     <aside class="hidden border-r border-white/10 bg-ink px-6 py-7 text-white xl:sticky xl:top-0 xl:flex xl:h-screen xl:flex-col">
       <div class="px-2"><h1 class="text-xl font-semibold tracking-normal">Taiwan Fin Hub</h1><p class="mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-steel/90">Wealth OS</p></div>
       <nav class="mt-6 grid gap-1">
-        {#each navItems as item}
+        {#each navItems as item (item.view)}
           {@const NavIcon = item.icon}
           <button class={`flex min-h-11 items-center gap-3 rounded-lg px-3 text-left text-sm font-medium transition ${primaryView === item.view ? "bg-white/10 text-white" : "text-white/65 hover:bg-white/5 hover:text-white"}`} aria-current={primaryView === item.view ? "page" : undefined} onclick={() => navigate(item.view)}>
             <NavIcon class="size-[22px] shrink-0 stroke-[1.8]" />{item.label}
@@ -73,7 +94,7 @@
 
     <div class:min-w-0={true} class:pb-20={!mobileSetting} class:pb-5={!!mobileSetting}>
       <div class="no-scrollbar hidden border-b border-ink/10 bg-white px-4 py-2 md:flex md:gap-1 md:overflow-x-auto xl:hidden">
-        {#each navItems as item}
+        {#each navItems as item (item.view)}
           {@const NavIcon = item.icon}
           <button class={`flex min-h-10 items-center gap-2 rounded-lg px-3 text-sm font-medium ${primaryView === item.view ? "bg-ink text-white" : "text-ink/60 hover:bg-ink/5"}`} onclick={() => navigate(item.view)}><NavIcon class="size-4" />{item.label}</button>
         {/each}
@@ -114,7 +135,7 @@
 
     {#if !mobileSetting}
       <nav aria-label="主要導覽" class="fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 gap-1 border-t border-ink/10 bg-ink px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] pt-2 text-white shadow-[0_-8px_28px_rgba(31,41,51,0.12)] md:hidden">
-        {#each mobilePrimaryViews as mobileView}
+        {#each mobilePrimaryViews as mobileView (mobileView)}
           {@const item = navItems.find((candidate) => candidate.view === mobileView)!}{@const NavIcon = item.icon}
           <button class={`flex min-h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11px] font-medium transition ${primaryView === item.view ? "bg-white/10 text-white" : "text-white/65"}`} onclick={() => navigate(item.view)}><NavIcon class="size-5" />{item.shortLabel}</button>
         {/each}

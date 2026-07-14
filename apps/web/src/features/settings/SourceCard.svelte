@@ -1,16 +1,16 @@
 <script lang="ts">
   import { toStore } from "svelte/store";
   import { createQuery } from "@tanstack/svelte-query";
-  import Button from "../components/ui/Button.svelte";
-  import Badge from "../components/ui/Badge.svelte";
-  import Card from "../components/ui/Card.svelte";
-  import CardContent from "../components/ui/CardContent.svelte";
-  import { queryKeys } from "../lib/api";
-  import type { ApiClient } from "../lib/api";
-  import type { ConnectorId, ConnectorSettings, SyncJobRow } from "../lib/types";
-  import { formatDateTime } from "../lib/format.svelte";
+  import Button from "../../components/ui/Button.svelte";
+  import Badge from "../../components/ui/Badge.svelte";
+  import Card from "../../components/ui/Card.svelte";
+  import CardContent from "../../components/ui/CardContent.svelte";
+  import type { ApiClient } from "../../lib/api";
+  import { connectorSettingsQuery } from "../../lib/queries";
+  import type { ConnectorId, SyncJobRow } from "../../lib/types";
+  import { formatDateTime } from "../../lib/format.svelte";
   let { api, id, title, description, selected, onConfigure, jobs }: { api: ApiClient; id: ConnectorId; title: string; description: string; selected: boolean; onConfigure: () => void; jobs?: SyncJobRow[] } = $props();
-  const settings = createQuery<ConnectorSettings>(toStore(() => ({ queryKey: queryKeys.connectorSettings(id), queryFn: () => api.get<ConnectorSettings>(`/api/connectors/${id}/settings`) })));
+  const settings = createQuery(toStore(() => connectorSettingsQuery(() => api, id)));
   const job = $derived((jobs ?? []).find((item) => item.connectorId === id && item.scope === "all"));
   const needsAction = $derived(job?.lastStatus === "failed" || job?.lastStatus === "needs_user_action");
 </script>

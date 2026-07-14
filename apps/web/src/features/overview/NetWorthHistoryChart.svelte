@@ -2,13 +2,13 @@
   import { onMount } from "svelte";
   import { ArrowDownLeft, ArrowUpRight, TrendingUp } from "@lucide/svelte";
   import { LineChart } from "layerchart";
-  import Card from "../components/ui/Card.svelte";
-  import CardContent from "../components/ui/CardContent.svelte";
-  import CardHeader from "../components/ui/CardHeader.svelte";
-  import TabsList from "../components/ui/TabsList.svelte";
-  import TabsTrigger from "../components/ui/TabsTrigger.svelte";
-  import { ChartContainer, ChartTooltip, type ChartConfig } from "../components/ui/chart";
-  import { formatCompactTwd, formatCurrency, formatDate } from "../lib/format.svelte";
+  import Card from "../../components/ui/Card.svelte";
+  import CardContent from "../../components/ui/CardContent.svelte";
+  import CardHeader from "../../components/ui/CardHeader.svelte";
+  import TabsList from "../../components/ui/TabsList.svelte";
+  import TabsTrigger from "../../components/ui/TabsTrigger.svelte";
+  import { ChartContainer, ChartTooltip, type ChartConfig } from "../../components/ui/chart";
+  import { formatCompactTwd, formatCurrency, formatDate } from "../../lib/format.svelte";
   import {
     buildNetWorthChartData,
     getAvailableNetWorthAssets,
@@ -18,8 +18,8 @@
     type NetWorthChartPoint,
     type NetWorthDisplayMode,
     type NetWorthTimeframe
-  } from "../lib/net-worth-chart";
-  import type { NetWorthHistoryRow } from "../lib/types";
+  } from "../../lib/net-worth-chart";
+  import type { NetWorthHistoryRow } from "../../lib/types";
 
   let { data = [], loading = false }: { data?: NetWorthHistoryRow[]; loading?: boolean } = $props();
 
@@ -99,7 +99,7 @@
         <h2 class="flex items-center gap-2 text-base font-semibold"><TrendingUp class="size-4 text-steel" />資產走勢</h2>
         <div class="flex flex-wrap items-center gap-1.5" aria-label="資產類型篩選">
           <span class="text-xs font-medium text-ink/40">包含</span>
-          {#each NET_WORTH_ASSET_SERIES as option}
+          {#each NET_WORTH_ASSET_SERIES as option (option.key)}
             {@const active = includedAssets.includes(option.key)}
             {@const available = availableAssets.has(option.key)}
             <button
@@ -111,7 +111,7 @@
           {/each}
         </div>
         <TabsList class="h-8 border border-border p-0.5 text-xs">
-          {#each [{ key: "sum", label: "總和" }, { key: "breakdown", label: "分類" }] as option}
+          {#each [{ key: "sum", label: "總和" }, { key: "breakdown", label: "分類" }] as option (option.key)}
             <TabsTrigger class="h-7 px-2 py-0.5 text-xs" active={displayMode === option.key} onclick={() => displayMode = option.key as NetWorthDisplayMode}>{option.label}</TabsTrigger>
           {/each}
         </TabsList>
@@ -124,7 +124,7 @@
           </span>
         {/if}
         <TabsList class="grid h-8 grid-cols-5 border border-border p-0.5 text-xs">
-          {#each timeframes as option}
+          {#each timeframes as option (option)}
             <TabsTrigger class="h-7 px-2 py-0.5 text-xs" active={timeframe === option} onclick={() => timeframe = option}>{option === "ALL" ? "全部" : option}</TabsTrigger>
           {/each}
         </TabsList>
@@ -160,7 +160,7 @@
         {#if displayMode === "breakdown"}
           <div class="flex flex-wrap gap-x-4 gap-y-2 text-xs text-ink/55">
             <span class="inline-flex items-center gap-1.5"><span class="w-4 border-t-2 border-dashed border-ink"></span>總和</span>
-            {#each NET_WORTH_ASSET_SERIES.filter(({ key }) => includedAssets.includes(key)) as item}
+            {#each NET_WORTH_ASSET_SERIES.filter(({ key }) => includedAssets.includes(key)) as item (item.key)}
               <span class="inline-flex items-center gap-1.5"><span class="size-2 rounded-full" style={`background:${item.color}`}></span>{item.label}</span>
             {/each}
           </div>

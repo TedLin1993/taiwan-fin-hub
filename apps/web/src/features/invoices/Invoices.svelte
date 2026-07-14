@@ -1,16 +1,15 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
   import { ChevronDown, Search } from "@lucide/svelte";
-  import Button from "../components/ui/Button.svelte";
-  import EmptyState from "../components/ui/EmptyState.svelte";
-  import Input from "../components/ui/Input.svelte";
-  import type { ApiClient } from "../lib/api";
-  import { queryKeys } from "../lib/api";
-  import type { InvoiceRow } from "../lib/types";
-  import { formatCurrency, formatDate } from "../lib/format.svelte";
+  import Button from "../../components/ui/Button.svelte";
+  import EmptyState from "../../components/ui/EmptyState.svelte";
+  import Input from "../../components/ui/Input.svelte";
+  import type { ApiClient } from "../../lib/api";
+  import { invoicesQuery } from "../../lib/queries";
+  import { formatCurrency, formatDate } from "../../lib/format.svelte";
 
   let { api }: { api: ApiClient } = $props();
-  const invoices = createQuery<InvoiceRow[]>({ queryKey: queryKeys.invoices, queryFn: () => api.get<InvoiceRow[]>("/api/invoices") });
+  const invoices = createQuery(invoicesQuery(() => api));
   let search = $state("");
   let expanded = $state<Record<string, boolean>>({});
   const all = $derived($invoices.data ?? []);
@@ -47,12 +46,12 @@
       <EmptyState title={search.trim() ? "無符合結果" : "尚無發票記錄"} body={search.trim() ? "請調整搜尋條件。" : "同步電子發票連接器後顯示。"} />
     {:else}
       <div class="overflow-hidden rounded-xl border border-ink/10 bg-white shadow-xs">
-        {#each months as month}
+        {#each months as month (month)}
           {@const group = filtered.filter((invoice) => invoice.invoiceDate.startsWith(month))}
           <div>
             <div class="flex items-center justify-between border-b border-ink/8 bg-paper px-4 py-2"><span class="text-xs font-semibold text-ink/55">{month.slice(0, 4)} 年 {Number(month.slice(5))} 月</span><span class="text-xs font-semibold tabular-nums text-ink/55">{formatCurrency(group.reduce((sum, invoice) => sum + invoice.amount, 0))}</span></div>
             <div class="divide-y divide-ink/8">
-              {#each group as invoice}
+              {#each group as invoice (invoice.id)}
                 <div>
                   <button class={`flex w-full items-center gap-3 px-4 py-3 text-left transition ${expanded[invoice.id] ? "bg-blue-50" : "hover:bg-ink/3"}`} onclick={() => expanded[invoice.id] = !expanded[invoice.id]}>
                     <div class="min-w-0 flex-1"><p class="truncate text-sm font-medium">{invoice.sellerName ?? "未知商家"}</p><p class="text-xs text-ink/45">{formatDate(invoice.invoiceDate)}{invoice.invoiceNumber ? ` · ${invoice.invoiceNumber}` : ""}</p></div>
@@ -61,7 +60,7 @@
                   {#if expanded[invoice.id]}
                     <div class="border-t border-ink/8 bg-paper/60">
                       {#if invoice.items.length > 0}
-                        <div class="divide-y divide-ink/6">{#each invoice.items as item}<div class="flex items-start gap-3 px-5 py-2.5"><div class="min-w-0 flex-1"><p class="text-sm text-ink/80">{item.description}</p>{#if item.quantity != null || item.unitPrice != null}<p class="mt-0.5 text-xs text-ink/45">{item.quantity != null ? `${item.quantity.toLocaleString()} × ` : ""}{item.unitPrice != null ? formatCurrency(item.unitPrice) : ""}</p>{/if}</div><p class="shrink-0 text-sm font-medium tabular-nums">{formatCurrency(item.amount)}</p></div>{/each}</div>
+                        <div class="divide-y divide-ink/6">{#each invoice.items as item (item.id)}<div class="flex items-start gap-3 px-5 py-2.5"><div class="min-w-0 flex-1"><p class="text-sm text-ink/80">{item.description}</p>{#if item.quantity != null || item.unitPrice != null}<p class="mt-0.5 text-xs text-ink/45">{item.quantity != null ? `${item.quantity.toLocaleString()} × ` : ""}{item.unitPrice != null ? formatCurrency(item.unitPrice) : ""}</p>{/if}</div><p class="shrink-0 text-sm font-medium tabular-nums">{formatCurrency(item.amount)}</p></div>{/each}</div>
                       {:else}<p class="px-5 py-3 text-xs text-ink/40">無品項記錄</p>{/if}
                       <div class="flex items-center justify-between border-t border-ink/8 px-5 py-2.5"><p class="text-xs font-semibold text-ink/50">合計</p><p class="text-sm font-bold tabular-nums">{formatCurrency(invoice.amount)}</p></div>
                     </div>
