@@ -2,6 +2,7 @@ node_modules/
 
 dist/
 **/dist/
+**/test-results/
 
 .wrangler/
 **/.wrangler/
@@ -14,6 +15,10 @@ dist/
 .env
 .env.*
 !.env.example
+
+# Private Cloudflare resource bindings
+wrangler.private.toml
+apps/worker/wrangler.local.toml
 
 *.local
 *.tsbuildinfo

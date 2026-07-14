@@ -81,6 +81,18 @@
 2. 登入後前往「連接器」頁面設定資料來源
 3. 點擊同步以取得最新資料
 
+### 本機開發
+
+本機 Wrangler 設定不納入版本控制。第一次啟動前請建立私人設定檔，並填入自己的 D1 Database ID：
+
+```bash
+cp apps/worker/wrangler.local.toml.example apps/worker/wrangler.local.toml
+npm install
+npm run dev
+```
+
+若需從本機部署至既有的 D1，請複製 `wrangler.toml` 為被忽略的 `wrangler.private.toml`、加入 `database_id`，並以 `wrangler --config wrangler.private.toml` 執行遠端遷移或部署。
+
 ---
 
 ## 更新

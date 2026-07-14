@@ -474,7 +474,10 @@ function toInvestmentTransaction(
   const txnDate = stringField(row[9]);
   const quantity = parseOptionalTdccNumber(stringField(row[12]));
   const price = parseOptionalTdccNumber(stringField(row[18]));
-  const amount = quantity !== undefined && price !== undefined ? Math.trunc(quantity * price) : undefined;
+  // The live API sometimes returns `1` in the price slot as an exchange-rate
+  // placeholder.  Treating quantity × 1 as a cash amount turns 93 shares into
+  // a misleading NT$93 transaction.
+  const amount = quantity !== undefined && price !== undefined && price !== 1 ? Math.trunc(quantity * price) : undefined;
   const sourceId = [txnDate, postDate, txnSerNo].filter(Boolean).join("") || row.map(stringField).join(":");
 
   return {
@@ -798,7 +801,9 @@ function normalizeTdccDate(value: string) {
   if (/^\d{7}$|^\d{8}$|^\d{13}$|^\d{14}$/.test(trimmed)) {
     const yearLength = trimmed.length === 7 || trimmed.length === 13 ? 3 : 4;
     const rawYear = Number(trimmed.slice(0, yearLength));
-    const year = yearLength === 3 ? rawYear + 1911 : rawYear;
+    // Live payloads can encode ROC years as zero-padded 8-digit dates
+    // ("01150713" = 2026-07-13), not only the 7-digit export format.
+    const year = rawYear < 1000 ? rawYear + 1911 : rawYear;
     const month = Number(trimmed.slice(yearLength, yearLength + 2));
     const day = Number(trimmed.slice(yearLength + 2, yearLength + 4));
     return new Date(year, month - 1, day).toISOString();
