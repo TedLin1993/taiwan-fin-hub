@@ -1,23 +1,23 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
   import { Building2, CreditCard } from "@lucide/svelte";
-  import Button from "../components/ui/Button.svelte";
-  import Card from "../components/ui/Card.svelte";
-  import CardHeader from "../components/ui/CardHeader.svelte";
-  import CardContent from "../components/ui/CardContent.svelte";
-  import EmptyState from "../components/ui/EmptyState.svelte";
-  import TabsList from "../components/ui/TabsList.svelte";
-  import TabsTrigger from "../components/ui/TabsTrigger.svelte";
-  import type { ApiClient } from "../lib/api";
-  import { queryKeys } from "../lib/api";
-  import type { AssetSection, BankAccountRow, BankData, ExchangeRateRow, InvestmentRow, ManualAssetRow, View } from "../lib/types";
-  import { formatBankAccountName, formatCurrency, formatDate, formatNumber, rateMap } from "../lib/format.svelte";
+  import Button from "../../components/ui/Button.svelte";
+  import Card from "../../components/ui/Card.svelte";
+  import CardHeader from "../../components/ui/CardHeader.svelte";
+  import CardContent from "../../components/ui/CardContent.svelte";
+  import EmptyState from "../../components/ui/EmptyState.svelte";
+  import TabsList from "../../components/ui/TabsList.svelte";
+  import TabsTrigger from "../../components/ui/TabsTrigger.svelte";
+  import type { ApiClient } from "../../lib/api";
+  import { bankQuery, exchangeRatesQuery, investmentsQuery, manualAssetsQuery } from "../../lib/queries";
+  import type { AssetSection, BankAccountRow, View } from "../../lib/types";
+  import { formatBankAccountName, formatCurrency, formatDate, formatNumber, rateMap } from "../../lib/format.svelte";
 
   let { api, navigate }: { api: ApiClient; navigate: (view: View) => void } = $props();
-  const bank = createQuery<BankData>({ queryKey: queryKeys.bank, queryFn: () => api.get<BankData>("/api/bank") });
-  const investments = createQuery<InvestmentRow[]>({ queryKey: queryKeys.investments, queryFn: () => api.get<InvestmentRow[]>("/api/investments") });
-  const manual = createQuery<ManualAssetRow[]>({ queryKey: queryKeys.manualAssets, queryFn: () => api.get<ManualAssetRow[]>("/api/manual-assets") });
-  const rates = createQuery<ExchangeRateRow[]>({ queryKey: queryKeys.exchangeRates, queryFn: () => api.get<ExchangeRateRow[]>("/api/exchange-rates") });
+  const bank = createQuery(bankQuery(() => api));
+  const investments = createQuery(investmentsQuery(() => api));
+  const manual = createQuery(manualAssetsQuery(() => api));
+  const rates = createQuery(exchangeRatesQuery(() => api));
 
   let section = $state<AssetSection>("all");
   const bankData = $derived($bank.data ?? { accounts: [], transactions: [] });
@@ -79,13 +79,13 @@
         { label: "銀行與現金", value: bankTotal, detail: `${deposits.length} 個帳戶`, tone: "text-moss" },
         { label: "投資", value: investmentTotal, detail: `${$investments.data?.length ?? 0} 個持倉`, tone: "text-steel" },
         { label: "信用卡負債", value: -cardDebt, detail: `${cards.length} 張卡片`, tone: "text-coral" }
-      ] as item}
+      ] as item (item.label)}
         <Card><CardContent class="p-5"><p class="text-xs font-semibold text-ink/50">{item.label}</p><p class={`mt-2 text-2xl font-bold tracking-tight tabular-nums ${item.tone}`}>{formatCurrency(item.value)}</p><p class="mt-1 text-xs text-ink/45">{item.detail}</p></CardContent></Card>
       {/each}
     </div>
 
     <TabsList class="grid h-auto w-full grid-cols-5 bg-card shadow-xs">
-      {#each tabs as tab}
+      {#each tabs as tab (tab.key)}
         <TabsTrigger class={`min-h-10 min-w-0 px-1 text-xs sm:text-sm ${section === tab.key ? "bg-ink text-white" : ""}`} active={section === tab.key} onclick={() => section = tab.key}>{tab.label}</TabsTrigger>
       {/each}
     </TabsList>
@@ -96,7 +96,7 @@
           <CardHeader class="flex-row items-center justify-between py-4"><div><h2 class="text-lg font-semibold">銀行與現金</h2><p class="mt-1 text-xs text-ink/45">各銀行彙整，外幣換算為 TWD</p></div><button class="text-xs font-semibold text-steel" onclick={() => section = "bank"}>總額 {formatCurrency(bankTotal)}</button></CardHeader>
           <CardContent class="pt-0">
             <div class="divide-y divide-ink/8">
-              {#each groupedBanks as group}
+              {#each groupedBanks as group (group.institution)}
                 <button class="flex min-h-16 w-full items-center justify-between gap-3 py-3 text-left" onclick={() => section = "bank"}>
                   <div class="flex min-w-0 items-center gap-3"><span class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel"><Building2 class="size-4" /></span><div class="min-w-0"><h3 class="truncate font-semibold">{group.institution}</h3><p class="mt-1 truncate text-xs text-ink/45">{group.accounts.length} 個帳戶{group.foreignCurrencies.length ? ` · 含 ${group.foreignCurrencies.join("、")}` : ""}</p></div></div>
                   <p class="shrink-0 font-bold tabular-nums text-steel">{formatCurrency(group.totalTwd)}</p>
@@ -114,11 +114,11 @@
           <Card>
             <CardHeader class="flex-row items-center justify-between border-b border-ink/8"><div><h2 class="text-lg font-semibold">銀行帳戶</h2><p class="text-xs text-ink/45">{deposits.length} 個帳戶</p></div><Button size="sm" variant="ghost" onclick={() => navigate("bank")}>查看交易 →</Button></CardHeader>
             <div class="divide-y divide-ink/8">
-              {#each groupedBanks as group}
+              {#each groupedBanks as group (group.institution)}
                 <div class="p-4">
                   <div class="mb-2 flex items-center justify-between gap-3"><h3 class="font-semibold">{group.institution}</h3><div class="flex items-center gap-3"><span class="text-xs font-bold tabular-nums text-steel">{formatCurrency(group.totalTwd)}</span><span class="text-xs font-medium text-moss">已同步</span></div></div>
                   <div class="grid gap-2">
-                    {#each group.accounts as account}
+                    {#each group.accounts as account (account.id)}
                       <div class="flex items-center justify-between gap-4 text-sm"><span class="min-w-0 truncate text-ink/60">{account.accountName ?? formatBankAccountName(account)}</span><span class="shrink-0 font-semibold tabular-nums">{formatCurrency(account.balance ?? 0, account.currency)}</span></div>
                     {/each}
                   </div>
@@ -129,7 +129,7 @@
           <Card>
             <CardHeader class="flex-row items-center justify-between border-b border-ink/8"><div><h2 class="text-lg font-semibold">投資持倉</h2><p class="text-xs text-ink/45">市值 {formatCurrency(investmentTotal)}</p></div><Button size="sm" variant="ghost" onclick={() => navigate("investments")}>查看全部 →</Button></CardHeader>
             <div class="divide-y divide-ink/8">
-              {#each ($investments.data ?? []).slice(0, 5) as item}
+              {#each ($investments.data ?? []).slice(0, 5) as item (item.id)}
                 <div class="grid grid-cols-[64px_minmax(0,1fr)_auto] items-center gap-3 px-5 py-3 text-sm"><span class="font-semibold text-steel">{item.symbol ?? item.assetType.toUpperCase()}</span><span class="min-w-0 truncate font-medium">{item.name}</span><span class="font-semibold tabular-nums">{formatCurrency((item.marketValue ?? 0) + (item.cashBalance ?? 0), item.currency)}</span></div>
               {/each}
             </div>
@@ -144,17 +144,17 @@
       <Card>
         <CardHeader class="flex-row items-center justify-between"><div><h2 class="flex items-center gap-2 text-lg font-semibold"><Building2 class="size-5 text-steel" />銀行帳戶</h2><p class="mt-1 text-xs text-ink/45">依銀行分組，總額由大到小排列</p></div><Button size="sm" variant="ghost" onclick={() => navigate("bank")}>查看所有交易 →</Button></CardHeader>
         <div class="divide-y divide-ink/8">
-          {#each groupedBanks as group}
-            <section class="px-5 py-4"><div class="flex items-center justify-between gap-3"><div><h3 class="font-semibold">{group.institution}</h3><p class="mt-1 text-xs text-ink/45">{group.accounts.length} 個帳戶</p></div><p class="font-bold tabular-nums text-steel">{formatCurrency(group.totalTwd)}</p></div><div class="mt-3 grid gap-2 md:grid-cols-2">{#each group.accounts as account}<div class="rounded-xl border border-ink/8 p-3"><div class="flex items-start justify-between gap-3"><div class="min-w-0"><p class="truncate text-sm font-semibold">{account.accountName ?? formatBankAccountName(account)}</p><p class="mt-1 text-xs text-ink/45">{account.currency} · {account.asOfAt ? `更新 ${formatDate(account.asOfAt)}` : "尚未同步"}</p></div><p class="shrink-0 font-bold tabular-nums">{formatCurrency(account.balance ?? 0, account.currency)}</p></div></div>{/each}</div></section>
+          {#each groupedBanks as group (group.institution)}
+            <section class="px-5 py-4"><div class="flex items-center justify-between gap-3"><div><h3 class="font-semibold">{group.institution}</h3><p class="mt-1 text-xs text-ink/45">{group.accounts.length} 個帳戶</p></div><p class="font-bold tabular-nums text-steel">{formatCurrency(group.totalTwd)}</p></div><div class="mt-3 grid gap-2 md:grid-cols-2">{#each group.accounts as account (account.id)}<div class="rounded-xl border border-ink/8 p-3"><div class="flex items-start justify-between gap-3"><div class="min-w-0"><p class="truncate text-sm font-semibold">{account.accountName ?? formatBankAccountName(account)}</p><p class="mt-1 text-xs text-ink/45">{account.currency} · {account.asOfAt ? `更新 ${formatDate(account.asOfAt)}` : "尚未同步"}</p></div><p class="shrink-0 font-bold tabular-nums">{formatCurrency(account.balance ?? 0, account.currency)}</p></div></div>{/each}</div></section>
           {/each}
         </div>
       </Card>
     {:else if section === "cards"}
-      <Card><CardHeader class="flex-row items-center justify-between"><div><h2 class="text-lg font-semibold">信用卡帳戶</h2><p class="mt-1 text-xs text-ink/45">目前負債 {formatCurrency(cardDebt)}</p></div><Button size="sm" variant="ghost" onclick={() => navigate("cards")}>查看刷卡紀錄 →</Button></CardHeader><CardContent>{#if cards.length === 0}<p class="py-8 text-center text-sm text-ink/45">尚無信用卡資料。</p>{:else}<div class="grid gap-3 md:grid-cols-2">{#each cards as card, index}<button class={`w-full rounded-2xl p-4 text-left text-white ${index % 2 === 0 ? "bg-ink" : "bg-steel"}`} onclick={() => navigate("cards")}><div class="flex items-start justify-between"><div><p class="font-semibold">{card.institutionName ?? card.connectorId}</p><p class="mt-2 text-xs text-white/65">{card.accountName ?? formatBankAccountName(card)}</p></div><CreditCard class="size-5 text-white/70" /></div><p class="mt-5 text-2xl font-bold tabular-nums">{formatCurrency(Math.abs(card.balance ?? 0), card.currency)}</p></button>{/each}</div>{/if}</CardContent></Card>
+      <Card><CardHeader class="flex-row items-center justify-between"><div><h2 class="text-lg font-semibold">信用卡帳戶</h2><p class="mt-1 text-xs text-ink/45">目前負債 {formatCurrency(cardDebt)}</p></div><Button size="sm" variant="ghost" onclick={() => navigate("cards")}>查看刷卡紀錄 →</Button></CardHeader><CardContent>{#if cards.length === 0}<p class="py-8 text-center text-sm text-ink/45">尚無信用卡資料。</p>{:else}<div class="grid gap-3 md:grid-cols-2">{#each cards as card, index (card.id)}<button class={`w-full rounded-2xl p-4 text-left text-white ${index % 2 === 0 ? "bg-ink" : "bg-steel"}`} onclick={() => navigate("cards")}><div class="flex items-start justify-between"><div><p class="font-semibold">{card.institutionName ?? card.connectorId}</p><p class="mt-2 text-xs text-white/65">{card.accountName ?? formatBankAccountName(card)}</p></div><CreditCard class="size-5 text-white/70" /></div><p class="mt-5 text-2xl font-bold tabular-nums">{formatCurrency(Math.abs(card.balance ?? 0), card.currency)}</p></button>{/each}</div>{/if}</CardContent></Card>
     {:else if section === "investments"}
-      <Card><CardHeader class="flex-row items-center justify-between"><div><h2 class="text-lg font-semibold">投資持倉</h2><p class="mt-1 text-xs text-ink/45">市值 {formatCurrency(investmentTotal)}</p></div><Button size="sm" variant="ghost" onclick={() => navigate("investments")}>交易紀錄 →</Button></CardHeader><CardContent><div class="divide-y divide-ink/8">{#each $investments.data ?? [] as item}<button class="flex min-h-16 w-full items-center justify-between gap-3 py-3 text-left" onclick={() => navigate("investments")}><div class="min-w-0"><p class="truncate font-semibold">{item.symbol ? `${item.symbol} ` : ""}{item.name}</p><p class="mt-1 text-xs text-ink/45">{formatNumber(item.quantity ?? 0)} 單位 · {item.assetType.toUpperCase()}</p></div><p class="shrink-0 font-bold tabular-nums text-steel">{formatCurrency((item.marketValue ?? 0) + (item.cashBalance ?? 0), item.currency)}</p></button>{/each}</div></CardContent></Card>
+      <Card><CardHeader class="flex-row items-center justify-between"><div><h2 class="text-lg font-semibold">投資持倉</h2><p class="mt-1 text-xs text-ink/45">市值 {formatCurrency(investmentTotal)}</p></div><Button size="sm" variant="ghost" onclick={() => navigate("investments")}>交易紀錄 →</Button></CardHeader><CardContent><div class="divide-y divide-ink/8">{#each $investments.data ?? [] as item (item.id)}<button class="flex min-h-16 w-full items-center justify-between gap-3 py-3 text-left" onclick={() => navigate("investments")}><div class="min-w-0"><p class="truncate font-semibold">{item.symbol ? `${item.symbol} ` : ""}{item.name}</p><p class="mt-1 text-xs text-ink/45">{formatNumber(item.quantity ?? 0)} 單位 · {item.assetType.toUpperCase()}</p></div><p class="shrink-0 font-bold tabular-nums text-steel">{formatCurrency((item.marketValue ?? 0) + (item.cashBalance ?? 0), item.currency)}</p></button>{/each}</div></CardContent></Card>
     {:else}
-      <Card><CardHeader class="flex-row items-center justify-between"><div><h2 class="text-lg font-semibold">其他資產</h2><p class="mt-1 text-xs text-ink/45">合計 {formatCurrency(manualTotal)}</p></div><Button size="sm" variant="ghost" onclick={() => navigate("manual-assets")}>＋ 新增資產</Button></CardHeader><CardContent><div class="divide-y divide-ink/8">{#each $manual.data ?? [] as item}<button class="flex min-h-16 w-full items-center justify-between gap-3 py-3 text-left" onclick={() => navigate("manual-assets")}><div class="min-w-0"><p class="truncate font-semibold">{item.name}</p><p class="mt-1 truncate text-xs text-ink/45">{item.category} · {item.date ? `${formatDate(item.date)} 更新` : "查看估值歷史"}</p></div><p class="shrink-0 font-bold tabular-nums text-moss">{formatCurrency(item.value ?? 0)}</p></button>{/each}</div></CardContent></Card>
+      <Card><CardHeader class="flex-row items-center justify-between"><div><h2 class="text-lg font-semibold">其他資產</h2><p class="mt-1 text-xs text-ink/45">合計 {formatCurrency(manualTotal)}</p></div><Button size="sm" variant="ghost" onclick={() => navigate("manual-assets")}>＋ 新增資產</Button></CardHeader><CardContent><div class="divide-y divide-ink/8">{#each $manual.data ?? [] as item (item.id)}<button class="flex min-h-16 w-full items-center justify-between gap-3 py-3 text-left" onclick={() => navigate("manual-assets")}><div class="min-w-0"><p class="truncate font-semibold">{item.name}</p><p class="mt-1 truncate text-xs text-ink/45">{item.category} · {item.date ? `${formatDate(item.date)} 更新` : "查看估值歷史"}</p></div><p class="shrink-0 font-bold tabular-nums text-moss">{formatCurrency(item.value ?? 0)}</p></button>{/each}</div></CardContent></Card>
     {/if}
   </div>
 {/if}
