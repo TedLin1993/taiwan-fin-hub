@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bankAccountLast5, formatBankAccountName, formatNumber, parseValidDate, rateMap, transactionValueTwd } from "./format.svelte";
+import { bankAccountLast5, formatBankAccountName, formatNumber, normalizeFinancialDate, parseValidDate, rateMap, transactionValueTwd } from "./format.svelte";
 
 describe("financial formatting helpers", () => {
   it("formats numbers using the Taiwan locale", () => {
@@ -19,6 +19,8 @@ describe("financial formatting helpers", () => {
 
   it("accepts ISO dates and date-only fallbacks while rejecting invalid values", () => {
     expect(parseValidDate("2026-07-13")?.getFullYear()).toBe(2026);
+    expect(normalizeFinancialDate("0115-07-13T00:00:00.000Z")).toBe("2026-07-13T00:00:00.000Z");
+    expect(parseValidDate("0115-07-13T00:00:00.000Z")?.getFullYear()).toBe(2026);
     expect(parseValidDate("not-a-date")).toBeUndefined();
   });
 

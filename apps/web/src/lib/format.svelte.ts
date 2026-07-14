@@ -25,10 +25,17 @@ export function formatDate(value?: string) {
   const date = parseValidDate(value); if (!date) return "";
   return new Intl.DateTimeFormat("zh-TW", { dateStyle: "short" }).format(date);
 }
+export function normalizeFinancialDate(value?: string) {
+  if (!value) return "";
+  const roc = value.match(/^0(\d{3})-(\d{2})-(\d{2})(.*)$/);
+  if (!roc) return value;
+  return `${Number(roc[1]) + 1911}-${roc[2]}-${roc[3]}${roc[4]}`;
+}
 export function parseValidDate(value?: string) {
   if (!value) return undefined;
-  const date = new Date(value); if (!Number.isNaN(date.getTime())) return date;
-  const prefix = value.match(/^(\d{4})-(\d{2})-(\d{2})/); if (!prefix) return undefined;
+  const normalized = normalizeFinancialDate(value);
+  const date = new Date(normalized); if (!Number.isNaN(date.getTime())) return date;
+  const prefix = normalized.match(/^(\d{4})-(\d{2})-(\d{2})/); if (!prefix) return undefined;
   const fallback = new Date(Number(prefix[1]), Number(prefix[2]) - 1, Number(prefix[3]));
   return Number.isNaN(fallback.getTime()) ? undefined : fallback;
 }
