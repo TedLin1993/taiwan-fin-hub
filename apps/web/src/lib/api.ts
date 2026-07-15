@@ -15,7 +15,13 @@ function isApiError(value: unknown): value is ApiError {
 export function createApiClient(): ApiClient {
   async function request<T>(path: string, init: RequestInit = {}) {
     const response = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init.headers } });
-    const data = (await response.json()) as T | ApiError;
+    const text = await response.text();
+    let data: T | ApiError;
+    try {
+      data = JSON.parse(text) as T | ApiError;
+    } catch {
+      throw new Error(response.ok ? "伺服器回應格式錯誤。" : `伺服器暫時無法完成請求（HTTP ${response.status}）。`);
+    }
     if (!response.ok) throw new Error(isApiError(data) ? data.error.message : "請求失敗。");
     return data as T;
   }

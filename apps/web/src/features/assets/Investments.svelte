@@ -8,16 +8,21 @@
   import Input from "../../components/ui/Input.svelte";
   import Select from "../../components/ui/Select.svelte";
   import type { ApiClient } from "../../lib/api";
-  import { investmentsQuery, investmentTransactionsQuery } from "../../lib/queries";
+  import { exchangeRatesQuery, investmentsQuery, investmentTransactionsQuery } from "../../lib/queries";
   import type { InvestmentTransactionRow } from "../../lib/types";
-  import { formatCurrency, formatDate, formatNumber } from "../../lib/format.svelte";
+  import { formatCurrency, formatDate, formatNumber, rateMap } from "../../lib/format.svelte";
   let { api }: { api: ApiClient } = $props();
   const investments = createQuery(investmentsQuery(() => api));
   const trades = createQuery(investmentTransactionsQuery(() => api));
+  const rates = createQuery(exchangeRatesQuery(() => api));
   let search = $state("");
   let tradeType = $state("all");
   const positions = $derived(($investments.data ?? []).filter((p) => `${p.symbol ?? ""} ${p.name}`.toLowerCase().includes(search.toLowerCase())));
-  const total = $derived(($investments.data ?? []).reduce((s, p) => s + (p.marketValue ?? 0) + (p.cashBalance ?? 0), 0));
+  const rateValues = $derived(rateMap($rates.data));
+  const total = $derived(($investments.data ?? []).reduce((s, p) => {
+    const value = (p.marketValue ?? 0) + (p.cashBalance ?? 0);
+    return s + (p.currency === "TWD" ? value : value * (rateValues[p.currency] ?? 0));
+  }, 0));
   const filteredTrades = $derived(($trades.data ?? []).filter((t) => (tradeType === "all" || t.assetType === tradeType) && `${t.symbol ?? ""} ${t.name ?? ""} ${t.transactionName ?? ""}`.toLowerCase().includes(search.toLowerCase())).slice(0, 100));
   function tradeDisplay(t: InvestmentTransactionRow) {
     if (t.amount != null && t.price != null && t.price !== 1) return formatCurrency(t.amount, t.currency);

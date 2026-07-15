@@ -47,7 +47,7 @@ export interface BankTransactionRow {
 }
 export interface CreditCardBillRow { id: string; connectorId: ConnectorId; accountId: string; accountSourceId?: string; sourceId: string; billingPeriod: string; statementAmount?: number; minimumPayment?: number; paidAmount?: number; isPaid?: number; paymentDueDate?: string; statementClosingDate?: string; currency: string; }
 export interface BankData { accounts: BankAccountRow[]; transactions: BankTransactionRow[]; }
-export interface ConnectorSettings { connectorId: ConnectorId; configured: boolean; updatedAt?: string; publicConfig?: Record<string, unknown> | null; }
+export interface ConnectorSettings { connectorId: ConnectorId; configured: boolean; updatedAt?: string; publicConfig?: Record<string, unknown> | null; sessionAvailable?: boolean; }
 export interface SyncJobRow {
   id: string; connectorId: ConnectorId; scope: string; enabled: boolean; intervalMinutes: number; nextRunAt: string;
   lockedUntil: string | null; lockedBy: string | null; lockTrigger: "manual" | "scheduled" | null; lockScope: string | null;
