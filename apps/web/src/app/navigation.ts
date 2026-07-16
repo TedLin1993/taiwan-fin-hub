@@ -13,12 +13,12 @@ const views = new Set<View>([
   "data-sources",
   "exchange-rates",
   "classification-rules",
-  "more"
+  "more",
 ]);
 
 export function parseViewHash(hash: string): View | null {
   const candidate = hash.replace(/^#\/?/, "");
-  return views.has(candidate as View) ? candidate as View : null;
+  return views.has(candidate as View) ? (candidate as View) : null;
 }
 
 export function viewHash(view: View) {

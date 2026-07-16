@@ -11,11 +11,16 @@
     children,
     class: className,
     ...rest
-  }: HTMLAttributes<HTMLDivElement> & { config: ChartConfig; children?: Snippet } = $props();
+  }: HTMLAttributes<HTMLDivElement> & {
+    config: ChartConfig;
+    children?: Snippet;
+  } = $props();
   const chartId = `chart-${uid.replace(/:/g, "")}`;
 
   setChartContext({
-    get config() { return config; }
+    get config() {
+      return config;
+    },
   });
 </script>
 
@@ -29,7 +34,7 @@
     "[&_.lc-axis-grid]:stroke-ink/10 [&_.lc-highlight-line]:stroke-steel/30",
     "[&_.lc-highlight-point]:stroke-white [&_.lc-highlight-point]:stroke-2",
     "[&_.lc-path]:transition-opacity [&_.lc-text-svg]:overflow-visible",
-    className
+    className,
   )}
   {...rest}
 >

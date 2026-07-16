@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { bankAccountLast5, formatBankAccountName, formatNumber, normalizeFinancialDate, parseValidDate, rateMap, transactionValueTwd } from "./format.svelte";
+import {
+  bankAccountLast5,
+  formatBankAccountName,
+  formatNumber,
+  normalizeFinancialDate,
+  parseValidDate,
+  rateMap,
+  transactionValueTwd,
+} from "./format.svelte";
 
 describe("financial formatting helpers", () => {
   it("formats numbers using the Taiwan locale", () => {
@@ -13,20 +21,35 @@ describe("financial formatting helpers", () => {
   });
 
   it("uses account labels when a source id has no account number", () => {
-    expect(formatBankAccountName({ accountName: "末五碼 12345", sourceId: "unknown" })).toBe("12345");
-    expect(formatBankAccountName({ accountName: "現金", accountType: "credit" })).toBe("現金");
+    expect(
+      formatBankAccountName({
+        accountName: "末五碼 12345",
+        sourceId: "unknown",
+      }),
+    ).toBe("12345");
+    expect(
+      formatBankAccountName({ accountName: "現金", accountType: "credit" }),
+    ).toBe("現金");
   });
 
   it("accepts ISO dates and date-only fallbacks while rejecting invalid values", () => {
     expect(parseValidDate("2026-07-13")?.getFullYear()).toBe(2026);
-    expect(normalizeFinancialDate("0115-07-13T00:00:00.000Z")).toBe("2026-07-13T00:00:00.000Z");
-    expect(parseValidDate("0115-07-13T00:00:00.000Z")?.getFullYear()).toBe(2026);
+    expect(normalizeFinancialDate("0115-07-13T00:00:00.000Z")).toBe(
+      "2026-07-13T00:00:00.000Z",
+    );
+    expect(parseValidDate("0115-07-13T00:00:00.000Z")?.getFullYear()).toBe(
+      2026,
+    );
     expect(parseValidDate("not-a-date")).toBeUndefined();
   });
 
   it("maps exchange rates and converts non-TWD transactions", () => {
-    const rates = rateMap([{ currency: "USD", rateTwd: 32, updatedAt: "2026-07-13T00:00:00Z" }]);
+    const rates = rateMap([
+      { currency: "USD", rateTwd: 32, updatedAt: "2026-07-13T00:00:00Z" },
+    ]);
     expect(rates).toEqual({ USD: 32 });
-    expect(transactionValueTwd({ currency: "USD", amount: 10 } as never, rates)).toBe(320);
+    expect(
+      transactionValueTwd({ currency: "USD", amount: 10 } as never, rates),
+    ).toBe(320);
   });
 });

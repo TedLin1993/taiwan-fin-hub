@@ -1,15 +1,30 @@
-import type { BankAccountRow, BankTransactionRow, ExchangeRateRow } from "./types";
+import type {
+  BankAccountRow,
+  BankTransactionRow,
+  ExchangeRateRow,
+} from "./types";
 
 export const moneyState = $state({ hidden: false });
 
 export function formatCurrency(value: number, currency = "TWD") {
   if (moneyState.hidden) return "••••••";
   const sign = value < 0 ? "−" : "";
-  const number = new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 }).format(Math.abs(value));
-  const symbols: Record<string, string> = { TWD: "NT$", USD: "US$", JPY: "JP¥", EUR: "€" };
+  const number = new Intl.NumberFormat("zh-TW", {
+    maximumFractionDigits: 0,
+  }).format(Math.abs(value));
+  const symbols: Record<string, string> = {
+    TWD: "NT$",
+    USD: "US$",
+    JPY: "JP¥",
+    EUR: "€",
+  };
   return `${sign}${symbols[currency] ?? `${currency} `}${number}`;
 }
-export function formatNumber(value: number) { return new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 }).format(value); }
+export function formatNumber(value: number) {
+  return new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 }).format(
+    value,
+  );
+}
 export function formatCompactTwd(value: number) {
   if (moneyState.hidden) return "••••";
   const abs = Math.abs(value);
@@ -18,11 +33,16 @@ export function formatCompactTwd(value: number) {
   return formatNumber(Math.round(value));
 }
 export function formatDateTime(value?: string) {
-  const date = parseValidDate(value); if (!date) return "";
-  return new Intl.DateTimeFormat("zh-TW", { dateStyle: "medium", timeStyle: "short" }).format(date);
+  const date = parseValidDate(value);
+  if (!date) return "";
+  return new Intl.DateTimeFormat("zh-TW", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
 }
 export function formatDate(value?: string) {
-  const date = parseValidDate(value); if (!date) return "";
+  const date = parseValidDate(value);
+  if (!date) return "";
   return new Intl.DateTimeFormat("zh-TW", { dateStyle: "short" }).format(date);
 }
 export function normalizeFinancialDate(value?: string) {
@@ -34,17 +54,36 @@ export function normalizeFinancialDate(value?: string) {
 export function parseValidDate(value?: string) {
   if (!value) return undefined;
   const normalized = normalizeFinancialDate(value);
-  const date = new Date(normalized); if (!Number.isNaN(date.getTime())) return date;
-  const prefix = normalized.match(/^(\d{4})-(\d{2})-(\d{2})/); if (!prefix) return undefined;
-  const fallback = new Date(Number(prefix[1]), Number(prefix[2]) - 1, Number(prefix[3]));
+  const date = new Date(normalized);
+  if (!Number.isNaN(date.getTime())) return date;
+  const prefix = normalized.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!prefix) return undefined;
+  const fallback = new Date(
+    Number(prefix[1]),
+    Number(prefix[2]) - 1,
+    Number(prefix[3]),
+  );
   return Number.isNaN(fallback.getTime()) ? undefined : fallback;
 }
-export function todayStr() { return new Date().toISOString().slice(0, 10); }
-export function formatBankAccountName(account: { accountName?: string; sourceId?: string; accountSourceId?: string; accountType?: string }) {
-  if (account.accountType === "credit") return account.accountName ?? account.sourceId ?? account.accountSourceId ?? "-";
+export function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+export function formatBankAccountName(account: {
+  accountName?: string;
+  sourceId?: string;
+  accountSourceId?: string;
+  accountType?: string;
+}) {
+  if (account.accountType === "credit")
+    return (
+      account.accountName ?? account.sourceId ?? account.accountSourceId ?? "-"
+    );
   const sourceId = account.accountSourceId ?? account.sourceId ?? "";
-  const last5 = bankAccountLast5(sourceId); if (last5) return last5;
-  const name = account.accountName?.startsWith("末五碼 ") ? account.accountName.slice(4) : account.accountName;
+  const last5 = bankAccountLast5(sourceId);
+  if (last5) return last5;
+  const name = account.accountName?.startsWith("末五碼 ")
+    ? account.accountName.slice(4)
+    : account.accountName;
   return name ?? sourceId ?? "-";
 }
 export function bankAccountLast5(sourceId: string) {
@@ -55,17 +94,31 @@ export function bankAccountLast5(sourceId: string) {
 }
 export function formatCurrencyTotals(totals: Record<string, number>) {
   if (moneyState.hidden && Object.keys(totals).length > 0) return "••••••";
-  const entries = Object.entries(totals); if (entries.length === 0) return formatCurrency(0);
-  if (entries.length === 1) return formatCurrency(entries[0]![1], entries[0]![0]);
-  return entries.map(([currency, amount]) => formatCurrency(amount, currency)).join(" · ");
+  const entries = Object.entries(totals);
+  if (entries.length === 0) return formatCurrency(0);
+  if (entries.length === 1)
+    return formatCurrency(entries[0]![1], entries[0]![0]);
+  return entries
+    .map(([currency, amount]) => formatCurrency(amount, currency))
+    .join(" · ");
 }
-export function sumAccountsByCurrency(accounts: BankAccountRow[], field: "balance" | "availableBalance") {
+export function sumAccountsByCurrency(
+  accounts: BankAccountRow[],
+  field: "balance" | "availableBalance",
+) {
   return accounts.reduce<Record<string, number>>((totals, account) => {
-    const currency = account.currency || "TWD"; totals[currency] = (totals[currency] ?? 0) + (account[field] ?? 0); return totals;
+    const currency = account.currency || "TWD";
+    totals[currency] = (totals[currency] ?? 0) + (account[field] ?? 0);
+    return totals;
   }, {});
 }
-export function rateMap(rates: ExchangeRateRow[] | undefined) { return Object.fromEntries((rates ?? []).map((r) => [r.currency, r.rateTwd])); }
-export function transactionValueTwd(transaction: BankTransactionRow, rates: Record<string, number>) {
+export function rateMap(rates: ExchangeRateRow[] | undefined) {
+  return Object.fromEntries((rates ?? []).map((r) => [r.currency, r.rateTwd]));
+}
+export function transactionValueTwd(
+  transaction: BankTransactionRow,
+  rates: Record<string, number>,
+) {
   if (transaction.currency === "TWD") return transaction.amount;
   return transaction.amount * (rates[transaction.currency] ?? 1);
 }

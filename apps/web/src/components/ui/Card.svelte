@@ -1,8 +1,21 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { cn } from "../../lib/utils";
-  let { children, class: className = "", as = "div" }: { children?: Snippet; class?: string; as?: "div" | "section" | "article" } = $props();
-  const classes = $derived(cn("rounded-xl border border-border bg-card text-card-foreground shadow-xs", className));
+  let {
+    children,
+    class: className = "",
+    as = "div",
+  }: {
+    children?: Snippet;
+    class?: string;
+    as?: "div" | "section" | "article";
+  } = $props();
+  const classes = $derived(
+    cn(
+      "rounded-xl border border-border bg-card text-card-foreground shadow-xs",
+      className,
+    ),
+  );
 </script>
 
 {#if as === "section"}
