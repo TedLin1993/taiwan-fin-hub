@@ -5,7 +5,7 @@
   import type { ApiClient } from "../../lib/api";
   import type { BankData, ClassificationRuleRow, SyncJobRow, View } from "../../lib/types";
   let { demoMode, jobs, rules, bank, navigate }: { api: ApiClient; demoMode: boolean; jobs: SyncJobRow[]; rules: ClassificationRuleRow[]; bank: BankData; navigate: (view: View) => void } = $props();
-  const sources = [{ id: "einvoice", label: "電子發票" }, { id: "esun", label: "玉山銀行" }, { id: "cathaybk", label: "國泰世華" }, { id: "sinopac", label: "永豐 MMA" }, { id: "tdcc", label: "集保 e 存摺" }];
+  const sources = [{ id: "einvoice", label: "電子發票" }, { id: "esun", label: "玉山銀行" }, { id: "cathaybk", label: "國泰世華" }, { id: "sinopac", label: "永豐行動銀行" }, { id: "tdcc", label: "集保 e 存摺" }];
   const unhealthy = $derived(jobs.filter((job) => job.lastStatus === "failed" || job.lastStatus === "needs_user_action"));
 </script>
 <div class="grid gap-4">

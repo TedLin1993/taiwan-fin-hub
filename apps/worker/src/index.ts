@@ -491,7 +491,9 @@ api.get("/connectors/:connectorId/settings", async (c) => {
   let sessionAvailable = false;
   if (connectorId === "sinopac" && settings) {
     const stored = await decryptJson<Record<string, unknown>>(settings.encrypted_config, configEncryptionKey(c.env));
-    sessionAvailable = typeof stored.sessionCookies === "string" && stored.sessionCookies.length > 0;
+    sessionAvailable = typeof stored.sessionCookies === "string"
+      && stored.sessionCookies.length > 0
+      && stored.protocol === "sinopac-mobile-app-json-v1";
   }
 
   return c.json({
@@ -558,7 +560,7 @@ api.put("/connectors/:connectorId/settings", async (c) => {
 
     if (connectorId === "sinopac" && sinopacCredentialsChanged(storedConfig, rawConfig)) {
       for (const key of [
-        "sessionCookies", "sessionExpiresAt", "browserSessionId", "browserSessionExpiresAt", "captcha"
+        "sessionCookies", "sessionExpiresAt", "browserSessionId", "browserSessionExpiresAt", "captcha", "protocol"
       ]) delete mergedConfig[key];
     }
 
@@ -1016,21 +1018,29 @@ async function syncSinopac(
   const publicStored = settings.public_config ? JSON.parse(settings.public_config) : {};
   const config = parseSinopacConfig({ ...stored, ...publicStored, ...overrides });
 
-  console.log(`[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ?? "none"})`);
+  console.log(`[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ? "set" : "none"})`);
   let result: Awaited<ReturnType<ReturnType<typeof createSinopacConnector>["sync"]>>;
   try {
     result = await createSinopacConnector(env.BROWSER).sync(config, settings.sync_cursor ?? undefined);
   } catch (error) {
-    if (error instanceof SinopacVerificationRequiredError) {
-      const cleaned = { ...stored };
-      delete cleaned.sessionCookies;
-      delete cleaned.sessionExpiresAt;
+    const cleaned = { ...stored };
+    const hadPendingVerification = Boolean(config.browserSessionId && overrides.captcha);
+    if (hadPendingVerification) {
       delete cleaned.captcha;
       delete cleaned.browserSessionId;
       delete cleaned.browserSessionExpiresAt;
+    }
+    if (error instanceof SinopacVerificationRequiredError) {
+      delete cleaned.sessionCookies;
+      delete cleaned.sessionExpiresAt;
+      delete cleaned.protocol;
+    }
+    if (hadPendingVerification || error instanceof SinopacVerificationRequiredError) {
       await env.DB.prepare(`UPDATE connector_settings SET encrypted_config = ? WHERE connector_id = ?`)
         .bind(await encryptJson(cleaned, configEncryptionKey(env)), connectorId)
         .run();
+    }
+    if (error instanceof SinopacVerificationRequiredError) {
       throw new NeedsUserActionError(error.message);
     }
     throw error;
@@ -1039,20 +1049,27 @@ async function syncSinopac(
   const bankBalanceSnapshots = result.bankBalanceSnapshots ?? [];
   const bankTransactions = result.bankTransactions ?? [];
   const creditCardBills = result.creditCardBills ?? [];
-  const positions = result.records ?? [];
-  console.log(`[sync] ${connectorId}/${scope}: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} bills=${creditCardBills.length} positions=${positions.length}`);
+  console.log(`[sync] ${connectorId}/${scope}: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} bills=${creditCardBills.length}`);
 
   const now = new Date().toISOString();
   const statements: D1PreparedStatement[] = [
+    env.DB.prepare(`DELETE FROM bank_transactions WHERE connector_id = ?`).bind(connectorId),
+    env.DB.prepare(`DELETE FROM credit_card_bills WHERE connector_id = ?`).bind(connectorId),
     ...bankAccounts.map((account) => bankAccountStatement(env.DB, connectorId, account, now)),
     ...bankBalanceSnapshots.map((snapshot) => bankBalanceSnapshotStatement(env.DB, connectorId, snapshot, now)),
     ...bankTransactions.map((transaction) => bankTransactionStatement(env.DB, connectorId, transaction, now)),
     ...creditCardBills.map((bill) => creditCardBillStatement(env.DB, connectorId, bill, now)),
-    ...positions.map((position) => investmentPositionStatement(env.DB, connectorId, position, now)),
     ...(bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(env.DB)] : [])
   ];
+  let persistedCursor: string | undefined;
   if (result.cursor) {
     const cursorState = JSON.parse(result.cursor) as Record<string, unknown>;
+    const {
+      sessionCookies: _sessionCookies,
+      sessionExpiresAt: _sessionExpiresAt,
+      ...safeCursorState
+    } = cursorState;
+    persistedCursor = JSON.stringify(safeCursorState);
     const {
       browserSessionId: _browserSessionId,
       browserSessionExpiresAt: _browserSessionExpiresAt,
@@ -1061,7 +1078,7 @@ async function syncSinopac(
     } = config;
     statements.push(
       env.DB.prepare(`UPDATE connector_settings SET encrypted_config = ?, sync_cursor = ?, updated_at = ? WHERE connector_id = ?`)
-        .bind(await encryptJson({ ...reusableConfig, ...cursorState }, configEncryptionKey(env)), result.cursor, now, connectorId)
+        .bind(await encryptJson({ ...reusableConfig, ...cursorState }, configEncryptionKey(env)), persistedCursor, now, connectorId)
     );
   }
   if (statements.length > 0) await env.DB.batch(statements);
@@ -1070,8 +1087,8 @@ async function syncSinopac(
     success: true,
     connectorId,
     scope,
-    records: bankAccounts.length + bankBalanceSnapshots.length + bankTransactions.length + creditCardBills.length + positions.length,
-    cursorUpdated: Boolean(result.cursor && result.cursor !== settings.sync_cursor)
+    records: bankAccounts.length + bankBalanceSnapshots.length + bankTransactions.length + creditCardBills.length,
+    cursorUpdated: Boolean(persistedCursor && persistedCursor !== settings.sync_cursor)
   };
 }
 

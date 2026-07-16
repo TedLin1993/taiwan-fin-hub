@@ -5,27 +5,35 @@ import type {
   BankBalanceSnapshot,
   BankTransaction,
   CreditCardBill,
-  InvestmentPosition,
   SyncResult
 } from "@taiwan-fin-hub/core";
 import type { SinopacConfig } from "@taiwan-fin-hub/connectors";
 
-const LOGIN_URL = "https://mma.sinopac.com/MemberPortal/Member/NextWebLogin.aspx";
-const CARD_INFO_URL = "https://mma.sinopac.com/SinoCard/Account/Info";
-const CARD_STATEMENT_URL = "https://mma.sinopac.com/SinoCard/Account/StatementInquiry";
-const CARD_UNBILLED_URL = "https://mma.sinopac.com/SinoCard/Account/UnbilledTxInquiry";
-const US_STOCK_URL = "https://mma.sinopac.com/StockAndETF/Dashboard";
+const MOBILE_HOST = "https://m.sinopac.com";
+const LOGIN_URL = `${MOBILE_HOST}/m/member/login/m_login.aspx?RequestTrans=MobileCard`;
+const CARD_SUMMARY_PATH = "/ws/card/cardqry/ws_cardsum.ashx";
+const CARD_BILLS_PATH = "/ws/card/cardqry/ws_cardbilling_sp.ashx";
+const CARD_UNBILLED_PATH = "/ws/card/cardqry/ws_nonbilling.ashx";
+const SESSION_PROTOCOL = "sinopac-mobile-app-json-v1";
 const CAPTCHA_BROWSER_KEEP_ALIVE_MS = 150_000;
 const CAPTCHA_VALIDITY_MS = 120_000;
+const SESSION_VALIDITY_MS = 20 * 60 * 1000;
+const ANDROID_USER_AGENT =
+  "Mozilla/5.0 (Linux; Android 14; Pixel 7 Build/UP1A.231105.003) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
 
-type Row = string[];
-type PageSnapshot = { url: string; title: string; text: string; tables: Row[][] };
+type JsonRecord = Record<string, unknown>;
+type FetchImpl = typeof fetch;
+type SinopacApiPayloads = {
+  summary: unknown;
+  bills: unknown;
+  unbilled: unknown;
+};
 type Scraped = {
   bankAccounts: Array<Omit<BankAccount, "id" | "connectorId">>;
   bankBalanceSnapshots: Array<Omit<BankBalanceSnapshot, "id" | "connectorId">>;
   bankTransactions: Array<Omit<BankTransaction, "id" | "connectorId">>;
   creditCardBills: Array<Omit<CreditCardBill, "id" | "connectorId">>;
-  records: Array<Omit<InvestmentPosition, "id" | "connectorId">>;
 };
 
 export class SinopacVerificationRequiredError extends Error {
@@ -42,19 +50,18 @@ export class SinopacBrowserCapacityError extends Error {
   }
 }
 
-export function createSinopacConnector(browser?: Fetcher) {
+export function createSinopacConnector(browser?: Fetcher, fetchImpl: FetchImpl = fetch) {
   return {
     id: "sinopac" as const,
-    name: "永豐銀行 MMA",
-    async sync(config: SinopacConfig, cursor?: string): Promise<SyncResult<Omit<InvestmentPosition, "id" | "connectorId">>> {
-      if (!config.userId || !config.account || !config.password) {
-        throw new Error("永豐銀行需要身分證字號／統編、使用者代碼與網路密碼。");
-      }
-      if (!browser) throw new Error("永豐銀行需要 BROWSER binding 才能登入。");
+    name: "永豐銀行行動銀行",
 
-      let browserInstance: Browser;
-      let page: Page;
+    async sync(config: SinopacConfig, _cursor?: string): Promise<SyncResult<never>> {
+      let sessionCookies = config.sessionCookies;
+      let browserInstance: Browser | undefined;
+      let verifiedThisRun = false;
+
       if (config.browserSessionId && config.captcha) {
+        if (!browser) throw new Error("永豐首次驗證需要 BROWSER binding。");
         if (!config.browserSessionExpiresAt || new Date(config.browserSessionExpiresAt) <= new Date()) {
           throw new SinopacVerificationRequiredError("永豐圖形驗證碼已逾時，請重新取得驗證碼。");
         }
@@ -63,65 +70,113 @@ export function createSinopacConnector(browser?: Fetcher) {
         } catch {
           throw new SinopacVerificationRequiredError("永豐登入工作階段已失效，請重新取得圖形驗證碼。");
         }
-        const pages = await browserInstance.pages();
-        page = pages.find((candidate) => candidate.url().includes("NextWebLogin")) ?? pages[0];
-        if (!page) {
-          await browserInstance.close();
-          throw new SinopacVerificationRequiredError("永豐登入工作階段沒有可用頁面，請重新取得圖形驗證碼。");
-        }
-      } else {
-        if (!config.sessionCookies) {
-          throw new SinopacVerificationRequiredError("永豐同步需要圖形驗證碼，請先完成一次人工驗證。");
-        }
-        browserInstance = await launchBrowser(browser);
-        page = await browserInstance.newPage();
-      }
-      try {
-        if (config.browserSessionId && config.captcha) {
-          await submitLogin(page, config.captcha);
-        } else {
-          await configurePage(page);
-          await restoreCookies(page, config.sessionCookies);
-          await page.goto(CARD_INFO_URL, { waitUntil: "domcontentloaded", timeout: 20_000 });
-          if (await needsLoginAfterNavigation(page)) {
-            throw new SinopacVerificationRequiredError("永豐登入工作階段已失效，請重新取得圖形驗證碼。");
+        try {
+          const pages = await browserInstance.pages();
+          const page = pages.find((candidate) => candidate.url().includes("/m/member/login/m_login.aspx")) ?? pages[0];
+          if (!page) {
+            throw new SinopacVerificationRequiredError("永豐登入工作階段沒有可用頁面，請重新取得圖形驗證碼。");
           }
+          await submitLogin(page, config.captcha);
+          sessionCookies = JSON.stringify(await page.cookies());
+          verifiedThisRun = true;
+        } finally {
+          await browserInstance.close();
         }
-
-        const cards = await scrapeCards(page, config.lookbackMonths ?? 3);
-        const records = await scrapeInvestments(page);
-        const freshCookies = JSON.stringify(await page.cookies());
-        return {
-          records,
-          bankAccounts: cards.bankAccounts,
-          bankBalanceSnapshots: cards.bankBalanceSnapshots,
-          bankTransactions: cards.bankTransactions,
-          creditCardBills: cards.creditCardBills,
-          cursor: JSON.stringify({
-            ...(readCursor(cursor) ?? {}),
-            sessionCookies: freshCookies,
-            sessionExpiresAt: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
-            syncedAt: new Date().toISOString()
-          })
-        };
-      } finally {
-        // A submitted CAPTCHA is single-use. Close the browser on both success
-        // and failure so an invalid code cannot consume the remaining idle time.
-        await browserInstance.close();
       }
+
+      if (!sessionCookies) {
+        throw new SinopacVerificationRequiredError("永豐同步需要先完成一次圖形驗證。");
+      }
+      if (!verifiedThisRun && config.protocol !== SESSION_PROTOCOL) {
+        throw new SinopacVerificationRequiredError("永豐連接器已改用行動銀行 App JSON API，請重新完成一次圖形驗證。");
+      }
+
+      const lookbackMonths = config.lookbackMonths ?? 3;
+      const client = new SinopacAppClient(sessionCookies, fetchImpl);
+      const payloads = await client.fetchCreditCards(lookbackMonths);
+      const cards = parseSinopacCardData(payloads, lookbackMonths);
+      const now = new Date();
+
+      return {
+        records: [],
+        ...cards,
+        cursor: JSON.stringify({
+          sessionCookies,
+          sessionExpiresAt: new Date(now.getTime() + SESSION_VALIDITY_MS).toISOString(),
+          protocol: SESSION_PROTOCOL,
+          syncedAt: now.toISOString()
+        })
+      };
     }
   };
+}
+
+class SinopacAppClient {
+  private readonly cookieHeader: string;
+
+  constructor(
+    serializedCookies: string,
+    private readonly fetchImpl: FetchImpl
+  ) {
+    this.cookieHeader = cookieHeaderFromSerialized(serializedCookies);
+  }
+
+  async fetchCreditCards(lookbackMonths: number): Promise<SinopacApiPayloads> {
+    const summary = await this.post(CARD_SUMMARY_PATH, "信用卡總覽");
+    const initialBills = await this.post(`${CARD_BILLS_PATH}?TxDate=default&TxType=01`, "近期帳單");
+    const billMonths = extractAdvertisedBillMonths(initialBills)
+      .slice(1, Math.max(1, Math.min(3, lookbackMonths)));
+    const olderBills = [];
+    for (const month of billMonths) {
+      olderBills.push(await this.post(`${CARD_BILLS_PATH}?TxDate=${month}&TxType=01`, `${month} 帳單`));
+    }
+    const unbilled = await this.post(CARD_UNBILLED_PATH, "未出帳明細");
+    return { summary, bills: [initialBills, ...olderBills], unbilled };
+  }
+
+  private async post(path: string, label: string) {
+    const response = await this.fetchImpl.call(globalThis, `${MOBILE_HOST}${path}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        Cookie: this.cookieHeader,
+        Referer: `${MOBILE_HOST}/m/m_home.aspx`,
+        "User-Agent": ANDROID_USER_AGENT,
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body: ""
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`永豐${label} API 回應 HTTP ${response.status}。`);
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      if (/m_login|尚未登入|登入\/Login/i.test(text)) {
+        throw new SinopacVerificationRequiredError("永豐銀行 session 已失效，請重新完成圖形驗證。");
+      }
+      throw new Error(`永豐${label} API 回應不是有效 JSON。`);
+    }
+    assertSinopacApiSuccess(payload, label);
+    return payload;
+  }
 }
 
 export async function prepareSinopacCaptcha(browser: Fetcher | undefined, config: SinopacConfig) {
   if (!config.userId || !config.account || !config.password) {
     throw new Error("請先儲存永豐身分證字號／統編、使用者代碼與網路密碼。");
   }
-  if (!browser) throw new Error("永豐銀行需要 BROWSER binding 才能取得驗證碼。");
+  if (!browser) throw new Error("永豐首次驗證需要 BROWSER binding。");
 
   const browserInstance = await getCaptchaBrowser(browser, config.browserSessionId);
   const pages = await browserInstance.pages();
-  const page = pages.find((candidate) => candidate.url().includes("NextWebLogin")) ?? pages[0] ?? await browserInstance.newPage();
+  const page = pages.find((candidate) => candidate.url().includes("/m/member/login/m_login.aspx"))
+    ?? pages[0]
+    ?? await browserInstance.newPage();
   let preserved = false;
   try {
     await configurePage(page);
@@ -129,12 +184,12 @@ export async function prepareSinopacCaptcha(browser: Fetcher | undefined, config
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await openLoginAndFill(page, config);
       await page.waitForFunction(() => {
-        const image = document.querySelector<HTMLImageElement>("#imgCode");
+        const image = document.querySelector<HTMLImageElement>('img[name="imgCode"]');
         return Boolean(image?.complete && image.naturalWidth > 0);
       }, { timeout: 10_000 });
       if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 400));
-      const image = await page.$("#imgCode");
-      if (!image) throw new Error("永豐登入頁沒有取得圖形驗證碼。");
+      const image = await page.$('img[name="imgCode"]');
+      if (!image) throw new Error("永豐行動網銀登入頁沒有取得圖形驗證碼。");
       const candidate = await image.screenshot({ type: "jpeg" });
       if (captchaHasVisibleDigits(candidate)) {
         bytes = candidate;
@@ -195,73 +250,49 @@ async function launchBrowser(browser: Fetcher, options?: { keep_alive?: number }
 }
 
 async function configurePage(page: Page) {
-  await page.setViewport({ width: 1280, height: 900 });
-  await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/131 Safari/537.36");
-}
-
-async function restoreCookies(page: Page, serialized?: string) {
-  if (!serialized) return;
-  try {
-    const cookies = JSON.parse(serialized);
-    if (Array.isArray(cookies) && cookies.length) await page.setCookie(...cookies);
-  } catch {
-    // A stale or malformed session must not prevent a fresh login.
-  }
-}
-
-async function needsLogin(page: Page) {
-  return page.evaluate(() => {
-    const input = document.querySelector<HTMLInputElement>('input[placeholder="使用者代碼"]');
-    if (!input) return false;
-    const style = getComputedStyle(input);
-    const rect = input.getBoundingClientRect();
-    return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
-  });
-}
-
-async function needsLoginAfterNavigation(page: Page) {
-  try {
-    return await needsLogin(page);
-  } catch (error) {
-    if (!(error instanceof Error) || !/Execution context was destroyed/i.test(error.message)) throw error;
-    await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 10_000 }).catch(() => null);
-    return needsLogin(page);
-  }
+  await page.setViewport({ width: 390, height: 844, isMobile: true });
+  await page.setUserAgent(ANDROID_USER_AGENT);
 }
 
 async function openLoginAndFill(page: Page, config: SinopacConfig) {
   await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 20_000 });
-  await page.waitForSelector('input[placeholder="身分證字號(統一編號)"]', { timeout: 30_000 });
-  await page.type('input[placeholder="身分證字號(統一編號)"]', config.userId!);
-  await page.type('input[placeholder="使用者代碼"]', config.account!);
-  await page.type('input[placeholder="網路密碼"]', config.password!);
+  const userIdSelector = 'input[placeholder="ID"], input[placeholder*="身分證"]';
+  const accountSelector = 'input[placeholder="User Code"], input[placeholder*="使用者"]';
+  const passwordSelector = 'input[placeholder="Password"], input[placeholder*="密碼"]';
+  await page.waitForSelector(userIdSelector, { timeout: 30_000 });
+  await page.type(userIdSelector, config.userId!);
+  await page.type(accountSelector, config.account!);
+  await page.type(passwordSelector, config.password!);
 }
 
 async function submitLogin(page: Page, captcha: string) {
   let stage = "填寫圖形驗證碼";
   let dialogMessage = "";
+  let dialogType = "";
   try {
-    await page.type("#ctl00_ctl00_ContentPlaceHolder1_DefaultContent_captcha", captcha);
+    await page.type("#CheckValidateNumber", captcha);
     stage = "送出登入";
     let resolveDialog: (() => void) | undefined;
     const dialogSignal = new Promise<void>((resolve) => { resolveDialog = resolve; });
     page.once("dialog", async (dialog) => {
       dialogMessage = dialog.message();
-      const isAlert = dialog.type() === "alert";
+      dialogType = dialog.type();
       await dialog.accept();
-      if (isAlert) resolveDialog?.();
+      resolveDialog?.();
     });
     const navigation = page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20_000 }).catch(() => null);
     const loginStateChanged = page.waitForFunction(() => {
-      const input = document.querySelector<HTMLInputElement>('input[placeholder="使用者代碼"]');
-      const visible = input && getComputedStyle(input).display !== "none" && getComputedStyle(input).visibility !== "hidden" && input.getBoundingClientRect().width > 0;
+      const form = document.querySelector<HTMLElement>("form#m_login");
+      const visible = form && getComputedStyle(form).display !== "none" && getComputedStyle(form).visibility !== "hidden";
       return !visible || /驗證碼錯誤|驗證碼有誤|密碼錯誤|登入失敗|使用者代碼錯誤/.test(document.body.innerText);
     }, { timeout: 20_000 }).catch(() => null);
     await page.click("#MMA_Login");
     await Promise.race([navigation, loginStateChanged, dialogSignal]);
+    if (dialogType === "confirm") await Promise.race([navigation, loginStateChanged]);
+
     stage = "確認登入結果";
     await page.waitForFunction(() => document.readyState !== "loading", { timeout: 8_000 }).catch(() => undefined);
-    if (await needsLoginAfterNavigation(page)) {
+    if (await needsMobileLogin(page)) {
       const message = await page.evaluate(() => {
         const text = document.body.innerText.replace(/\s+/g, " ").trim();
         return text.match(/.{0,40}(?:驗證碼錯誤|驗證碼有誤|密碼錯誤|登入失敗|使用者代碼錯誤).{0,100}/)?.[0] ?? "";
@@ -269,9 +300,20 @@ async function submitLogin(page: Page, captcha: string) {
       throw new SinopacVerificationRequiredError(`永豐銀行登入失敗：${dialogMessage || message || "請確認帳密或驗證碼"}`);
     }
   } catch (error) {
+    if (error instanceof SinopacVerificationRequiredError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     throw new SinopacVerificationRequiredError(`永豐登入在「${stage}」失敗：${message}`);
   }
+}
+
+async function needsMobileLogin(page: Page) {
+  return page.evaluate(() => {
+    const form = document.querySelector<HTMLElement>("form#m_login");
+    if (!form) return false;
+    const style = getComputedStyle(form);
+    const rect = form.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+  });
 }
 
 function bytesToBase64(bytes: Uint8Array | string) {
@@ -300,184 +342,568 @@ function captchaHasVisibleDigits(bytes: Uint8Array | string) {
   }
 }
 
-async function scrapeCards(page: Page, lookbackMonths: number): Promise<Scraped> {
-  const accountId = "credit:sinopac:dawho";
-  const account: Omit<BankAccount, "id" | "connectorId"> = {
-    sourceId: accountId,
-    institutionName: "永豐銀行",
-    accountName: "永豐信用卡",
-    accountType: "credit",
-    currency: "TWD",
-    raw: { provider: "sinopac.dawho", source: CARD_INFO_URL }
+function cookieHeaderFromSerialized(serialized: string) {
+  let cookies: unknown;
+  try {
+    cookies = JSON.parse(serialized);
+  } catch {
+    throw new SinopacVerificationRequiredError("永豐銀行 session 格式無效，請重新完成圖形驗證。");
+  }
+  if (!Array.isArray(cookies)) {
+    throw new SinopacVerificationRequiredError("永豐銀行 session 格式無效，請重新完成圖形驗證。");
+  }
+  const header = cookies
+    .filter((cookie): cookie is JsonRecord => isRecord(cookie))
+    .filter((cookie) => {
+      const domain = stringValue(cookie.domain).toLowerCase();
+      return !domain || domain === "m.sinopac.com" || domain.endsWith(".sinopac.com");
+    })
+    .map((cookie) => {
+      const name = stringValue(cookie.name);
+      const value = stringValue(cookie.value);
+      return name && value ? `${name}=${value}` : "";
+    })
+    .filter(Boolean)
+    .join("; ");
+  if (!header) {
+    throw new SinopacVerificationRequiredError("永豐銀行 session 沒有可用 Cookie，請重新完成圖形驗證。");
+  }
+  return header;
+}
+
+function assertSinopacApiSuccess(payload: unknown, label: string) {
+  const envelope = flattenRecords(payload).find((record) => typeof record.Header === "string");
+  if (!envelope) throw new Error(`永豐${label} API 回應缺少 Header。`);
+  const header = stringValue(envelope.Header).toUpperCase();
+  const message = stringValue(envelope.Message) || "銀行未提供錯誤訊息";
+  if (header === "TIMEOUT" || /尚未登入|登入逾時|session/i.test(message)) {
+    throw new SinopacVerificationRequiredError("永豐銀行 session 已失效，請重新完成圖形驗證。");
+  }
+  if (header !== "SUCCESS") throw new Error(`永豐${label} API 失敗：${message}`);
+}
+
+export function parseSinopacCardData(
+  payloads: SinopacApiPayloads,
+  lookbackMonths: number,
+  now = new Date()
+): Scraped {
+  const summary = parseSummary(payloads.summary);
+  const bills = parseBills(payloads.bills, lookbackMonths, now);
+  const transactions = parseTransactions(payloads.unbilled);
+  const latestTwdBill = bills
+    .filter((bill) => bill.currency === "TWD")
+    .sort((left, right) => right.billingPeriod.localeCompare(left.billingPeriod))[0];
+  if (
+    latestTwdBill
+    && latestTwdBill.statementAmount != null
+    && summary.recentPaymentAmount != null
+    && summary.recentPaymentDate
+    && summary.recentPaymentAmount >= latestTwdBill.statementAmount
+    && (!latestTwdBill.statementClosingDate || summary.recentPaymentDate >= latestTwdBill.statementClosingDate)
+  ) {
+    latestTwdBill.paidAmount = summary.recentPaymentAmount;
+    latestTwdBill.isPaid = true;
+  }
+  const currencies = new Set(["TWD", ...bills.map((bill) => bill.currency), ...transactions.map((item) => item.currency)]);
+
+  const bankAccounts: Scraped["bankAccounts"] = Array.from(currencies).map((currency) => {
+    const sourceId = accountIdForCurrency(currency);
+    const suffix = currency === "TWD" ? "" : `（${currency}）`;
+    const last4 = currency === "TWD" && summary.cardLast4 ? ` 末四碼 ${summary.cardLast4}` : "";
+    return {
+      sourceId,
+      institutionName: "永豐銀行",
+      accountName: `永豐信用卡${suffix}${last4}`,
+      accountType: "credit",
+      currency,
+      creditLimit: currency === "TWD" ? summary.creditLimit : undefined,
+      raw: {
+        provider: "sinopac.mobile-app-json",
+        protocol: SESSION_PROTOCOL,
+        currency,
+        cardLast4: currency === "TWD" ? summary.cardLast4 : undefined
+      }
+    };
+  });
+
+  const statementAmount = summary.statementAmount ?? latestTwdBill?.statementAmount;
+  const minimumPayment = summary.minimumPayment ?? latestTwdBill?.minimumPayment;
+  const paymentDueDate = summary.paymentDueDate ?? latestTwdBill?.paymentDueDate;
+  const statementClosingDate = summary.statementClosingDate ?? latestTwdBill?.statementClosingDate;
+  const bankBalanceSnapshots: Scraped["bankBalanceSnapshots"] = [];
+  if (
+    statementAmount != null
+    || summary.availableCredit != null
+    || summary.creditLimit != null
+    || summary.noPaymentNeeded
+  ) {
+    const accountId = accountIdForCurrency("TWD");
+    bankBalanceSnapshots.push({
+      accountId,
+      sourceId: `${accountId}:${now.toISOString().slice(0, 10)}`,
+      balance: summary.noPaymentNeeded ? 0 : statementAmount == null ? 0 : -Math.abs(statementAmount),
+      availableBalance: summary.availableCredit,
+      statementBalance: statementAmount == null ? undefined : Math.abs(statementAmount),
+      paymentDueDate,
+      statementClosingDate,
+      noPaymentNeeded: summary.noPaymentNeeded,
+      currency: "TWD",
+      asOfAt: now.toISOString(),
+      raw: {
+        provider: "sinopac.mobile-app-json",
+        creditLimit: summary.creditLimit,
+        availableCredit: summary.availableCredit,
+        statementAmount,
+        minimumPayment
+      }
+    });
+  }
+
+  return {
+    bankAccounts,
+    bankBalanceSnapshots,
+    creditCardBills: bills.map((bill) => ({
+      ...bill,
+      accountId: accountIdForCurrency(bill.currency)
+    })),
+    bankTransactions: transactions.map((transaction) => ({
+      ...transaction,
+      accountId: accountIdForCurrency(transaction.currency)
+    }))
   };
-  const snapshots: Array<Omit<BankBalanceSnapshot, "id" | "connectorId">> = [];
-  const bills: Array<Omit<CreditCardBill, "id" | "connectorId">> = [];
-  const transactions: Array<Omit<BankTransaction, "id" | "connectorId">> = [];
-
-  const info = await visit(page, CARD_INFO_URL);
-  const statement = await visit(page, CARD_STATEMENT_URL);
-  const unbilled = await visit(page, CARD_UNBILLED_URL);
-  const now = new Date().toISOString();
-  const currentPeriod = periodFromText(statement.text) ?? now.slice(0, 7);
-  const statementAmount = firstLabelAmount(statement.text, /(本期應繳|應繳金額|帳單金額)/);
-  const minimumPayment = firstLabelAmount(statement.text, /(最低應繳|最低繳款)/);
-  const dueDate = firstDateAfter(statement.text, /(繳款截止|繳費截止|繳款期限)/);
-  const closingDate = firstDateAfter(statement.text, /(結帳日|結帳日期)/);
-  const parsedBills = parseBills(statement.tables, lookbackMonths);
-  if (parsedBills.length) bills.push(...parsedBills.map((bill) => ({ ...bill, accountId })));
-  else if (statementAmount != null) {
-    bills.push({
-      accountId,
-      sourceId: `sinopac:card:statement:${currentPeriod}`,
-      billingPeriod: currentPeriod,
-      statementAmount,
-      minimumPayment: minimumPayment ?? undefined,
-      paymentDueDate: dueDate,
-      statementClosingDate: closingDate,
-      currency: "TWD",
-      raw: { source: CARD_STATEMENT_URL, text: statement.text.slice(0, 4000) }
-    });
-  }
-  const balance = statementAmount ?? firstLabelAmount(info.text, /(未繳金額|待繳金額|目前欠款)/);
-  if (balance != null) {
-    snapshots.push({
-      accountId,
-      sourceId: `sinopac:card:balance:${now.slice(0, 10)}`,
-      balance,
-      statementBalance: statementAmount ?? undefined,
-      paymentDueDate: dueDate,
-      statementClosingDate: closingDate,
-      currency: "TWD",
-      asOfAt: now,
-      raw: { source: CARD_INFO_URL }
-    });
-  }
-  transactions.push(...parseCardTransactions(unbilled.tables, accountId));
-  return { bankAccounts: [account], bankBalanceSnapshots: snapshots, bankTransactions: transactions, creditCardBills: bills, records: [] };
 }
 
-async function scrapeInvestments(page: Page): Promise<Array<Omit<InvestmentPosition, "id" | "connectorId">>> {
-  const snapshot = await visit(page, US_STOCK_URL);
-  const asOfDate = dateOnly(firstDateAfter(snapshot.text, /(資料日期|查詢日期|更新時間)/)) ?? new Date().toISOString().slice(0, 10);
-  return parseInvestmentRows(snapshot.tables, asOfDate);
+function parseSummary(payload: unknown) {
+  const records = flattenRecords(payload);
+  const text = records.flatMap(primitiveStrings).join(" ");
+  const cardValue = findLabeledString(records, /卡號|card\s*(?:no|number)/i);
+  return {
+    creditLimit: findLabeledAmount(records, /永久信用額度|總信用額度|信用卡額度|信用額度|總額度|credit\s*limit/i),
+    availableCredit: findLabeledAmount(records, /剩餘可用額度|可用額度|available\s*(?:credit|amount)/i),
+    statementAmount: findLabeledAmount(records, /本期應繳(?:金額)?|本期帳單(?:金額)?|帳單總額|statement\s*amount/i),
+    minimumPayment: findLabeledAmount(records, /最低應繳(?:金額)?|最低繳款(?:金額)?|minimum\s*payment/i),
+    recentPaymentAmount: findLabeledAmount(records, /最近繳款金額|recent\s*payment\s*amount/i),
+    recentPaymentDate: findLabeledDate(records, /最近繳款日期|recent\s*payment\s*date/i),
+    paymentDueDate: findLabeledDate(records, /繳款截止日|繳費截止日|繳款期限|payment\s*due/i),
+    statementClosingDate: findLabeledDate(records, /帳單截止日|結帳日|結帳日期|statement\s*(?:closing|date)/i),
+    noPaymentNeeded: /無需繳(?:費|款)|本期無應繳|免繳/.test(text),
+    cardLast4: cardValue?.match(/(\d{4})\D*$/)?.[1]
+  };
 }
 
-async function visit(page: Page, url: string): Promise<PageSnapshot> {
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
-  await page.waitForFunction(() => document.body?.innerText?.length > 0, { timeout: 8_000 });
-  const snapshot = await page.evaluate(() => ({
-    url: location.href,
-    title: document.title,
-    text: document.body.innerText,
-    tables: Array.from(document.querySelectorAll("table")).map((table) =>
-      Array.from(table.querySelectorAll("tr")).map((row) => Array.from(row.querySelectorAll("th,td")).map((cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()).filter(Boolean))
-    ).filter((rows) => rows.length > 0)
-  }));
-  if (snapshot.url.includes("NextWebLogin")) throw new SinopacVerificationRequiredError("永豐銀行工作階段已失效，請重新取得圖形驗證碼。");
-  return snapshot;
+function parseBills(payload: unknown, lookbackMonths: number, now: Date) {
+  const out: Array<Omit<CreditCardBill, "id" | "connectorId" | "accountId">> = [];
+
+  for (const record of logicalRecords(payload)) {
+    const period = findPeriod(record);
+    const statementAmount = findRecordAmount(
+      record,
+      /本期應繳(?:金額)?|帳單金額|帳單總額|應繳金額|statement\s*amount|bill\s*amount/i
+    );
+    if (!period || statementAmount == null) continue;
+    const currency = currencyFromRecord(record);
+    const paymentStatus = findRecordString(record, /繳款狀態|付款狀態|payment\s*status/i);
+    out.push({
+      sourceId: `sinopac:card:statement:${period}:${currency}`,
+      billingPeriod: period,
+      statementAmount: Math.abs(statementAmount),
+      minimumPayment: absoluteOrUndefined(findRecordAmount(record, /最低應繳|最低繳款|minimum\s*payment/i)),
+      isPaid: paymentStatus == null
+        ? undefined
+        : /已繳|繳清|無需繳|免繳/.test(paymentStatus)
+          ? true
+          : /未繳|待繳/.test(paymentStatus)
+            ? false
+            : undefined,
+      paymentDueDate: findRecordDate(record, /繳款截止|繳費截止|到期日|payment\s*due/i),
+      statementClosingDate: findRecordDate(record, /結帳日|帳單截止|statement\s*(?:closing|date)|bill\s*date/i),
+      currency,
+      raw: sanitizeValue(record)
+    });
+  }
+
+  return Array.from(
+    new Map(out.map((bill) => [`${bill.billingPeriod}:${bill.currency}`, bill])).values()
+  )
+    .sort((left, right) => right.billingPeriod.localeCompare(left.billingPeriod))
+    .slice(0, Math.max(1, lookbackMonths));
+}
+
+function parseTransactions(payload: unknown) {
+  const out: Array<Omit<BankTransaction, "id" | "connectorId" | "accountId">> = [];
+  const seen = new Map<string, number>();
+
+  for (const record of logicalRecords(payload)) {
+    const postedDate = findRecordDate(record, /交易日|消費日|入帳日|日期|transaction\s*date|posting\s*date/i);
+    const rawAmount = findRecordAmount(record, /新臺幣金額|消費金額|交易金額|金額|amount|amt/i);
+    if (!postedDate || rawAmount == null || rawAmount === 0) continue;
+    const description = findRecordDescription(record) || "永豐信用卡消費";
+    const statusText = recordText(record);
+    const isCredit = rawAmount < 0
+      || /退款|退貨|折讓|回饋|沖銷|貸方|繳款|自扣|payment|credit|refund/i.test(`${description} ${statusText}`);
+    const amount = isCredit ? Math.abs(rawAmount) : -Math.abs(rawAmount);
+    const currency = currencyFromRecord(record);
+    const key = [currency, postedDate, amount, description, hashString(JSON.stringify(record))].join(":");
+    const occurrence = (seen.get(key) ?? 0) + 1;
+    seen.set(key, occurrence);
+    out.push({
+      sourceId: `sinopac:card:tx:${key}:${occurrence}`,
+      postedDate,
+      amount,
+      currency,
+      description,
+      raw: {
+        ...(sanitizeValue(record) as JsonRecord),
+        duplicateOccurrence: occurrence,
+        pending: true
+      }
+    });
+  }
+
+  return out;
+}
+
+function extractAdvertisedBillMonths(payload: unknown) {
+  for (const record of flattenRecords(payload)) {
+    const months = [record.Last1Mon, record.Last2Mon, record.Last3Mon]
+      .map(stringValue)
+      .filter((value) => /^\d{6}$/.test(value));
+    if (months.length > 0) return months;
+  }
+  return [];
+}
+
+function logicalRecords(value: unknown) {
+  const out: JsonRecord[] = [];
+  const visit = (item: unknown) => {
+    if (Array.isArray(item)) {
+      if (item.length > 0 && item.every(isLabelValuePair)) {
+        out.push(pairArrayRecord(item));
+        return;
+      }
+      item.forEach(visit);
+      return;
+    }
+    if (!isRecord(item)) return;
+
+    const tableRecords = recordsFromHeadInfo(item);
+    if (tableRecords.length > 0) out.push(...tableRecords);
+    if (Object.keys(item).some((key) => /^Data(?:Text|Value)\d*$/.test(key))) {
+      out.push(item);
+    }
+    for (const [key, nested] of Object.entries(item)) {
+      if (key === "HeadInfo" || (key === "SubInfo" && tableRecords.length > 0)) continue;
+      visit(nested);
+    }
+  };
+  visit(value);
+  return out;
+}
+
+function isLabelValuePair(value: unknown): value is JsonRecord {
+  return isRecord(value)
+    && typeof value.DataText === "string"
+    && value.DataValue != null
+    && typeof value.DataValue !== "object";
+}
+
+function pairArrayRecord(items: JsonRecord[]) {
+  return items.reduce<JsonRecord>((record, item, index) => {
+    const suffix = String(index + 1);
+    record[`DataText${suffix}`] = item.DataText;
+    record[`DataValue${suffix}`] = item.DataValue;
+    return record;
+  }, {});
+}
+
+function recordsFromHeadInfo(container: JsonRecord) {
+  if (!Array.isArray(container.HeadInfo) || !Array.isArray(container.SubInfo)) return [];
+  const headers = container.HeadInfo
+    .filter(isRecord)
+    .map((header) => ({
+      fieldKey: stringValue(header.FieldKey).trim(),
+      label: stringValue(header.HeadText).trim()
+    }))
+    .filter((header) => header.fieldKey && header.label);
+  if (headers.length === 0) return [];
+
+  return container.SubInfo
+    .filter(isRecord)
+    .map((row) => {
+      const record: JsonRecord = {};
+      const usedKeys = new Set<string>();
+      let index = 1;
+      for (const header of headers) {
+        const value = row[header.fieldKey];
+        if (value == null || typeof value === "object") continue;
+        record[`DataText${index}`] = header.label;
+        record[`DataValue${index}`] = value;
+        usedKeys.add(header.fieldKey);
+        index += 1;
+      }
+      for (const [key, value] of Object.entries(row)) {
+        if (usedKeys.has(key) || value == null || typeof value === "object") continue;
+        record[`DataText${index}`] = key;
+        record[`DataValue${index}`] = value;
+        index += 1;
+      }
+      return record;
+    });
+}
+
+function flattenRecords(value: unknown): JsonRecord[] {
+  const out: JsonRecord[] = [];
+  const visit = (item: unknown) => {
+    if (Array.isArray(item)) {
+      item.forEach(visit);
+      return;
+    }
+    if (!isRecord(item)) return;
+    out.push(item);
+    Object.values(item).forEach(visit);
+  };
+  visit(value);
+  return out;
+}
+
+function pairs(record: JsonRecord) {
+  const out: Array<{ label: string; value: string }> = [];
+  const pairedKeys = new Set<string>();
+  const suffixes = Object.keys(record)
+    .map((key) => key.match(/^DataText(\d*)$/)?.[1])
+    .filter((suffix): suffix is string => suffix != null)
+    .sort((left, right) => Number(left || 0) - Number(right || 0));
+  for (const suffix of suffixes) {
+    const textKey = `DataText${suffix}`;
+    const valueKey = `DataValue${suffix}`;
+    const label = stringValue(record[textKey]).trim();
+    const value = stringValue(record[valueKey]).trim();
+    if (label && value) {
+      out.push({ label, value });
+      pairedKeys.add(textKey);
+      pairedKeys.add(valueKey);
+    }
+  }
+  for (const [key, value] of Object.entries(record)) {
+    if (pairedKeys.has(key) || value == null || typeof value === "object") continue;
+    const text = stringValue(value).trim();
+    if (text) out.push({ label: key, value: text });
+  }
+  return out;
+}
+
+function findLabeledString(records: JsonRecord[], pattern: RegExp) {
+  for (const record of records) {
+    for (const pair of pairs(record)) {
+      if (pattern.test(normalizeLabel(pair.label))) return pair.value;
+    }
+  }
+  return undefined;
+}
+
+function findLabeledAmount(records: JsonRecord[], pattern: RegExp) {
+  for (const record of records) {
+    const value = findRecordAmount(record, pattern, false);
+    if (value != null) return Math.abs(value);
+  }
+  return undefined;
+}
+
+function findLabeledDate(records: JsonRecord[], pattern: RegExp) {
+  for (const record of records) {
+    const value = findRecordDate(record, pattern, false);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function findRecordAmount(record: JsonRecord, pattern: RegExp, allowFallback = true) {
+  for (const pair of pairs(record)) {
+    if (!pattern.test(normalizeLabel(pair.label))) continue;
+    const value = parseAmount(pair.value);
+    if (value != null) return value;
+  }
+  if (!allowFallback) return undefined;
+  const candidates = primitiveStrings(record)
+    .filter((value) => !parseDate(value) && !parsePeriod(value) && !/\d{12,19}/.test(value))
+    .map(parseAmount)
+    .filter((value): value is number => value != null);
+  return candidates.at(-1);
+}
+
+function findRecordString(record: JsonRecord, pattern: RegExp) {
+  for (const pair of pairs(record)) {
+    if (pattern.test(normalizeLabel(pair.label))) return pair.value;
+  }
+  return undefined;
+}
+
+function findRecordDate(record: JsonRecord, pattern: RegExp, allowFallback = true) {
+  for (const pair of pairs(record)) {
+    if (!pattern.test(normalizeLabel(pair.label))) continue;
+    const value = parseDate(pair.value);
+    if (value) return value;
+  }
+  if (!allowFallback) return undefined;
+  return primitiveStrings(record).map(parseDate).find((value): value is string => Boolean(value));
+}
+
+function findPeriod(record: JsonRecord) {
+  for (const pair of pairs(record)) {
+    if (!/帳單年月|帳單月份|帳單期|billing|bill\s*(?:month|period|date)|statement\s*(?:month|period)/i.test(normalizeLabel(pair.label))) {
+      continue;
+    }
+    const value = parsePeriod(pair.value);
+    if (value) return value;
+  }
+  return primitiveStrings(record).map(parsePeriod).find((value): value is string => Boolean(value));
+}
+
+function findRecordDescription(record: JsonRecord) {
+  for (const pair of pairs(record)) {
+    if (/特店|商店|摘要|說明|消費明細|交易名稱|merchant|store|description|memo/i.test(normalizeLabel(pair.label))) {
+      return pair.value.trim();
+    }
+  }
+  return primitiveStrings(record)
+    .filter((value) =>
+      value.length >= 2
+      && !parseDate(value)
+      && !parsePeriod(value)
+      && parseAmount(value) == null
+      && !/^(TWD|USD|JPY|EUR|CNY|RMB|HKD|NTD)$/i.test(value)
+      && !/^(SUCCESS|TIMEOUT|Y|N)$/i.test(value)
+    )
+    .sort((left, right) => right.length - left.length)[0];
+}
+
+function currencyFromRecord(record: JsonRecord) {
+  for (const pair of pairs(record)) {
+    if (/幣別|currency|curr/i.test(normalizeLabel(pair.label))) return normalizeCurrency(pair.value);
+  }
+  const value = primitiveStrings(record).find((item) => /^(000|840|978|392|TWD|NTD|USD|JPY|EUR|CNY|RMB|HKD)$/i.test(item.trim()));
+  return normalizeCurrency(value);
+}
+
+function normalizeCurrency(value?: string) {
+  const currency = value?.trim().toUpperCase();
+  if (!currency || currency === "000" || currency === "NTD" || /新臺幣|台幣|臺幣/.test(value ?? "")) return "TWD";
+  if (currency === "840") return "USD";
+  if (currency === "978") return "EUR";
+  if (currency === "392") return "JPY";
+  if (currency === "RMB" || /人民幣/.test(value ?? "")) return "CNY";
+  if (/美元/.test(value ?? "")) return "USD";
+  if (/日圓|日幣/.test(value ?? "")) return "JPY";
+  return /^(TWD|USD|JPY|EUR|CNY|HKD)$/.test(currency) ? currency : "TWD";
+}
+
+function primitiveStrings(record: JsonRecord) {
+  return Object.values(record)
+    .filter((value) => value != null && typeof value !== "object")
+    .map(stringValue)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function recordText(record: JsonRecord) {
+  return primitiveStrings(record).join(" ");
+}
+
+function accountIdForCurrency(currency: string) {
+  return currency === "TWD" ? "credit:sinopac:main" : `credit:sinopac:main:${currency}`;
+}
+
+function absoluteOrUndefined(value?: number) {
+  return value == null ? undefined : Math.abs(value);
+}
+
+function parsePeriod(value: string | undefined) {
+  if (!value) return undefined;
+  const text = value.trim();
+  const separated = text.match(/(\d{2,4})\s*(?:年|[\/-])\s*(\d{1,2})(?:\s*月)?/);
+  if (separated) return normalizePeriod(Number(separated[1]), Number(separated[2]));
+  const compact = text.match(/(?:^|\D)(20\d{2}|1\d{2})(0[1-9]|1[0-2])(?:\D|$)/);
+  if (compact) return normalizePeriod(Number(compact[1]), Number(compact[2]));
+  const date = parseDate(text);
+  return date?.slice(0, 7);
+}
+
+function normalizePeriod(year: number, month: number) {
+  if (month < 1 || month > 12) return undefined;
+  const normalizedYear = year < 1911 ? year + 1911 : year;
+  if (normalizedYear < 2000 || normalizedYear > 2200) return undefined;
+  return `${normalizedYear}-${String(month).padStart(2, "0")}`;
 }
 
 export function parseAmount(value: string | undefined): number | undefined {
   if (!value || /%/.test(value)) return undefined;
-  const normalized = value.replace(/NT\$|US\$|HK\$|[$,\s]/gi, "").replace(/^\((.*)\)$/, "-$1");
-  if (!/^-?\d+(?:\.\d+)?$/.test(normalized)) return undefined;
+  const normalized = value
+    .replace(/新臺幣|臺幣|台幣|人民幣|美元|日圓|日幣|港幣|歐元|NT\$|US\$|HK\$|TWD|NTD|USD|JPY|EUR|CNY|RMB|HKD|元/gi, "")
+    .replace(/[$,\s]/g, "")
+    .replace(/^\((.*)\)$/, "-$1");
+  if (!/^[+-]?\d+(?:\.\d+)?$/.test(normalized)) return undefined;
   const amount = Number(normalized);
   return Number.isFinite(amount) ? amount : undefined;
 }
 
 export function parseDate(value: string | undefined): string | undefined {
   if (!value) return undefined;
-  const match = value.match(/(\d{3,4})[\/-](\d{1,2})[\/-](\d{1,2})/);
-  if (!match) return undefined;
-  const year = Number(match[1]) < 1911 ? Number(match[1]) + 1911 : Number(match[1]);
-  return `${year.toString().padStart(4, "0")}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+  const text = value.trim();
+  const separated = text.match(/(\d{3,4})\s*(?:年|[\/-])\s*(\d{1,2})\s*(?:月|[\/-])\s*(\d{1,2})(?:\s*日)?/);
+  if (separated) return normalizeDateParts(Number(separated[1]), Number(separated[2]), Number(separated[3]));
+  const compact = text.match(/(?:^|\D)(20\d{6}|1\d{6})(?:\D|$)/);
+  if (!compact) return undefined;
+  const digits = compact[1];
+  const roc = digits.length === 7;
+  const yearLength = roc ? 3 : 4;
+  return normalizeDateParts(
+    Number(digits.slice(0, yearLength)),
+    Number(digits.slice(yearLength, yearLength + 2)),
+    Number(digits.slice(yearLength + 2, yearLength + 4))
+  );
 }
 
-function parseBills(tables: Row[][], lookbackMonths: number) {
-  const cutoff = new Date();
-  cutoff.setMonth(cutoff.getMonth() - lookbackMonths);
-  const out: Array<Omit<CreditCardBill, "id" | "connectorId" | "accountId">> = [];
-  for (const rows of tables) {
-    const headers = rows[0]?.map(normalizeLabel) ?? [];
-    const periodIndex = headers.findIndex((h) => /帳單期|繳款期|月份|期間/.test(h));
-    const amountIndex = headers.findIndex((h) => /本期應繳|應繳金額|帳單金額|總金額/.test(h));
-    const minimumIndex = headers.findIndex((h) => /最低應繳|最低繳款/.test(h));
-    if (periodIndex < 0 && amountIndex < 0) continue;
-    for (const row of rows.slice(1)) {
-      const period = periodFromText(row[periodIndex] ?? row.join(" "));
-      const statementAmount = parseAmount(row[amountIndex] ?? findNumericCell(row));
-      if (!period || statementAmount == null) continue;
-      const periodDate = new Date(`${period}-01`);
-      if (periodDate < cutoff) continue;
-      out.push({
-        sourceId: `sinopac:card:statement:${period}`,
-        billingPeriod: period,
-        statementAmount,
-        minimumPayment: parseAmount(row[minimumIndex]),
-        paymentDueDate: row.map(parseDate).find(Boolean),
-        currency: "TWD",
-        raw: { row, headers }
-      });
-    }
+function normalizeDateParts(year: number, month: number, day: number) {
+  const normalizedYear = year < 1911 ? year + 1911 : year;
+  const date = new Date(Date.UTC(normalizedYear, month - 1, day));
+  if (
+    month < 1
+    || month > 12
+    || day < 1
+    || day > 31
+    || date.getUTCFullYear() !== normalizedYear
+    || date.getUTCMonth() !== month - 1
+    || date.getUTCDate() !== day
+  ) return undefined;
+  return `${normalizedYear}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function sanitizeValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.replace(/\b\d{12,19}\b/g, (match) => `****${match.slice(-4)}`);
   }
-  return Array.from(new Map(out.map((bill) => [bill.billingPeriod, bill])).values());
+  if (Array.isArray(value)) return value.map(sanitizeValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeValue(item)]));
 }
 
-function parseCardTransactions(tables: Row[][], accountId: string) {
-  const out: Array<Omit<BankTransaction, "id" | "connectorId">> = [];
-  for (const rows of tables) {
-    const headers = rows[0]?.map(normalizeLabel) ?? [];
-    const dateIndex = headers.findIndex((h) => /交易日|消費日|日期/.test(h));
-    const amountIndex = headers.findIndex((h) => /金額|消費金額|交易金額/.test(h));
-    if (dateIndex < 0 || amountIndex < 0) continue;
-    for (const row of rows.slice(1)) {
-      const postedDate = parseDate(row[dateIndex]);
-      const amount = parseAmount(row[amountIndex]);
-      if (!postedDate || amount == null) continue;
-      out.push({ accountId, sourceId: `sinopac:card:tx:${postedDate}:${row.join("|")}`, postedDate, amount, currency: "TWD", description: row.filter((_, i) => i !== dateIndex && i !== amountIndex).join(" "), raw: { row, headers } });
-    }
+function hashString(value: string) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
   }
-  return out;
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-export function parseInvestmentRows(tables: Row[][], asOfDate: string): Array<Omit<InvestmentPosition, "id" | "connectorId">> {
-  const out: Array<Omit<InvestmentPosition, "id" | "connectorId">> = [];
-  for (const rows of tables) {
-    const headers = rows[0]?.map(normalizeLabel) ?? [];
-    const symbolIndex = headers.findIndex((h) => /代號|股票代碼|商品代碼|ticker|symbol/i.test(h));
-    const nameIndex = headers.findIndex((h) => /名稱|商品名稱|股票名稱|name/i.test(h));
-    const quantityIndex = headers.findIndex((h) => /股數|數量|持有數量|quantity/i.test(h));
-    const valueIndex = headers.findIndex((h) => /市值|評估金額|目前價值|market.?value/i.test(h));
-    const currencyIndex = headers.findIndex((h) => /幣別|currency/i.test(h));
-    for (const row of rows.slice(1)) {
-      const symbol = (row[symbolIndex] ?? row.find((cell) => /^[A-Z][A-Z0-9.\-]{0,9}$/.test(cell.trim())) ?? "").trim();
-      if (!symbol) continue;
-      const name = (row[nameIndex] ?? symbol).trim();
-      const quantity = parseAmount(row[quantityIndex] ?? findNumericCell(row));
-      const marketValue = parseAmount(row[valueIndex] ?? findNumericCell(row, quantityIndex >= 0 ? quantityIndex : undefined));
-      if (quantity == null && marketValue == null) continue;
-      const currency = (row[currencyIndex] ?? row.find((cell) => /^(USD|TWD|HKD|CNY|JPY|EUR)$/.test(cell.trim().toUpperCase())) ?? "USD").trim().toUpperCase();
-      const assetType = /ETF|基金|FUND/i.test(name) ? ( /ETF/i.test(name) ? "etf" : "fund") : "stock";
-      out.push({
-        sourceId: `sinopac:dawho:stock-etf:${currency}:${symbol}`,
-        assetType,
-        symbol,
-        name,
-        quantity,
-        marketValue,
-        currency,
-        asOfDate,
-        raw: { provider: "sinopac.dawho", source: US_STOCK_URL, row, headers }
-      });
-    }
-  }
-  return Array.from(new Map(out.map((position) => [position.sourceId, position])).values());
+function normalizeLabel(value: string) {
+  return value.replace(/[\s_／/：:()（）]/g, "").toLowerCase();
 }
 
-function normalizeLabel(value: string) { return value.toLowerCase().replace(/[\s_\/]/g, ""); }
-function findNumericCell(row: string[], except?: number) { return row.find((cell, index) => index !== except && parseAmount(cell) != null); }
-function periodFromText(text: string) { const match = text.match(/(20\d{2})[\/-](\d{1,2})|((?:10\d|11\d|[1-9]\d?))[\/-](\d{1,2})/); if (!match) return undefined; const year = match[1] ? Number(match[1]) : Number(match[3]) + 1911; return `${year}-${(match[2] ?? match[4]).padStart(2, "0")}`; }
-function firstLabelAmount(text: string, label: RegExp) { const match = text.match(new RegExp(`${label.source}[^\\d-]{0,20}(-?[\\d,]+(?:\\.\\d+)?)`)); return parseAmount(match?.[1]); }
-function firstDateAfter(text: string, label: RegExp) { const index = text.search(label); return index < 0 ? undefined : parseDate(text.slice(index, index + 50)); }
-function dateOnly(value: string | undefined) { return value?.slice(0, 10); }
-function readCursor(cursor?: string) { try { return cursor ? JSON.parse(cursor) as Record<string, unknown> : undefined; } catch { return undefined; } }
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}

@@ -61,8 +61,7 @@
       else if (connectorId === "sinopac") {
         qc.invalidateQueries({ queryKey: queryKeys.connectorSettings(connectorId) });
         qc.invalidateQueries({ queryKey: queryKeys.bank });
-        qc.invalidateQueries({ queryKey: queryKeys.investments });
-        qc.invalidateQueries({ queryKey: queryKeys.investmentTransactions });
+        qc.invalidateQueries({ queryKey: queryKeys.bills });
       }
       else {
         if (pendingSyncTarget === "default" || pendingSyncTarget === "investments") qc.invalidateQueries({ queryKey: queryKeys.investments });
@@ -101,8 +100,7 @@
       qc.invalidateQueries({ queryKey: queryKeys.syncJobs });
       qc.invalidateQueries({ queryKey: queryKeys.summary });
       qc.invalidateQueries({ queryKey: queryKeys.bank });
-      qc.invalidateQueries({ queryKey: queryKeys.investments });
-      qc.invalidateQueries({ queryKey: queryKeys.investmentTransactions });
+      qc.invalidateQueries({ queryKey: queryKeys.bills });
       if (job && !job.enabled) $updateJob.mutate({ enabled: true });
     },
     onError: (e) => error = e instanceof Error ? e.message : "驗證或同步失敗"
@@ -172,7 +170,7 @@
   </div>
   {#if demoMode}<p class="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">Demo site 已停用同步；你仍可查看示範資料與介面互動。</p>{/if}
   {#if connectorId === "tdcc"}<details class="mt-3 rounded-md border border-ink/10 bg-paper text-sm text-ink/70" open><summary class="cursor-pointer select-none px-3 py-2 font-medium text-ink/80">使用說明</summary><ol class="list-decimal space-y-1.5 px-3 pb-3 pt-1 pl-8"><li>先在手機下載並登入「集保e存摺」，確認可看到股票與基金資料。</li><li>填入身分證字號與集保 App 密碼，儲存後再按同步。</li><li>首次同步需要驗證碼，請查看手機簡訊或電子信箱。</li><li>完成後即可看到持倉；日後同步通常不需重新輸入驗證碼。</li></ol></details>{/if}
-  {#if connectorId === "sinopac"}<details class="mt-3 rounded-md border border-ink/10 bg-paper text-sm text-ink/70" open><summary class="cursor-pointer select-none px-3 py-2 font-medium text-ink/80">使用說明</summary><ol class="list-decimal space-y-1.5 px-3 pb-3 pt-1 pl-8"><li>先儲存身分證字號／統編、使用者代碼與網路密碼。</li><li>首次或銀行 session 失效時，取得並輸入一次圖形驗證碼。</li><li>驗證成功後會加密保存 session，後續手動與排程同步會自動續用；銀行強制登出時才需重新驗證。</li></ol></details>{/if}
+  {#if connectorId === "sinopac"}<details class="mt-3 rounded-md border border-ink/10 bg-paper text-sm text-ink/70" open><summary class="cursor-pointer select-none px-3 py-2 font-medium text-ink/80">使用說明</summary><ol class="list-decimal space-y-1.5 px-3 pb-3 pt-1 pl-8"><li>先儲存身分證字號／統編、行動／網路銀行使用者代碼與網路密碼。</li><li>首次或銀行 session 失效時，透過行動網銀頁面取得並輸入一次圖形驗證碼。</li><li>驗證成功後會加密保存 session；信用卡總覽、近期帳單與未出帳消費皆直接由 App JSON API 同步，不解析 MMA 頁面。</li><li>後續手動與排程同步會自動續用 session，銀行強制登出時才需重新驗證。</li></ol></details>{/if}
   {#if connectorId === "sinopac" && sinopacCaptchaImage}
     <div class="mt-3 rounded-md border border-ink/10 bg-paper p-3">
       <p class="text-sm font-medium text-ink/80">請輸入圖片中的六位數字，驗證碼約兩分鐘內有效。</p>
@@ -198,5 +196,5 @@
     {/each}
   </div>
   {#if otpRequired}<div class="mt-3 rounded-md border border-destructive/40 bg-destructive/10 p-3"><p class="text-sm font-medium text-ink/80">TDCC 需要驗證碼，請查看{otpChannel === "sms" ? "手機簡訊" : "電子信箱"}。</p><div class="mt-2 flex flex-wrap gap-2"><Input class="min-w-40 flex-1" placeholder="輸入驗證碼" bind:value={otp} /><Button size="sm" disabled={$verifyOtp.isPending} onclick={() => $verifyOtp.mutate()}><RefreshCw class="size-4" />驗證並同步</Button></div></div>{/if}
-  <p class="mt-3 text-xs text-ink/50">{connectorId === "sinopac" ? "永豐首次驗證成功後會自動續用加密 session；只有銀行要求重新登入時才需再輸入驗證碼。" : "輸入完帳號密碼後，請先按「儲存設定」，再按「同步」。"}</p>
+  <p class="mt-3 text-xs text-ink/50">{connectorId === "sinopac" ? "永豐首次驗證成功後，正式同步會直接呼叫 App JSON API；只有銀行要求重新登入時才需再輸入驗證碼。" : "輸入完帳號密碼後，請先按「儲存設定」，再按「同步」。"}</p>
 </Card>

@@ -33,7 +33,7 @@ function captchaPage() {
     setUserAgent: vi.fn().mockResolvedValue(undefined),
     setViewport: vi.fn().mockResolvedValue(undefined),
     type: vi.fn().mockResolvedValue(undefined),
-    url: vi.fn().mockReturnValue("https://mma.sinopac.com/MemberPortal/Member/NextWebLogin.aspx"),
+    url: vi.fn().mockReturnValue("https://m.sinopac.com/m/member/login/m_login.aspx?RequestTrans=MobileCard"),
     waitForFunction: vi.fn().mockResolvedValue(undefined),
     waitForSelector: vi.fn().mockResolvedValue(undefined)
   };
@@ -85,7 +85,7 @@ describe("sinopac browser session lifecycle", () => {
   it("closes a submitted CAPTCHA browser when verification fails", async () => {
     const page = {
       type: vi.fn().mockRejectedValue(new Error("invalid captcha")),
-      url: vi.fn().mockReturnValue("https://mma.sinopac.com/MemberPortal/Member/NextWebLogin.aspx")
+      url: vi.fn().mockReturnValue("https://m.sinopac.com/m/member/login/m_login.aspx?RequestTrans=MobileCard")
     };
     const browser = {
       close: vi.fn().mockResolvedValue(undefined),
