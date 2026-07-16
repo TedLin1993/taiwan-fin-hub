@@ -25,6 +25,7 @@ export async function findNextDueSyncJob<TConnectorId extends string>(db: D1Data
     `SELECT *
      FROM sync_jobs
      WHERE enabled = 1
+       AND (last_status IS NULL OR last_status != 'needs_user_action')
        AND next_run_at <= ?
        AND (locked_until IS NULL OR locked_until < ?)
      ORDER BY next_run_at ASC, id ASC
@@ -116,7 +117,6 @@ export async function failSyncJob(
   input: { status: SyncStatus; errorMessage: string }
 ) {
   const now = new Date();
-  const enabled = input.status === "needs_user_action" ? 0 : 1;
   const nextRunAt = input.status === "failed"
     ? new Date(now.getTime() + job.interval_minutes * 60_000).toISOString()
     : job.next_run_at;
@@ -126,7 +126,6 @@ export async function failSyncJob(
          last_error = ?,
          last_run_at = ?,
          next_run_at = ?,
-         enabled = ?,
          updated_at = ?
      WHERE id = ?`
   ).bind(
@@ -134,7 +133,6 @@ export async function failSyncJob(
     input.errorMessage,
     now.toISOString(),
     nextRunAt,
-    enabled,
     now.toISOString(),
     job.id
   ).run();
@@ -177,8 +175,7 @@ export async function markManualSyncFailure(
      SET last_status = ?,
          last_error = ?,
          last_run_at = ?,
-         enabled = CASE WHEN ? = 'needs_user_action' THEN 0 ELSE enabled END,
          updated_at = ?
      WHERE connector_id = ? AND scope = ?`
-  ).bind(input.status, input.errorMessage, now, input.status, now, connectorId, scope).run();
+  ).bind(input.status, input.errorMessage, now, now, connectorId, scope).run();
 }

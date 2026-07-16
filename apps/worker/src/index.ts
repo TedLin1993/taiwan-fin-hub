@@ -5,6 +5,7 @@ import {
   parseCathaybkConfig,
   parseEsunConfig,
   parseInvoiceConfig,
+  parseSinopacConfig,
   parseTdccConfig,
   syncTdccTradeHistory,
   tdccConnector,
@@ -12,6 +13,12 @@ import {
 } from "@taiwan-fin-hub/connectors";
 import { createCathaybkConnector } from "./cathaybk";
 import { createEsunConnector } from "./esun";
+import {
+  createSinopacConnector,
+  prepareSinopacCaptcha,
+  SinopacBrowserCapacityError,
+  SinopacVerificationRequiredError
+} from "./sinopac";
 import {
   type BankAccount,
   type BankBalanceSnapshot,
@@ -101,12 +108,13 @@ export const app = new Hono<AppBindings>();
 export const api = new Hono<AppBindings>();
 
 const settingsBodySchema = z.object({
-  config: z.record(z.unknown())
+  config: z.record(z.string(), z.unknown())
 });
 
 const PUBLIC_FIELDS: Record<string, string[]> = {
   esun: ["lookbackMonths"],
   cathaybk: ["lookbackMonths"],
+  sinopac: ["lookbackMonths"],
   einvoice: ["periodsBack", "fetchDetails"]
 };
 
@@ -117,6 +125,10 @@ const tdccSyncBodySchema = z.object({
 
 const einvoiceSyncBodySchema = z.object({
   fetchDetails: z.boolean().optional()
+});
+
+const sinopacSyncBodySchema = z.object({
+  captcha: z.string().regex(/^\d{6}$/).optional()
 });
 
 const bankHistoryRebuildBodySchema = z.object({
@@ -476,12 +488,20 @@ api.post("/history/net-worth/rebuild-bank", async (c) => {
 api.get("/connectors/:connectorId/settings", async (c) => {
   const connectorId = c.get("connectorId");
   const settings = await getConnectorSettings(c.env.DB, connectorId);
+  let sessionAvailable = false;
+  if (connectorId === "sinopac" && settings) {
+    const stored = await decryptJson<Record<string, unknown>>(settings.encrypted_config, configEncryptionKey(c.env));
+    sessionAvailable = typeof stored.sessionCookies === "string"
+      && stored.sessionCookies.length > 0
+      && stored.protocol === "sinopac-mobile-app-json-v1";
+  }
 
   return c.json({
     connectorId,
     configured: Boolean(settings),
     updatedAt: settings?.updated_at,
-    publicConfig: settings?.public_config ? JSON.parse(settings.public_config) : null
+    publicConfig: settings?.public_config ? JSON.parse(settings.public_config) : null,
+    sessionAvailable
   });
 });
 
@@ -535,6 +555,12 @@ api.put("/connectors/:connectorId/settings", async (c) => {
       for (const key of [
         "userToken", "mobileBarcode", "sid", "token", "iv", "svrCode", "loginAppId",
         "loginLiat", "loginSsMe", "ltoken", "hkey", "serverTimeOffset"
+      ]) delete mergedConfig[key];
+    }
+
+    if (connectorId === "sinopac" && sinopacCredentialsChanged(storedConfig, rawConfig)) {
+      for (const key of [
+        "sessionCookies", "sessionExpiresAt", "browserSessionId", "browserSessionExpiresAt", "captcha", "protocol"
       ]) delete mergedConfig[key];
     }
 
@@ -704,6 +730,60 @@ api.post("/connectors/cathaybk/sync", async (c) => {
   return syncRouteResponse(c, withManualSyncLock(c.env, "cathaybk", SYNC_SCOPE_ALL, () => syncCathaybk(c.env, "manual")));
 });
 
+api.post("/connectors/sinopac/captcha", async (c) => {
+  const connectorId = "sinopac";
+  const runId = crypto.randomUUID();
+  const lockRowId = canonicalSyncLockRowId(connectorId);
+  const locked = await acquireSyncJobLock(c.env.DB, {
+    lockRowId,
+    scope: SYNC_SCOPE_ALL,
+    trigger: "manual",
+    runId,
+    leaseMs: 3 * 60 * 1000
+  });
+  if (!locked) return jsonError("SYNC_ALREADY_RUNNING", "永豐已有驗證或同步作業正在進行。", 409);
+  try {
+    const settings = await requireConnectorSettings(c.env.DB, connectorId);
+    const stored = await decryptJson<Record<string, unknown>>(settings.encrypted_config, configEncryptionKey(c.env));
+    const publicStored = settings.public_config ? JSON.parse(settings.public_config) : {};
+    const config = parseSinopacConfig({ ...stored, ...publicStored });
+    const prepared = await prepareSinopacCaptcha(c.env.BROWSER, config);
+    await c.env.DB.prepare(
+      `UPDATE connector_settings SET encrypted_config = ? WHERE connector_id = ?`
+    ).bind(
+      await encryptJson({
+        ...stored,
+        browserSessionId: prepared.browserSessionId,
+        browserSessionExpiresAt: prepared.browserSessionExpiresAt
+      }, configEncryptionKey(c.env)),
+      connectorId
+    ).run();
+    return c.json({
+      captchaImage: prepared.captchaImage,
+      expiresAt: prepared.browserSessionExpiresAt
+    });
+  } catch (error) {
+    if (error instanceof SinopacBrowserCapacityError) {
+      const response = jsonError("SINOPAC_BROWSER_BUSY", error.message, 429);
+      response.headers.set("Retry-After", String(error.retryAfterSeconds));
+      return response;
+    }
+    if (error instanceof NeedsUserActionError) {
+      return jsonError("USER_ACTION_REQUIRED", error.message, 400);
+    }
+    return jsonError("SINOPAC_CAPTCHA_FAILED", safeErrorMessage(error), 502);
+  } finally {
+    await releaseSyncJobLock(c.env.DB, lockRowId, runId);
+  }
+});
+
+api.post("/connectors/sinopac/sync", async (c) => {
+  const overrides = sinopacSyncBodySchema.parse(await c.req.json().catch(() => ({})));
+  return syncRouteResponse(c, withManualSyncLock(c.env, "sinopac", SYNC_SCOPE_ALL, () =>
+    syncSinopac(c.env, "manual", overrides)
+  ));
+});
+
 async function tdccSyncBody(c: Context<AppBindings>) {
   return tdccSyncBodySchema.parse(await c.req.json().catch(() => ({})));
 }
@@ -723,6 +803,11 @@ async function syncRouteResponse(
     }
     if (error instanceof EInvoiceProtocolUnavailableError) {
       return jsonError("CONNECTOR_PROTOCOL_UNAVAILABLE", error.message, 503);
+    }
+    if (error instanceof SinopacBrowserCapacityError) {
+      const response = jsonError("SINOPAC_BROWSER_BUSY", error.message, 429);
+      response.headers.set("Retry-After", String(error.retryAfterSeconds));
+      return response;
     }
     throw error;
   }
@@ -918,6 +1003,92 @@ async function syncCathaybk(env: Env, trigger: SyncTrigger): Promise<SyncOutcome
     scope,
     records: bankAccounts.length + bankBalanceSnapshots.length + bankTransactions.length,
     cursorUpdated: Boolean(result.cursor && result.cursor !== settings.sync_cursor)
+  };
+}
+
+async function syncSinopac(
+  env: Env,
+  trigger: SyncTrigger,
+  overrides: z.infer<typeof sinopacSyncBodySchema> = {}
+): Promise<SyncOutcome> {
+  const connectorId = "sinopac";
+  const scope = "all";
+  const settings = await requireConnectorSettings(env.DB, connectorId);
+  const stored = await decryptJson<Record<string, unknown>>(settings.encrypted_config, configEncryptionKey(env));
+  const publicStored = settings.public_config ? JSON.parse(settings.public_config) : {};
+  const config = parseSinopacConfig({ ...stored, ...publicStored, ...overrides });
+
+  console.log(`[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ? "set" : "none"})`);
+  let result: Awaited<ReturnType<ReturnType<typeof createSinopacConnector>["sync"]>>;
+  try {
+    result = await createSinopacConnector(env.BROWSER).sync(config, settings.sync_cursor ?? undefined);
+  } catch (error) {
+    const cleaned = { ...stored };
+    const hadPendingVerification = Boolean(config.browserSessionId && overrides.captcha);
+    if (hadPendingVerification) {
+      delete cleaned.captcha;
+      delete cleaned.browserSessionId;
+      delete cleaned.browserSessionExpiresAt;
+    }
+    if (error instanceof SinopacVerificationRequiredError) {
+      delete cleaned.sessionCookies;
+      delete cleaned.sessionExpiresAt;
+      delete cleaned.protocol;
+    }
+    if (hadPendingVerification || error instanceof SinopacVerificationRequiredError) {
+      await env.DB.prepare(`UPDATE connector_settings SET encrypted_config = ? WHERE connector_id = ?`)
+        .bind(await encryptJson(cleaned, configEncryptionKey(env)), connectorId)
+        .run();
+    }
+    if (error instanceof SinopacVerificationRequiredError) {
+      throw new NeedsUserActionError(error.message);
+    }
+    throw error;
+  }
+  const bankAccounts = result.bankAccounts ?? [];
+  const bankBalanceSnapshots = result.bankBalanceSnapshots ?? [];
+  const bankTransactions = result.bankTransactions ?? [];
+  const creditCardBills = result.creditCardBills ?? [];
+  console.log(`[sync] ${connectorId}/${scope}: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} bills=${creditCardBills.length}`);
+
+  const now = new Date().toISOString();
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(`DELETE FROM bank_transactions WHERE connector_id = ?`).bind(connectorId),
+    env.DB.prepare(`DELETE FROM credit_card_bills WHERE connector_id = ?`).bind(connectorId),
+    ...bankAccounts.map((account) => bankAccountStatement(env.DB, connectorId, account, now)),
+    ...bankBalanceSnapshots.map((snapshot) => bankBalanceSnapshotStatement(env.DB, connectorId, snapshot, now)),
+    ...bankTransactions.map((transaction) => bankTransactionStatement(env.DB, connectorId, transaction, now)),
+    ...creditCardBills.map((bill) => creditCardBillStatement(env.DB, connectorId, bill, now)),
+    ...(bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(env.DB)] : [])
+  ];
+  let persistedCursor: string | undefined;
+  if (result.cursor) {
+    const cursorState = JSON.parse(result.cursor) as Record<string, unknown>;
+    const {
+      sessionCookies: _sessionCookies,
+      sessionExpiresAt: _sessionExpiresAt,
+      ...safeCursorState
+    } = cursorState;
+    persistedCursor = JSON.stringify(safeCursorState);
+    const {
+      browserSessionId: _browserSessionId,
+      browserSessionExpiresAt: _browserSessionExpiresAt,
+      captcha: _captcha,
+      ...reusableConfig
+    } = config;
+    statements.push(
+      env.DB.prepare(`UPDATE connector_settings SET encrypted_config = ?, sync_cursor = ?, updated_at = ? WHERE connector_id = ?`)
+        .bind(await encryptJson({ ...reusableConfig, ...cursorState }, configEncryptionKey(env)), persistedCursor, now, connectorId)
+    );
+  }
+  if (statements.length > 0) await env.DB.batch(statements);
+  if (bankBalanceSnapshots.length > 0) await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
+  return {
+    success: true,
+    connectorId,
+    scope,
+    records: bankAccounts.length + bankBalanceSnapshots.length + bankTransactions.length + creditCardBills.length,
+    cursorUpdated: Boolean(persistedCursor && persistedCursor !== settings.sync_cursor)
   };
 }
 
@@ -1238,6 +1409,10 @@ async function runDueSyncJob(env: Env, job: SyncJobRow<ConnectorId>) {
     return syncCathaybk(env, "scheduled");
   }
 
+  if (job.connector_id === "sinopac") {
+    return syncSinopac(env, "scheduled");
+  }
+
   throw new NeedsUserActionError("Scheduled connector is not supported.");
 }
 
@@ -1249,7 +1424,8 @@ function isUserActionError(error: unknown) {
   if (
     error instanceof NeedsUserActionError ||
     error instanceof TdccOtpExpiredError ||
-    error instanceof EInvoiceProtocolUnavailableError
+    error instanceof EInvoiceProtocolUnavailableError ||
+    error instanceof SinopacVerificationRequiredError
   ) return true;
   const message = error instanceof Error ? error.message : String(error);
   return /OTP|verification|requires.*login|requires.*session|requires.*user action/i.test(message);
@@ -1265,6 +1441,19 @@ function einvoiceCredentialsChanged(
   submittedConfig: Record<string, unknown>
 ) {
   return ["mobile", "password", "apiKey"].some(
+    (key) =>
+      key in submittedConfig &&
+      submittedConfig[key] !== undefined &&
+      submittedConfig[key] !== "" &&
+      submittedConfig[key] !== storedConfig[key]
+  );
+}
+
+function sinopacCredentialsChanged(
+  storedConfig: Record<string, unknown>,
+  submittedConfig: Record<string, unknown>
+) {
+  return ["userId", "account", "password"].some(
     (key) =>
       key in submittedConfig &&
       submittedConfig[key] !== undefined &&
@@ -1421,6 +1610,10 @@ function deriveBankMatchKey(connectorId: ConnectorId, sourceId: string): { bankC
     const last4 = sourceId.split(":")[2]?.replace(/\D/g, "").slice(-4) ?? "";
     return { bankCode: CATHAYBK_BANK_CODE, last4: last4 || null };
   }
+  if (connectorId === "sinopac" && sourceId.startsWith("bank:sinopac:")) {
+    const last4 = sourceId.split(":")[2]?.replace(/\D/g, "").slice(-4) ?? "";
+    return { bankCode: "807", last4: last4 || null };
+  }
   const match = sourceId.match(/^settlement:([^:]+):([^:]+)/);
   const last4 = match?.[2]?.replace(/\D/g, "").slice(-4) ?? "";
   return match ? { bankCode: match[1], last4: last4 || null } : { bankCode: null, last4: null };
@@ -1461,6 +1654,9 @@ function parseBankAccountSource(sourceId: string): { bankCode?: string; account?
 
   const cathaybk = sourceId.match(/^bank:cathaybk:([^:]+)/);
   if (cathaybk) return { bankCode: CATHAYBK_BANK_CODE, account: cathaybk[1] };
+
+  const sinopac = sourceId.match(/^bank:sinopac:([^:]+)/);
+  if (sinopac) return { bankCode: "807", account: sinopac[1] };
 
   return {};
 }
