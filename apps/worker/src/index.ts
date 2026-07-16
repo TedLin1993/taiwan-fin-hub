@@ -108,7 +108,7 @@ export const app = new Hono<AppBindings>();
 export const api = new Hono<AppBindings>();
 
 const settingsBodySchema = z.object({
-  config: z.record(z.unknown())
+  config: z.record(z.string(), z.unknown())
 });
 
 const PUBLIC_FIELDS: Record<string, string[]> = {

@@ -6,8 +6,12 @@ const puppeteerMock = vi.hoisted(() => ({
   limits: vi.fn(),
   sessions: vi.fn()
 }));
+const jpegMock = vi.hoisted(() => ({
+  decode: vi.fn(() => ({ width: 1, height: 1, data: new Uint8Array([0, 0, 0, 255]) }))
+}));
 
 vi.mock("@cloudflare/puppeteer", () => ({ default: puppeteerMock }));
+vi.mock("jpeg-js", () => jpegMock);
 
 import {
   createSinopacConnector,
@@ -75,7 +79,7 @@ describe("sinopac browser session lifecycle", () => {
     expect(puppeteerMock.launch).not.toHaveBeenCalled();
     expect(browser.disconnect).toHaveBeenCalledOnce();
     expect(result.browserSessionId).toBe("pending-session");
-    expect(result.captchaImage).toMatch(/^data:image\/jpeg;base64,/);
+    expect(result.captchaImage).toBe("data:image/jpeg;base64,AQID");
   });
 
   it("closes a submitted CAPTCHA browser when verification fails", async () => {

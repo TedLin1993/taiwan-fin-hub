@@ -177,7 +177,7 @@
     <div class="mt-3 rounded-md border border-ink/10 bg-paper p-3">
       <p class="text-sm font-medium text-ink/80">請輸入圖片中的六位數字，驗證碼約兩分鐘內有效。</p>
       <div class="mt-2 flex flex-wrap items-center gap-2">
-        <img src={sinopacCaptchaImage} alt="永豐圖形驗證碼" class="h-12 w-auto rounded border border-ink/15 bg-white object-contain" />
+        <img src={sinopacCaptchaImage} alt="永豐圖形驗證碼" class="h-[70px] w-[200px] shrink-0 rounded border border-ink/25 bg-white object-fill shadow-sm" />
         <Input class="min-w-40 flex-1" inputmode="numeric" maxlength="6" placeholder="六位數字驗證碼" bind:value={sinopacCaptcha} />
         <Button size="sm" disabled={$verifySinopac.isPending} onclick={() => { error = ""; $verifySinopac.mutate(); }}><RefreshCw class="size-4" />{$verifySinopac.isPending ? "同步中…" : "驗證並同步"}</Button>
         <Button size="sm" variant="outline" disabled={$prepareSinopac.isPending || $verifySinopac.isPending} onclick={() => $prepareSinopac.mutate()}>換一張</Button>

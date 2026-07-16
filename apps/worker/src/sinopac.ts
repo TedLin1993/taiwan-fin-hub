@@ -1,4 +1,5 @@
 import puppeteer, { type Browser, type Page } from "@cloudflare/puppeteer";
+import { decode as decodeJpeg } from "jpeg-js";
 import type {
   BankAccount,
   BankBalanceSnapshot,
@@ -44,7 +45,7 @@ export class SinopacBrowserCapacityError extends Error {
 export function createSinopacConnector(browser?: Fetcher) {
   return {
     id: "sinopac" as const,
-    name: "永豐銀行 DAWHO",
+    name: "永豐銀行 MMA",
     async sync(config: SinopacConfig, cursor?: string): Promise<SyncResult<Omit<InvestmentPosition, "id" | "connectorId">>> {
       if (!config.userId || !config.account || !config.password) {
         throw new Error("永豐銀行需要身分證字號／統編、使用者代碼與網路密碼。");
@@ -124,14 +125,23 @@ export async function prepareSinopacCaptcha(browser: Fetcher | undefined, config
   let preserved = false;
   try {
     await configurePage(page);
-    await openLoginAndFill(page, config);
-    await page.waitForFunction(() => {
-      const image = document.querySelector<HTMLImageElement>("#imgCode");
-      return Boolean(image?.complete && image.naturalWidth > 0);
-    }, { timeout: 10_000 });
-    const image = await page.$("#imgCode");
-    if (!image) throw new Error("永豐登入頁沒有取得圖形驗證碼。");
-    const bytes = await image.screenshot({ type: "jpeg" });
+    let bytes: Uint8Array | string | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await openLoginAndFill(page, config);
+      await page.waitForFunction(() => {
+        const image = document.querySelector<HTMLImageElement>("#imgCode");
+        return Boolean(image?.complete && image.naturalWidth > 0);
+      }, { timeout: 10_000 });
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 400));
+      const image = await page.$("#imgCode");
+      if (!image) throw new Error("永豐登入頁沒有取得圖形驗證碼。");
+      const candidate = await image.screenshot({ type: "jpeg" });
+      if (captchaHasVisibleDigits(candidate)) {
+        bytes = candidate;
+        break;
+      }
+    }
+    if (!bytes) throw new Error("永豐圖形驗證碼影像為空白，請稍後再試。");
     const sessionId = browserInstance.sessionId();
     await browserInstance.disconnect();
     preserved = true;
@@ -269,6 +279,25 @@ function bytesToBase64(bytes: Uint8Array | string) {
   let binary = "";
   for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
   return btoa(binary);
+}
+
+function captchaHasVisibleDigits(bytes: Uint8Array | string) {
+  if (typeof bytes === "string") return bytes.length > 100;
+  try {
+    const decoded = decodeJpeg(bytes, { useTArray: true });
+    const pixels = decoded.width * decoded.height;
+    if (pixels === 0) return false;
+    let darkPixels = 0;
+    for (let offset = 0; offset < decoded.data.length; offset += 4) {
+      const luminance = 0.299 * (decoded.data[offset] ?? 255)
+        + 0.587 * (decoded.data[offset + 1] ?? 255)
+        + 0.114 * (decoded.data[offset + 2] ?? 255);
+      if (luminance < 170) darkPixels += 1;
+    }
+    return darkPixels / pixels >= 0.12;
+  } catch {
+    return false;
+  }
 }
 
 async function scrapeCards(page: Page, lookbackMonths: number): Promise<Scraped> {

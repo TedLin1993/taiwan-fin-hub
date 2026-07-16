@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** 永豐 DAWHO／MMA 網路銀行登入設定。機密欄位會由 Worker 加密儲存。 */
+/** 永豐銀行 MMA 網路銀行登入設定。機密欄位會由 Worker 加密儲存。 */
 export const sinopacConfigSchema = z.object({
   userId: z.string().min(1).optional(),
   account: z.string().min(1).optional(),

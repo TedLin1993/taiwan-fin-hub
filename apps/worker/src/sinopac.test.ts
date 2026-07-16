@@ -8,7 +8,7 @@ describe("sinopac parser", () => {
     expect(parseDate("115/07/15")).toBe("2026-07-15");
   });
 
-  it("maps DAWHO stock tables to investment positions", () => {
+  it("maps MMA stock tables to investment positions", () => {
     const positions = parseInvestmentRows([[
       ["代號", "名稱", "股數", "市值", "幣別"],
       ["AAPL", "Apple Inc.", "10", "2,100.00", "USD"],
