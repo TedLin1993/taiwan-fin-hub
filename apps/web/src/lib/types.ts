@@ -108,6 +108,32 @@ export interface InvestmentTransactionRow {
   amount?: number;
   currency: string;
 }
+export interface InvestmentUnrealizedPosition {
+  positionId: string;
+  costBasis: number | null;
+  averageCost: number | null;
+  profitLoss: number | null;
+  returnRate: number | null;
+  available: boolean;
+}
+export interface InvestmentUnrealizedPoint {
+  date: string;
+  marketValue: number;
+  costBasis: number;
+  profitLoss: number;
+}
+export interface InvestmentUnrealizedPerformance {
+  positions: InvestmentUnrealizedPosition[];
+  points: InvestmentUnrealizedPoint[];
+  totalCostBasis: number | null;
+  currentProfitLoss: number | null;
+  currentReturnRate: number | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  coveredPositions: number;
+  totalPositions: number;
+  estimated: boolean;
+}
 export interface BankAccountRow {
   id: string;
   connectorId: ConnectorId;

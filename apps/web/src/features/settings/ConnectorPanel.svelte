@@ -133,6 +133,12 @@
           qc.invalidateQueries({ queryKey: queryKeys.investments });
         if (pendingSyncTarget === "default" || pendingSyncTarget === "trades")
           qc.invalidateQueries({ queryKey: queryKeys.investmentTransactions });
+        if (
+          pendingSyncTarget === "default" ||
+          pendingSyncTarget === "investments" ||
+          pendingSyncTarget === "trades"
+        )
+          qc.invalidateQueries({ queryKey: queryKeys.investmentPerformance });
         if (pendingSyncTarget === "default" || pendingSyncTarget === "bank")
           qc.invalidateQueries({ queryKey: queryKeys.bank });
       }
@@ -211,6 +217,7 @@
       qc.invalidateQueries({ queryKey: queryKeys.summary });
       qc.invalidateQueries({ queryKey: queryKeys.investments });
       qc.invalidateQueries({ queryKey: queryKeys.investmentTransactions });
+      qc.invalidateQueries({ queryKey: queryKeys.investmentPerformance });
       qc.invalidateQueries({ queryKey: queryKeys.bank });
     },
     onError: (e) => (error = e instanceof Error ? e.message : "驗證失敗"),

@@ -7,9 +7,11 @@
   import EmptyState from "../../components/ui/EmptyState.svelte";
   import Input from "../../components/ui/Input.svelte";
   import Select from "../../components/ui/Select.svelte";
+  import InvestmentPerformanceChart from "./InvestmentPerformanceChart.svelte";
   import type { ApiClient } from "../../lib/api";
   import {
     exchangeRatesQuery,
+    investmentPerformanceQuery,
     investmentsQuery,
     investmentTransactionsQuery,
   } from "../../lib/queries";
@@ -22,6 +24,7 @@
   } from "../../lib/format.svelte";
   let { api }: { api: ApiClient } = $props();
   const investments = createQuery(investmentsQuery(() => api));
+  const performance = createQuery(investmentPerformanceQuery(() => api));
   const trades = createQuery(investmentTransactionsQuery(() => api));
   const rates = createQuery(exchangeRatesQuery(() => api));
   let search = $state("");
@@ -54,6 +57,17 @@
       )
       .slice(0, 100),
   );
+  const unrealizedByPosition = $derived(
+    new Map(
+      ($performance.data?.positions ?? []).map((position) => [
+        position.positionId,
+        position,
+      ]),
+    ),
+  );
+  const currentProfitLoss = $derived(
+    $performance.data?.currentProfitLoss ?? null,
+  );
   function tradeDisplay(t: InvestmentTransactionRow) {
     if (t.amount != null && t.price != null && t.price !== 1)
       return formatCurrency(t.amount, t.currency);
@@ -66,22 +80,42 @@
     title="載入投資中"
     body="正在讀取投資持倉。"
   />{:else}<div class="grid gap-5">
-    <div class="grid grid-cols-2 gap-3 md:grid-cols-3">
+    <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <div class="rounded-xl border border-ink/10 bg-white p-4 shadow-xs">
         <p class="text-xs text-ink/45">持倉市值</p>
         <p class="mt-2 text-xl font-bold">{formatCurrency(total)}</p>
       </div>
       <div class="rounded-xl border border-ink/10 bg-white p-4 shadow-xs">
+        <p class="text-xs text-ink/45">未實現損益</p>
+        <p
+          class={`mt-2 text-xl font-bold ${currentProfitLoss == null ? "text-ink/40" : currentProfitLoss >= 0 ? "text-moss" : "text-coral"}`}
+        >
+          {currentProfitLoss == null
+            ? "—"
+            : `${currentProfitLoss >= 0 ? "+" : ""}${formatCurrency(currentProfitLoss)}`}
+        </p>
+      </div>
+      <div class="rounded-xl border border-ink/10 bg-white p-4 shadow-xs">
+        <p class="text-xs text-ink/45">未實現報酬率</p>
+        <p
+          class={`mt-2 text-xl font-bold ${$performance.data?.currentReturnRate == null ? "text-ink/40" : ($performance.data.currentReturnRate ?? 0) >= 0 ? "text-moss" : "text-coral"}`}
+        >
+          {$performance.data?.currentReturnRate == null
+            ? "—"
+            : `${$performance.data.currentReturnRate >= 0 ? "+" : ""}${$performance.data.currentReturnRate.toFixed(2)}%`}
+        </p>
+      </div>
+      <div class="rounded-xl border border-ink/10 bg-white p-4 shadow-xs">
         <p class="text-xs text-ink/45">持倉數</p>
         <p class="mt-2 text-xl font-bold">{positions.length}</p>
       </div>
-      <div
-        class="hidden rounded-xl border border-ink/10 bg-white p-4 shadow-xs md:block"
-      >
-        <p class="text-xs text-ink/45">交易筆數</p>
-        <p class="mt-2 text-xl font-bold">{$trades.data?.length ?? 0}</p>
-      </div>
     </div>
+    {#if ($investments.data?.length ?? 0) > 0}
+      <InvestmentPerformanceChart
+        data={$performance.data}
+        loading={$performance.isPending}
+      />
+    {/if}
     <Card
       ><CardHeader class="gap-3"
         ><div class="flex flex-wrap items-center justify-between gap-3">
@@ -103,21 +137,38 @@
               ><tr
                 ><th class="px-5 py-3">名稱</th><th class="px-5 py-3">類型</th
                 ><th class="px-5 py-3">數量</th><th class="px-5 py-3 text-right"
-                  >市值</th
+                  >持有成本</th
+                ><th class="px-5 py-3 text-right">市值</th><th
+                  class="px-5 py-3 text-right">未實現損益</th
                 ><th class="px-5 py-3">日期</th></tr
               ></thead
             ><tbody class="divide-y divide-ink/8"
-              >{#each positions as p (p.id)}<tr
+              >{#each positions as p (p.id)}{@const unrealized =
+                  unrealizedByPosition.get(p.id)}<tr
                   ><td class="px-5 py-3 font-semibold"
                     >{p.symbol ? `${p.symbol} ` : ""}{p.name}</td
                   ><td class="px-5 py-3">{p.assetType.toUpperCase()}</td><td
                     class="px-5 py-3"
                     >{p.quantity == null ? "-" : formatNumber(p.quantity)}</td
+                  ><td class="px-5 py-3 text-right text-ink/60"
+                    >{unrealized?.costBasis == null
+                      ? "待補"
+                      : formatCurrency(unrealized.costBasis)}</td
                   ><td class="px-5 py-3 text-right font-semibold"
                     >{formatCurrency(
                       (p.marketValue ?? 0) + (p.cashBalance ?? 0),
                       p.currency,
                     )}</td
+                  ><td
+                    class={`px-5 py-3 text-right font-semibold ${unrealized?.profitLoss == null ? "text-ink/40" : unrealized.profitLoss >= 0 ? "text-moss" : "text-coral"}`}
+                    >{unrealized?.profitLoss == null
+                      ? "—"
+                      : `${unrealized.profitLoss >= 0 ? "+" : ""}${formatCurrency(unrealized.profitLoss)}`}{#if unrealized?.returnRate != null}<span
+                        class="ml-1 text-xs font-medium opacity-70"
+                        >({unrealized.returnRate >= 0
+                          ? "+"
+                          : ""}{unrealized.returnRate.toFixed(1)}%)</span
+                      >{/if}</td
                   ><td class="px-5 py-3 text-xs text-ink/50"
                     >{formatDate(p.asOfDate)}</td
                   ></tr
@@ -126,9 +177,9 @@
           </table>
         </div>
         <div class="divide-y divide-ink/8 md:hidden">
-          {#each positions as p (p.id)}<div
-              class="flex items-center justify-between gap-3 px-4 py-3"
-            >
+          {#each positions as p (p.id)}{@const unrealized =
+              unrealizedByPosition.get(p.id)}
+            <div class="flex items-center justify-between gap-3 px-4 py-3">
               <div class="min-w-0">
                 <p class="truncate font-semibold">
                   {p.symbol ? `${p.symbol} ` : ""}{p.name}
@@ -137,12 +188,21 @@
                   {p.quantity ?? 0} 單位 · {p.assetType.toUpperCase()}
                 </p>
               </div>
-              <p class="shrink-0 font-bold text-steel">
-                {formatCurrency(
-                  (p.marketValue ?? 0) + (p.cashBalance ?? 0),
-                  p.currency,
-                )}
-              </p>
+              <div class="shrink-0 text-right">
+                <p class="font-bold text-steel">
+                  {formatCurrency(
+                    (p.marketValue ?? 0) + (p.cashBalance ?? 0),
+                    p.currency,
+                  )}
+                </p>
+                <p
+                  class={`mt-1 text-xs font-semibold ${unrealized?.profitLoss == null ? "text-ink/40" : unrealized.profitLoss >= 0 ? "text-moss" : "text-coral"}`}
+                >
+                  {unrealized?.profitLoss == null
+                    ? "成本待補"
+                    : `${unrealized.profitLoss >= 0 ? "+" : ""}${formatCurrency(unrealized.profitLoss)}`}
+                </p>
+              </div>
             </div>{/each}
         </div></CardContent
       ></Card

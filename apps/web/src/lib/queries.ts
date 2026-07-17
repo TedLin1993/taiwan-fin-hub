@@ -9,6 +9,7 @@ import type {
   ExchangeRateRow,
   InvestmentRow,
   InvestmentTransactionRow,
+  InvestmentUnrealizedPerformance,
   InvoiceRow,
   ManualAssetHistoryEntry,
   ManualAssetRow,
@@ -41,6 +42,15 @@ export const investmentTransactionsQuery = (getApi: ApiProvider) =>
     queryKey: queryKeys.investmentTransactions,
     queryFn: () =>
       getApi().get<InvestmentTransactionRow[]>("/api/investment-transactions"),
+  });
+
+export const investmentPerformanceQuery = (getApi: ApiProvider) =>
+  queryOptions({
+    queryKey: queryKeys.investmentPerformance,
+    queryFn: () =>
+      getApi().get<InvestmentUnrealizedPerformance>(
+        "/api/investments/performance",
+      ),
   });
 
 export const invoicesQuery = (getApi: ApiProvider) =>

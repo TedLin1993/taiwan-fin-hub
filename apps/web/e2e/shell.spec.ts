@@ -17,7 +17,54 @@ test.beforeEach(async ({ page }) => {
         transactions: 0,
       };
     else if (path === "/api/bank") body = { accounts: [], transactions: [] };
-    else if (path === "/api/investments") body = [];
+    else if (path === "/api/investments")
+      body = [
+        {
+          id: "position-1",
+          assetType: "stock",
+          symbol: "2330",
+          name: "台積電",
+          quantity: 10,
+          marketValue: 12400,
+          currency: "TWD",
+          asOfDate: "2026-07-17",
+        },
+      ];
+    else if (path === "/api/investments/performance")
+      body = {
+        positions: [
+          {
+            positionId: "position-1",
+            costBasis: 10000,
+            averageCost: 1000,
+            profitLoss: 2400,
+            returnRate: 24,
+            available: true,
+          },
+        ],
+        points: [
+          {
+            date: "2026-07-16",
+            marketValue: 12000,
+            costBasis: 10000,
+            profitLoss: 2000,
+          },
+          {
+            date: "2026-07-17",
+            marketValue: 12400,
+            costBasis: 10000,
+            profitLoss: 2400,
+          },
+        ],
+        totalCostBasis: 10000,
+        currentProfitLoss: 2400,
+        currentReturnRate: 24,
+        periodStart: "2026-07-16",
+        periodEnd: "2026-07-17",
+        coveredPositions: 1,
+        totalPositions: 1,
+        estimated: true,
+      };
     else if (path === "/api/investment-transactions") body = [];
     else if (path === "/api/invoices") body = [];
     else if (path === "/api/manual-assets") body = [];
@@ -117,4 +164,14 @@ test("opens a primary view from its hash route", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "發票", exact: true }),
   ).toBeVisible();
+});
+
+test("shows unrealized investment profit and its history", async ({ page }) => {
+  await page.goto("/#/investments");
+  await expect(
+    page.getByRole("heading", { name: "投資", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("未實現損益走勢")).toBeVisible();
+  await expect(page.getByText("+NT$2,400").first()).toBeVisible();
+  await expect(page.getByText("+24.00%")).toBeVisible();
 });

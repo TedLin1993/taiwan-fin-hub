@@ -54,6 +54,7 @@ export const queryKeys = {
   bank: ["bank"] as const,
   bills: ["creditCardBills"] as const,
   investments: ["investments"] as const,
+  investmentPerformance: ["investment-performance"] as const,
   investmentTransactions: ["investment-transactions"] as const,
   invoices: ["invoices"] as const,
   manualAssets: ["manualAssets"] as const,

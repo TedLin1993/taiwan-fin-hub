@@ -376,7 +376,7 @@ async function runTdccTradeHistory(config: TdccConfig, identity: TdccIdentity, p
         break;
       }
 
-      const parsed = rows.map((row) => toInvestmentTransaction(row, account));
+      const parsed = rows.map((row) => parseTdccTradeRow(row, account));
       investmentTransactions.push(...parsed);
       newest = newest ?? parsed[0]?.sourceId;
       oldest = parsed.at(-1)?.sourceId ?? oldest;
@@ -462,7 +462,7 @@ function stockAccountsFromPayload(payload: Record<string, unknown>): TdccStockAc
   return Array.from(byId.values());
 }
 
-function toInvestmentTransaction(
+export function parseTdccTradeRow(
   row: unknown[],
   account: TdccStockAccount
 ): Omit<InvestmentTransaction, "id" | "connectorId"> {
@@ -473,11 +473,6 @@ function toInvestmentTransaction(
   const stockType = stringField(row[8]);
   const txnDate = stringField(row[9]);
   const quantity = parseOptionalTdccNumber(stringField(row[12]));
-  const price = parseOptionalTdccNumber(stringField(row[18]));
-  // The live API sometimes returns `1` in the price slot as an exchange-rate
-  // placeholder.  Treating quantity × 1 as a cash amount turns 93 shares into
-  // a misleading NT$93 transaction.
-  const amount = quantity !== undefined && price !== undefined && price !== 1 ? Math.trunc(quantity * price) : undefined;
   const sourceId = [txnDate, postDate, txnSerNo].filter(Boolean).join("") || row.map(stringField).join(":");
 
   return {
@@ -494,8 +489,6 @@ function toInvestmentTransaction(
     transactionCode: stringField(row[10]) || undefined,
     transactionName: stringField(row[11]) || undefined,
     quantity,
-    price,
-    amount,
     currency: stringField(row[20]) || "TWD",
     raw: {
       brokerNo: account.brokerNo,
@@ -519,7 +512,7 @@ function toInvestmentTransaction(
         txnType: stringField(row[15]),
         othAcctNo: stringField(row[16]),
         bankingNo: stringField(row[17]),
-        price: stringField(row[18]),
+        field18: stringField(row[18]),
         pdate: stringField(row[19]),
         stockCurrency: stringField(row[20]),
         stockRate: stringField(row[21]),
@@ -806,11 +799,11 @@ function normalizeTdccDate(value: string) {
     const year = rawYear < 1000 ? rawYear + 1911 : rawYear;
     const month = Number(trimmed.slice(yearLength, yearLength + 2));
     const day = Number(trimmed.slice(yearLength + 2, yearLength + 4));
-    return new Date(year, month - 1, day).toISOString();
+    return new Date(Date.UTC(year, month - 1, day)).toISOString();
   }
 
   const normalized = trimmed.replace(/\//g, "-");
-  const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(normalized) ? `${normalized}T00:00:00` : normalized);
+  const date = new Date(/^\d{4}-\d{2}-\d{2}$/.test(normalized) ? `${normalized}T00:00:00Z` : normalized);
   return Number.isNaN(date.getTime()) ? normalized : date.toISOString();
 }
 

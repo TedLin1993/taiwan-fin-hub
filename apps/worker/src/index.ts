@@ -61,6 +61,7 @@ import {
   setPaginationHeaders
 } from "./http";
 import { readValidateNumberFromImage } from "./validate-number-ocr";
+import { buildUnrealizedPerformance } from "./investment-performance";
 import { registerExchangeRateRoutes } from "./routes/exchange-rates";
 import { registerClassificationRoutes } from "./routes/classification";
 import { registerInvoiceRoutes } from "./routes/invoices";
@@ -345,6 +346,94 @@ api.get("/investment-transactions", async (c) => {
   const hasMore = result.results.length > limit;
   setPaginationHeaders((name, value) => c.header(name, value), { offset, limit, hasMore });
   return c.json(result.results.slice(0, limit));
+});
+
+api.get("/investments/performance", async (c) => {
+  const positions = await c.env.DB.prepare(
+    `SELECT
+      position.id,
+      position.symbol,
+      position.name,
+      position.quantity,
+      position.market_value AS marketValue,
+      position.currency,
+      rate.rate_to_twd AS rateToTwd
+    FROM investment_positions position
+    LEFT JOIN exchange_rates rate ON rate.currency = position.currency
+    WHERE position.as_of_date = (
+      SELECT MAX(latest.as_of_date)
+      FROM investment_positions latest
+      WHERE latest.connector_id = position.connector_id
+        AND latest.asset_type = position.asset_type
+    )
+      AND COALESCE(position.quantity, 0) > 0
+      AND COALESCE(position.market_value, 0) > 0`,
+  ).all<{
+    id: string;
+    symbol: string | null;
+    name: string;
+    quantity: number | null;
+    marketValue: number | null;
+    currency: string;
+    rateToTwd: number | null;
+  }>();
+
+  if (positions.results.length === 0) {
+    return c.json(buildUnrealizedPerformance([], [], []));
+  }
+
+  const [history, trades] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT
+        date,
+        net_worth AS netWorth,
+        asset_type AS assetType,
+        source
+      FROM net_worth_history
+      WHERE asset_type IN ('stock', 'fund', 'total')
+      ORDER BY date ASC, source ASC, asset_type ASC`,
+    ).all<{
+      date: string;
+      netWorth: number;
+      assetType: string;
+      source: string;
+    }>(),
+    c.env.DB.prepare(
+      `SELECT
+        COALESCE(trade.trade_date, trade.posted_date) AS date,
+        trade.symbol,
+        trade.name,
+        trade.transaction_code AS transactionCode,
+        trade.transaction_name AS transactionName,
+        trade.quantity,
+        trade.price,
+        trade.amount,
+        trade.currency,
+        rate.rate_to_twd AS rateToTwd
+      FROM investment_transactions trade
+      LEFT JOIN exchange_rates rate ON rate.currency = trade.currency
+      ORDER BY COALESCE(trade.trade_date, trade.posted_date) ASC`,
+    ).all<{
+      date: string | null;
+      symbol: string | null;
+      name: string | null;
+      transactionCode: string | null;
+      transactionName: string | null;
+      quantity: number | null;
+      price: number | null;
+      amount: number | null;
+      currency: string;
+      rateToTwd: number | null;
+    }>(),
+  ]);
+
+  return c.json(
+    buildUnrealizedPerformance(
+      history.results,
+      positions.results,
+      trades.results,
+    ),
+  );
 });
 
 api.get("/bank", async (c) => {
