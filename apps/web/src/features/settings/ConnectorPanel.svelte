@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { SvelteDate } from "svelte/reactivity";
   import { toStore } from "svelte/store";
   import {
     createMutation,
@@ -19,9 +18,14 @@
   import Checkbox from "../../components/ui/Checkbox.svelte";
   import Input from "../../components/ui/Input.svelte";
   import Select from "../../components/ui/Select.svelte";
+  import TimePicker from "../../components/ui/TimePicker.svelte";
   import type { ApiClient } from "../../lib/api";
   import { queryKeys } from "../../lib/api";
-  import { connectorSettingsQuery, syncJobsQuery } from "../../lib/queries";
+  import {
+    connectorSettingsQuery,
+    syncJobsQuery,
+    syncScheduleQuery,
+  } from "../../lib/queries";
   import type {
     ConnectorField,
     ConnectorId,
@@ -35,18 +39,21 @@
     demoMode,
     title,
     fields,
+    embedded = false,
   }: {
     api: ApiClient;
     connectorId: ConnectorId;
     demoMode: boolean;
     title: string;
     fields: ConnectorField[];
+    embedded?: boolean;
   } = $props();
   const qc = useQueryClient();
   const settings = createQuery(
     toStore(() => connectorSettingsQuery(() => api, connectorId)),
   );
   const jobs = createQuery(syncJobsQuery(() => api));
+  const defaultSchedule = createQuery(syncScheduleQuery(() => api));
   let values = $state<Record<string, string | boolean>>({});
   let error = $state("");
   let otp = $state("");
@@ -88,10 +95,16 @@
       if (!Object.keys(config).length) throw new Error("請先填寫欄位再儲存。");
       return api.put(`/api/connectors/${connectorId}/settings`, { config });
     },
-    onSuccess: () =>
+    onSuccess: () => {
+      error = "";
+      for (const field of fields) {
+        if (field.type === "text" || field.type === "password")
+          values[field.key] = "";
+      }
       qc.invalidateQueries({
         queryKey: queryKeys.connectorSettings(connectorId),
-      }),
+      });
+    },
     onError: (e) => (error = e instanceof Error ? e.message : "儲存失敗"),
   });
   const updateJob = createMutation({
@@ -230,20 +243,25 @@
     }
     return Object.fromEntries(entries);
   }
-  function scheduleTime(event: Event) {
-    const value = (event.currentTarget as HTMLInputElement).value;
-    const [hours, minutes] = value.split(":").map(Number);
-    const next = new SvelteDate();
-    next.setHours(hours, minutes, 0, 0);
-    if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1);
-    $updateJob.mutate({ nextRunAt: next.toISOString() });
+  function intervalLabel(minutes: number) {
+    return (
+      intervalOptions.find((option) => option.minutes === minutes)?.label ??
+      `${minutes} 分鐘`
+    );
   }
 </script>
 
-<Card as="article" class="p-4">
+<Card
+  as="article"
+  class={embedded
+    ? "rounded-none border-0 bg-transparent p-0 shadow-none"
+    : "p-4"}
+>
   <div class="flex flex-wrap items-start justify-between gap-3">
     <div>
-      <h2 class="text-lg font-semibold">{title}</h2>
+      <h2 class="text-lg font-semibold">
+        {embedded ? "連線與同步" : title}
+      </h2>
       <p class="text-sm text-ink/65">
         {$settings.data?.configured
           ? `已設定於 ${formatDateTime($settings.data.updatedAt)}。機密資料不會在此顯示；重新填寫欄位即可覆寫。`
@@ -251,13 +269,6 @@
       </p>
     </div>
     <div class="flex flex-wrap gap-2">
-      <Button
-        size="sm"
-        onclick={() => {
-          error = "";
-          $save.mutate(buildConfig());
-        }}><Save class="size-4" />儲存</Button
-      >
       {#if connectorId === "tdcc"}
         <Button
           size="sm"
@@ -343,7 +354,6 @@
     </p>{/if}
   {#if connectorId === "tdcc"}<details
       class="mt-3 rounded-md border border-ink/10 bg-paper text-sm text-ink/70"
-      open
     >
       <summary
         class="cursor-pointer select-none px-3 py-2 font-medium text-ink/80"
@@ -358,7 +368,6 @@
     </details>{/if}
   {#if connectorId === "sinopac"}<details
       class="mt-3 rounded-md border border-ink/10 bg-paper text-sm text-ink/70"
-      open
     >
       <summary
         class="cursor-pointer select-none px-3 py-2 font-medium text-ink/80"
@@ -416,89 +425,207 @@
       </div>
     </div>
   {/if}
-  <div
-    class="mt-3 rounded-md border border-ink/10 bg-paper px-3 py-2 text-sm text-ink/70"
-  >
-    <div class="flex flex-wrap items-center justify-between gap-2">
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span class="font-medium">自動同步：{job?.enabled ? "開" : "關"}</span
-        >{#if connectorId === "sinopac"}<span
-            >登入：{sinopacSessionAvailable
-              ? "session 可自動續用"
-              : "需要人工驗證"}</span
-          >{/if}{#if job}<span
-            >狀態：{job.running
-              ? "同步中"
-              : job.lastStatus === "success"
-                ? "正常"
-                : job.lastStatus === "failed"
-                  ? "失敗"
-                  : job.lastStatus === "needs_user_action"
-                    ? "需要處理"
-                    : "尚未同步"}</span
-          >{#if job.lastRunAt}<span>上次：{formatDateTime(job.lastRunAt)}</span
-            >{/if}{#if job.enabled}<span class="flex items-center gap-1.5"
-              ><Select
-                class="h-8 w-auto px-2 text-xs"
-                value={intervalOptions.find(
-                  (option) => option.minutes === job.intervalMinutes,
-                )?.minutes ?? 1440}
-                onchange={(e: Event) =>
-                  $updateJob.mutate({
-                    intervalMinutes: Number(
-                      (e.currentTarget as HTMLSelectElement).value,
-                    ),
-                  })}
-                >{#each intervalOptions as option (option.minutes)}<option
-                    value={option.minutes}>{option.label}</option
-                  >{/each}</Select
-              >{#if job.intervalMinutes >= 1440 && job.nextRunAt}<Input
-                  type="time"
-                  class="h-8 w-auto text-xs"
-                  value={new Date(job.nextRunAt).toTimeString().slice(0, 5)}
-                  onchange={scheduleTime}
-                /><span class="text-muted-foreground">同步</span>{/if}</span
-            >{/if}{/if}
+  <div class="mt-3 rounded-xl border border-ink/10 bg-paper p-3 text-sm">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-ink/70">
+          <span class="font-semibold text-ink">
+            自動同步：{job?.enabled ? "開" : "關"}
+          </span>
+          {#if connectorId === "sinopac"}<span
+              >登入：{sinopacSessionAvailable
+                ? "session 可自動續用"
+                : "需要人工驗證"}</span
+            >{/if}
+          {#if job}<span
+              >狀態：{job.running
+                ? "同步中"
+                : job.lastStatus === "success"
+                  ? "正常"
+                  : job.lastStatus === "failed"
+                    ? "失敗"
+                    : job.lastStatus === "needs_user_action"
+                      ? "需要處理"
+                      : "尚未同步"}</span
+            >{/if}
+        </div>
+        {#if job?.lastRunAt}
+          <p class="mt-1 text-xs text-muted-foreground">
+            上次同步：{formatDateTime(job.lastRunAt)}
+          </p>
+        {/if}
       </div>
       {#if job}<Button
           size="sm"
           variant="outline"
-          disabled={$updateJob.isPending}
+          disabled={demoMode || $updateJob.isPending}
           onclick={() => $updateJob.mutate({ enabled: !job.enabled })}
           >{job.enabled ? "關閉" : "開啟"}</Button
         >{/if}
     </div>
+
+    {#if job?.enabled}
+      <div class="mt-3 grid gap-3 border-t border-ink/10 pt-3 md:grid-cols-3">
+        <label class="grid gap-1 text-xs font-semibold text-ink/70">
+          排程方式
+          <Select
+            value={job.scheduleMode ?? "custom"}
+            disabled={demoMode || $updateJob.isPending}
+            onchange={(event: Event) =>
+              $updateJob.mutate({
+                scheduleMode: (event.currentTarget as HTMLSelectElement).value,
+              })}
+          >
+            <option value="inherit">跟隨預設</option>
+            <option value="custom">自訂排程</option>
+          </Select>
+        </label>
+
+        {#if job.scheduleMode === "inherit"}
+          <div
+            class="flex items-center rounded-lg border border-moss/15 bg-moss/5 px-3 py-2 text-sm text-moss md:col-span-2"
+          >
+            <span class="font-semibold">跟隨預設：</span>
+            {#if $defaultSchedule.data}
+              {intervalLabel(
+                $defaultSchedule.data.intervalMinutes,
+              )}{#if $defaultSchedule.data.intervalMinutes >= 1440}
+                {$defaultSchedule.data.preferredTime} 起{/if}
+            {:else}
+              讀取中…
+            {/if}
+          </div>
+        {:else}
+          <label class="grid gap-1 text-xs font-semibold text-ink/70">
+            同步頻率
+            <Select
+              value={job.intervalMinutes}
+              disabled={demoMode || $updateJob.isPending}
+              onchange={(event: Event) =>
+                $updateJob.mutate({
+                  intervalMinutes: Number(
+                    (event.currentTarget as HTMLSelectElement).value,
+                  ),
+                })}
+            >
+              {#each intervalOptions as option (option.minutes)}
+                <option value={option.minutes}>{option.label}</option>
+              {/each}
+            </Select>
+          </label>
+          {#if job.intervalMinutes >= 1440}
+            <label class="grid gap-1 text-xs font-semibold text-ink/70">
+              開始時間
+              <TimePicker
+                value={job.preferredTime}
+                disabled={demoMode || $updateJob.isPending}
+                onchange={(preferredTime) =>
+                  $updateJob.mutate({
+                    preferredTime,
+                  })}
+              />
+            </label>
+          {:else}
+            <div
+              class="flex items-end pb-2 text-xs leading-relaxed text-muted-foreground"
+            >
+              從上次同步完成後重新計時。
+            </div>
+          {/if}
+        {/if}
+      </div>
+    {/if}
     {#if error || (job?.lastError && !sinopacCaptchaImage)}<p
-        class="mt-1 text-xs text-coral"
+        class="mt-2 text-xs text-coral"
       >
         {error ? `本次同步：${error}` : `上次同步：${job?.lastError}`}
       </p>{/if}
   </div>
-  <div class="mt-4 grid gap-3">
-    {#each fields as field (field.key)}
-      {#if field.type === "checkbox"}
-        <label class="flex items-center gap-2 text-sm"
-          ><Checkbox
-            checked={Boolean(values[field.key])}
-            onchange={(e: Event) =>
-              (values[field.key] = (
-                e.currentTarget as HTMLInputElement
-              ).checked)}
-          />{field.label}</label
-        >
-      {:else}
-        <label class="grid gap-1 text-sm"
-          >{field.label}<Input
-            type={field.type}
-            placeholder={field.placeholder}
-            value={String(values[field.key] ?? "")}
-            oninput={(e: Event) =>
-              (values[field.key] = (e.currentTarget as HTMLInputElement).value)}
-          /></label
-        >
-      {/if}
-    {/each}
-  </div>
+  <section class="mt-4 overflow-hidden rounded-xl border border-border">
+    <div
+      class="flex flex-wrap items-start justify-between gap-2 border-b border-border bg-muted/45 px-4 py-3"
+    >
+      <div>
+        <h3 class="text-sm font-semibold">連線憑證</h3>
+        <p class="mt-0.5 text-xs text-muted-foreground">
+          已儲存的機密欄位不會顯示內容；留白會維持原值。
+        </p>
+      </div>
+      {#if $save.isSuccess}<span
+          class="rounded-full bg-moss/10 px-2.5 py-1 text-xs font-semibold text-moss"
+          >已安全儲存</span
+        >{/if}
+    </div>
+    <div class="grid gap-3 p-4">
+      {#each fields as field (field.key)}
+        {#if field.type === "checkbox"}
+          <label class="flex items-center gap-2 text-sm"
+            ><Checkbox
+              checked={Boolean(values[field.key])}
+              onchange={(e: Event) =>
+                (values[field.key] = (
+                  e.currentTarget as HTMLInputElement
+                ).checked)}
+            />{field.label}</label
+          >
+        {:else}
+          {@const storedCredential = Boolean(
+            $settings.data?.configured &&
+            (field.type === "text" || field.type === "password"),
+          )}
+          {@const hasReplacement = Boolean(String(values[field.key] ?? ""))}
+          <label class="grid gap-1.5 text-sm font-medium">
+            <span class="flex flex-wrap items-center gap-2">
+              <span>{field.label}</span>
+              {#if storedCredential}
+                <span
+                  class={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${hasReplacement ? "bg-steel/10 text-steel" : "bg-moss/10 text-moss"}`}
+                >
+                  {hasReplacement ? "將更新" : "已儲存"}
+                </span>
+              {/if}
+            </span>
+            <Input
+              class={storedCredential && !hasReplacement
+                ? "bg-moss/[0.035] placeholder:text-ink/55"
+                : ""}
+              type={field.type}
+              placeholder={storedCredential && !hasReplacement
+                ? "••••••••　已安全儲存"
+                : field.placeholder}
+              value={String(values[field.key] ?? "")}
+              oninput={(e: Event) =>
+                (values[field.key] = (
+                  e.currentTarget as HTMLInputElement
+                ).value)}
+            />
+          </label>
+        {/if}
+      {/each}
+    </div>
+    <div
+      class="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-paper/70 px-4 py-3"
+    >
+      <p class="text-xs text-muted-foreground">
+        儲存完成後，再使用上方的同步按鈕測試連線。
+      </p>
+      <Button
+        size="sm"
+        disabled={$save.isPending}
+        onclick={() => {
+          error = "";
+          $save.reset();
+          $save.mutate(buildConfig());
+        }}
+        ><Save class="size-4" />{$save.isPending
+          ? "儲存中…"
+          : "儲存憑證"}</Button
+      >
+    </div>
+  </section>
+  {#if $save.isError}<p class="mt-2 text-xs font-medium text-coral">
+      儲存失敗：{error}
+    </p>{/if}
   {#if otpRequired}<div
       class="mt-3 rounded-md border border-destructive/40 bg-destructive/10 p-3"
     >

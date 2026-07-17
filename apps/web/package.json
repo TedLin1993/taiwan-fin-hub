@@ -17,6 +17,7 @@
     "@lucide/svelte": "^1.24.0",
     "@taiwan-fin-hub/core": "0.1.0",
     "@tanstack/svelte-query": "^5.90.2",
+    "bits-ui": "^2.18.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "layerchart": "^2.0.1",

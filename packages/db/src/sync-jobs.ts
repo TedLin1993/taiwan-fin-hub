@@ -1,5 +1,6 @@
 export type SyncTrigger = "manual" | "scheduled";
 export type SyncStatus = "success" | "failed" | "needs_user_action";
+export type SyncScheduleMode = "inherit" | "custom";
 
 export interface SyncJobRow<TConnectorId extends string = string> {
   id: string;
@@ -8,6 +9,8 @@ export interface SyncJobRow<TConnectorId extends string = string> {
   enabled: number;
   interval_minutes: number;
   next_run_at: string;
+  schedule_mode: SyncScheduleMode;
+  preferred_time: string;
   locked_until: string | null;
   locked_by: string | null;
   lock_trigger: SyncTrigger | null;
@@ -18,6 +21,41 @@ export interface SyncJobRow<TConnectorId extends string = string> {
   last_error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+const TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+export function nextSyncRunAt(
+  intervalMinutes: number,
+  preferredTime: string,
+  now = new Date(),
+  anchor?: string
+) {
+  if (intervalMinutes < 1440) {
+    return new Date(now.getTime() + intervalMinutes * 60_000).toISOString();
+  }
+
+  const match = /^(\d{2}):(\d{2})$/.exec(preferredTime);
+  if (!match) return new Date(now.getTime() + intervalMinutes * 60_000).toISOString();
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) {
+    return new Date(now.getTime() + intervalMinutes * 60_000).toISOString();
+  }
+
+  const anchorDate = anchor ? new Date(anchor) : now;
+  const safeAnchor = Number.isNaN(anchorDate.getTime()) ? now : anchorDate;
+  const taipeiAnchor = new Date(safeAnchor.getTime() + TAIPEI_OFFSET_MS);
+  let candidate = Date.UTC(
+    taipeiAnchor.getUTCFullYear(),
+    taipeiAnchor.getUTCMonth(),
+    taipeiAnchor.getUTCDate(),
+    hours,
+    minutes
+  ) - TAIPEI_OFFSET_MS;
+  const intervalMs = intervalMinutes * 60_000;
+  while (candidate <= now.getTime()) candidate += intervalMs;
+  return new Date(candidate).toISOString();
 }
 
 export async function findNextDueSyncJob<TConnectorId extends string>(db: D1Database, now = new Date()) {
@@ -98,7 +136,7 @@ export async function releaseSyncJobLock(db: D1Database, lockRowId: string, runI
 
 export async function completeSyncJob(db: D1Database, job: SyncJobRow) {
   const now = new Date();
-  const nextRunAt = new Date(now.getTime() + job.interval_minutes * 60_000).toISOString();
+  const nextRunAt = nextSyncRunAt(job.interval_minutes, job.preferred_time, now, job.next_run_at);
   await db.prepare(
     `UPDATE sync_jobs
      SET last_status = 'success',
@@ -118,7 +156,7 @@ export async function failSyncJob(
 ) {
   const now = new Date();
   const nextRunAt = input.status === "failed"
-    ? new Date(now.getTime() + job.interval_minutes * 60_000).toISOString()
+    ? nextSyncRunAt(job.interval_minutes, job.preferred_time, now, job.next_run_at)
     : job.next_run_at;
   await db.prepare(
     `UPDATE sync_jobs
@@ -150,7 +188,7 @@ export async function markManualSyncSuccess(
   if (!job) return;
 
   const now = new Date();
-  const nextRunAt = new Date(now.getTime() + job.interval_minutes * 60_000).toISOString();
+  const nextRunAt = nextSyncRunAt(job.interval_minutes, job.preferred_time, now, job.next_run_at);
   await db.prepare(
     `UPDATE sync_jobs
      SET last_status = 'success',

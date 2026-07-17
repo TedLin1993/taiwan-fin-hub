@@ -83,7 +83,8 @@ export {
   findNextDueSyncJob,
   markManualSyncFailure,
   markManualSyncSuccess,
+  nextSyncRunAt,
   releaseSyncJobLock,
   renewSyncJobLock
 } from "./sync-jobs";
-export type { SyncJobRow, SyncStatus, SyncTrigger } from "./sync-jobs";
+export type { SyncJobRow, SyncScheduleMode, SyncStatus, SyncTrigger } from "./sync-jobs";
