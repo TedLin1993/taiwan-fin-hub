@@ -182,6 +182,8 @@ export interface SyncJobRow {
   enabled: boolean;
   intervalMinutes: number;
   nextRunAt: string;
+  scheduleMode: "inherit" | "custom";
+  preferredTime: string;
   lockedUntil: string | null;
   lockedBy: string | null;
   lockTrigger: "manual" | "scheduled" | null;
@@ -192,6 +194,12 @@ export interface SyncJobRow {
   lastError: string | null;
   updatedAt: string;
   running: boolean;
+}
+export interface SyncScheduleSettings {
+  intervalMinutes: number;
+  preferredTime: string;
+  timezone: "Asia/Taipei";
+  updatedAt: string;
 }
 export type ApiError = ApiErrorResponse;
 export interface RuntimeInfo {

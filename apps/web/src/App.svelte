@@ -81,7 +81,7 @@
       view: "settings",
       label: "設定",
       shortLabel: "設定",
-      description: "設定連接器、同步資料與匯率。",
+      description: "管理資料來源、同步排程、匯率與交易分類。",
       icon: Settings,
     },
   ];
@@ -302,8 +302,8 @@
               {#if primaryView === "settings"}<Button
                   class="hidden md:inline-flex"
                   onclick={() => queryClient.invalidateQueries()}
-                  variant="primary"
-                  ><Icon icon={RefreshCw} size="sm" />同步資料</Button
+                  variant="secondary"
+                  ><Icon icon={RefreshCw} size="sm" />重新整理</Button
                 >{/if}
             </div>
           </div>

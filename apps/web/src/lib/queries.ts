@@ -14,6 +14,7 @@ import type {
   ManualAssetRow,
   NetWorthHistoryRow,
   SyncJobRow,
+  SyncScheduleSettings,
 } from "./types";
 
 type ApiProvider = () => ApiClient;
@@ -84,6 +85,12 @@ export const syncJobsQuery = (getApi: ApiProvider) =>
   queryOptions({
     queryKey: queryKeys.syncJobs,
     queryFn: () => getApi().get<SyncJobRow[]>("/api/sync-jobs"),
+  });
+
+export const syncScheduleQuery = (getApi: ApiProvider) =>
+  queryOptions({
+    queryKey: queryKeys.syncSchedule,
+    queryFn: () => getApi().get<SyncScheduleSettings>("/api/sync-schedule"),
   });
 
 export const classificationRulesQuery = (getApi: ApiProvider) =>

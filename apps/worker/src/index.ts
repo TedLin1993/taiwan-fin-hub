@@ -39,9 +39,11 @@ import {
   getConnectorSettings,
   markManualSyncFailure,
   markManualSyncSuccess,
+  nextSyncRunAt,
   releaseSyncJobLock,
   renewSyncJobLock,
   type SyncJobRow,
+  type SyncScheduleMode,
   type SyncStatus,
   type SyncTrigger,
   upsertConnectorSettings
@@ -111,6 +113,16 @@ const settingsBodySchema = z.object({
   config: z.record(z.string(), z.unknown())
 });
 
+const syncIntervalSchema = z.number().int().refine(
+  (value) => [60, 360, 720, 1440, 10080].includes(value),
+  "Unsupported sync interval."
+);
+const preferredTimeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+const syncScheduleUpdateSchema = z.object({
+  intervalMinutes: syncIntervalSchema,
+  preferredTime: preferredTimeSchema
+});
+
 const PUBLIC_FIELDS: Record<string, string[]> = {
   esun: ["lookbackMonths"],
   cathaybk: ["lookbackMonths"],
@@ -139,8 +151,13 @@ const bankHistoryRebuildBodySchema = z.object({
 const syncJobUpdateSchema = z.object({
   enabled: z.boolean().optional(),
   nextRunAt: z.string().datetime().optional(),
-  intervalMinutes: z.number().int().min(10).optional()
-}).refine(d => d.enabled !== undefined || d.nextRunAt !== undefined || d.intervalMinutes !== undefined);
+  intervalMinutes: syncIntervalSchema.optional(),
+  preferredTime: preferredTimeSchema.optional(),
+  scheduleMode: z.enum(["inherit", "custom"]).optional()
+}).refine(
+  data => Object.values(data).some(value => value !== undefined),
+  "At least one sync job setting is required."
+);
 const scheduledSyncScopeSchema = z.literal("all");
 
 function requireAccessSecrets(env: Env): asserts env is Env & { TEAM_DOMAIN: string } {
@@ -155,6 +172,27 @@ function configEncryptionKey(env: Env) {
   }
 
   return env.CONFIG_ENCRYPTION_KEY;
+}
+
+type DefaultSyncSchedule = {
+  intervalMinutes: number;
+  preferredTime: string;
+  timezone: "Asia/Taipei";
+  updatedAt: string;
+};
+
+async function getDefaultSyncSchedule(db: D1Database) {
+  const schedule = await db.prepare(
+    `SELECT
+       interval_minutes AS intervalMinutes,
+       preferred_time AS preferredTime,
+       timezone,
+       updated_at AS updatedAt
+     FROM sync_schedule_settings
+     WHERE id = 'default'`
+  ).first<DefaultSyncSchedule>();
+  if (!schedule) throw new Error("Default sync schedule is not configured.");
+  return schedule;
 }
 
 api.use("*", async (c, next) => {
@@ -595,6 +633,63 @@ api.put("/connectors/:connectorId/settings", async (c) => {
   });
 });
 
+api.get("/sync-schedule", async (c) => {
+  return c.json(await getDefaultSyncSchedule(c.env.DB));
+});
+
+api.put("/sync-schedule", async (c) => {
+  const body = syncScheduleUpdateSchema.safeParse(await c.req.json().catch(() => null));
+  if (!body.success) {
+    return jsonError(
+      "INVALID_REQUEST_BODY",
+      "Sync schedule requires a supported interval and HH:mm time."
+    );
+  }
+
+  const now = new Date();
+  const inheritedJobs = await c.env.DB.prepare(
+    `SELECT id, next_run_at AS nextRunAt
+     FROM sync_jobs
+     WHERE schedule_mode = 'inherit'`
+  ).all<{ id: string; nextRunAt: string }>();
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare(
+      `INSERT INTO sync_schedule_settings (
+         id, interval_minutes, preferred_time, timezone, updated_at
+       ) VALUES ('default', ?, ?, 'Asia/Taipei', ?)
+       ON CONFLICT(id) DO UPDATE SET
+         interval_minutes = excluded.interval_minutes,
+         preferred_time = excluded.preferred_time,
+         timezone = excluded.timezone,
+         updated_at = excluded.updated_at`
+    ).bind(body.data.intervalMinutes, body.data.preferredTime, now.toISOString())
+  ];
+
+  for (const job of inheritedJobs.results) {
+    statements.push(
+      c.env.DB.prepare(
+        `UPDATE sync_jobs
+         SET interval_minutes = ?, preferred_time = ?, next_run_at = ?, updated_at = ?
+         WHERE id = ?`
+      ).bind(
+        body.data.intervalMinutes,
+        body.data.preferredTime,
+        nextSyncRunAt(body.data.intervalMinutes, body.data.preferredTime, now, job.nextRunAt),
+        now.toISOString(),
+        job.id
+      )
+    );
+  }
+
+  await c.env.DB.batch(statements);
+  return c.json({
+    intervalMinutes: body.data.intervalMinutes,
+    preferredTime: body.data.preferredTime,
+    timezone: "Asia/Taipei",
+    updatedAt: now.toISOString()
+  } satisfies DefaultSyncSchedule);
+});
+
 api.get("/sync-jobs", async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT
@@ -604,6 +699,8 @@ api.get("/sync-jobs", async (c) => {
        enabled,
        interval_minutes AS intervalMinutes,
        next_run_at AS nextRunAt,
+       schedule_mode AS scheduleMode,
+       preferred_time AS preferredTime,
        locked_until AS lockedUntil,
        locked_by AS lockedBy,
        lock_trigger AS lockTrigger,
@@ -622,6 +719,8 @@ api.get("/sync-jobs", async (c) => {
     enabled: number;
     intervalMinutes: number;
     nextRunAt: string;
+    scheduleMode: SyncScheduleMode;
+    preferredTime: string;
     lockedUntil: string | null;
     lockedBy: string | null;
     lockTrigger: SyncTrigger | null;
@@ -653,23 +752,51 @@ api.patch("/sync-jobs/:connectorId/:scope", async (c) => {
   const scope = scopeResult.data;
   const body = syncJobUpdateSchema.safeParse(await c.req.json().catch(() => null));
   if (!body.success) {
-    return jsonError("INVALID_REQUEST_BODY", "Request body must include an enabled boolean.");
+    return jsonError("INVALID_REQUEST_BODY", "Request body must include a valid sync job setting.");
   }
 
-  const now = new Date().toISOString();
+  const job = await c.env.DB.prepare(
+    "SELECT * FROM sync_jobs WHERE connector_id = ? AND scope = ?"
+  ).bind(connectorId, scope).first<SyncJobRow<ConnectorId>>();
+  if (!job) {
+    return jsonError("SYNC_JOB_NOT_FOUND", "Sync job is not configured.", 404);
+  }
+
+  const now = new Date();
+  const scheduleMode = body.data.scheduleMode ?? job.schedule_mode;
+  const defaultSchedule = scheduleMode === "inherit"
+    ? await getDefaultSyncSchedule(c.env.DB)
+    : null;
+  const intervalMinutes = defaultSchedule?.intervalMinutes
+    ?? body.data.intervalMinutes
+    ?? job.interval_minutes;
+  const preferredTime = defaultSchedule?.preferredTime
+    ?? body.data.preferredTime
+    ?? job.preferred_time;
+  const scheduleChanged = body.data.scheduleMode !== undefined
+    || body.data.intervalMinutes !== undefined
+    || body.data.preferredTime !== undefined;
+  const nextRunAt = body.data.nextRunAt
+    ?? (scheduleChanged || body.data.enabled === true
+      ? nextSyncRunAt(intervalMinutes, preferredTime, now, job.next_run_at)
+      : job.next_run_at);
   const result = await c.env.DB.prepare(
     `UPDATE sync_jobs
      SET enabled = COALESCE(?, enabled),
-         next_run_at = COALESCE(?, next_run_at),
-         interval_minutes = COALESCE(?, interval_minutes),
+         next_run_at = ?,
+         interval_minutes = ?,
+         schedule_mode = ?,
+         preferred_time = ?,
          updated_at = ?
      WHERE connector_id = ?
        AND scope = ?`
   ).bind(
     body.data.enabled !== undefined ? (body.data.enabled ? 1 : 0) : null,
-    body.data.nextRunAt ?? null,
-    body.data.intervalMinutes ?? null,
-    now,
+    nextRunAt,
+    intervalMinutes,
+    scheduleMode,
+    preferredTime,
+    now.toISOString(),
     connectorId,
     scope
   ).run();
@@ -682,7 +809,11 @@ api.patch("/sync-jobs/:connectorId/:scope", async (c) => {
     success: true,
     connectorId,
     scope,
-    enabled: body.data.enabled
+    enabled: body.data.enabled ?? Boolean(job.enabled),
+    intervalMinutes,
+    preferredTime,
+    scheduleMode,
+    nextRunAt
   });
 });
 

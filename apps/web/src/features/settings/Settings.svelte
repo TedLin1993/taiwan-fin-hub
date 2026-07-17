@@ -1,5 +1,6 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
+  import { ShieldCheck } from "@lucide/svelte";
   import type { ApiClient } from "../../lib/api";
   import {
     bankQuery,
@@ -18,6 +19,7 @@
   import ClassificationRulesPanel from "./ClassificationRulesPanel.svelte";
   import ConnectorPanel from "./ConnectorPanel.svelte";
   import MobileMore from "./MobileMore.svelte";
+  import DefaultSchedulePanel from "./DefaultSchedulePanel.svelte";
   let {
     api,
     demoMode,
@@ -41,13 +43,21 @@
     {
       id: "sinopac",
       title: "永豐行動銀行",
-      description: "App JSON API：信用卡帳務、近期帳單與未出帳消費",
+      description: "信用卡帳務、近期帳單與消費",
     },
   ];
   const connectorFields: Record<ConnectorId, ConnectorField[]> = {
     einvoice: [
-      { key: "appId", label: "App ID", type: "text" },
-      { key: "apiKey", label: "API Key", type: "password" },
+      {
+        key: "mobile",
+        label: "手機號碼（電子發票帳號）",
+        type: "text",
+      },
+      {
+        key: "password",
+        label: "電子發票 App 登入密碼",
+        type: "password",
+      },
       {
         key: "periodsBack",
         label: "往回期數",
@@ -119,22 +129,31 @@
     {api}
   />
 {:else if mobileView === "data-sources"}
-  <div class="grid gap-3">
-    {#each sources as source (source.id)}<SourceCard
-        {api}
-        {...source}
-        id={source.id}
-        jobs={$jobs.data ?? []}
-        selected={selectedConnector === source.id}
-        onConfigure={() => selectConnector(source.id)}
-      />{/each}{#if selectedConnector}{#key selectedConnector}<ConnectorPanel
+  <div class="grid gap-4">
+    <DefaultSchedulePanel {api} {demoMode} jobs={$jobs.data ?? []} />
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
+      {#each sources as source (source.id)}
+        <SourceCard
           {api}
-          connectorId={selectedConnector}
-          {demoMode}
-          title={sources.find((s) => s.id === selectedConnector)?.title ??
-            selectedConnector}
-          fields={connectorFields[selectedConnector]}
-        />{/key}{/if}
+          {...source}
+          id={source.id}
+          jobs={$jobs.data ?? []}
+          selected={selectedConnector === source.id}
+          onConfigure={() => selectConnector(source.id)}
+        >
+          {#if selectedConnector === source.id}
+            {#key source.id}<ConnectorPanel
+                {api}
+                connectorId={source.id}
+                {demoMode}
+                title={source.title}
+                fields={connectorFields[source.id]}
+                embedded
+              />{/key}
+          {/if}
+        </SourceCard>
+      {/each}
+    </div>
   </div>
 {:else if mobileView === "exchange-rates"}<ExchangeRatesPanel {api} />
 {:else if mobileView === "classification-rules"}<ClassificationRulesPanel
@@ -142,15 +161,16 @@
   />
 {:else}
   <div class="grid gap-5">
-    <div class="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
+    <section class="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
       <Metric
-        label="已設定來源"
+        label="資料來源"
         value={String(sources.length)}
-        detail="資料連接器"
+        detail="支援的連接器"
       /><Metric
         label="同步排程"
         value={String(enabledJobs)}
         detail="已啟用"
+        tone={enabledJobs ? "positive" : "neutral"}
       /><Metric
         label="分類規則"
         value={String($rules.data?.length ?? 0)}
@@ -158,30 +178,64 @@
       /><Metric
         label="需要處理"
         value={String(needsAction)}
-        detail="同步狀態"
+        detail="同步或驗證狀態"
         tone={needsAction ? "negative" : "positive"}
       />
-    </div>
-    <section class="grid gap-3 md:grid-cols-2">
-      {#each sources as source (source.id)}<SourceCard
+    </section>
+
+    <DefaultSchedulePanel {api} {demoMode} jobs={$jobs.data ?? []} />
+
+    <section
+      aria-label="資料來源"
+      class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5"
+    >
+      {#each sources as source (source.id)}
+        <SourceCard
           {api}
           {...source}
           id={source.id}
           jobs={$jobs.data ?? []}
           selected={selectedConnector === source.id}
           onConfigure={() => selectConnector(source.id)}
-        />{/each}
+        >
+          {#if selectedConnector === source.id}
+            {#key source.id}<ConnectorPanel
+                {api}
+                connectorId={source.id}
+                {demoMode}
+                title={source.title}
+                fields={connectorFields[source.id]}
+                embedded
+              />{/key}
+          {/if}
+        </SourceCard>
+      {/each}
     </section>
-    {#if selectedConnector}{#key selectedConnector}<ConnectorPanel
-          {api}
-          connectorId={selectedConnector}
-          {demoMode}
-          title={sources.find((s) => s.id === selectedConnector)?.title ??
-            selectedConnector}
-          fields={connectorFields[selectedConnector]}
-        />{/key}{/if}
-    <section class="grid gap-5">
-      <ExchangeRatesPanel {api} /><ClassificationRulesPanel {api} />
+
+    <section
+      class="grid items-start gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]"
+    >
+      <div class="grid gap-5">
+        <ExchangeRatesPanel {api} />
+        <aside
+          class="rounded-xl border border-border bg-card p-5 text-card-foreground shadow-xs"
+        >
+          <div class="flex items-start gap-3">
+            <span
+              class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-moss/10 text-moss"
+            >
+              <ShieldCheck class="size-5" />
+            </span>
+            <div>
+              <h2 class="font-semibold">資料安全</h2>
+              <p class="mt-1 text-sm leading-relaxed text-muted-foreground">
+                連接器憑證僅用於個人資料同步，機密欄位會加密保存，且不會重新顯示在設定頁。
+              </p>
+            </div>
+          </div>
+        </aside>
+      </div>
+      <ClassificationRulesPanel {api} />
     </section>
   </div>
 {/if}

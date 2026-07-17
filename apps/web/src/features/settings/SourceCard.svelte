@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
+  import { ChartCandlestick, Landmark, ReceiptText } from "@lucide/svelte";
   import { toStore } from "svelte/store";
   import { createQuery } from "@tanstack/svelte-query";
   import Button from "../../components/ui/Button.svelte";
@@ -17,6 +19,7 @@
     selected,
     onConfigure,
     jobs,
+    children,
   }: {
     api: ApiClient;
     id: ConnectorId;
@@ -25,6 +28,7 @@
     selected: boolean;
     onConfigure: () => void;
     jobs?: SyncJobRow[];
+    children?: Snippet;
   } = $props();
   const settings = createQuery(
     toStore(() => connectorSettingsQuery(() => api, id)),
@@ -37,16 +41,43 @@
   const needsAction = $derived(
     job?.lastStatus === "failed" || job?.lastStatus === "needs_user_action",
   );
+  const scheduleLabel = $derived(
+    !job?.enabled
+      ? "關閉"
+      : job.scheduleMode === "inherit"
+        ? "跟隨預設"
+        : job.intervalMinutes === 1440
+          ? `每天 ${job.preferredTime}`
+          : job.intervalMinutes === 10080
+            ? `每週 ${job.preferredTime}`
+            : `每 ${job.intervalMinutes / 60} 小時`,
+  );
+  const SourceIcon = $derived(
+    id === "einvoice"
+      ? ReceiptText
+      : id === "tdcc"
+        ? ChartCandlestick
+        : Landmark,
+  );
 </script>
 
-<Card class={selected ? "ring-2 ring-ring/30" : ""}
+<Card
+  class={`transition duration-200 ${selected ? "sm:col-span-2 lg:col-span-3 2xl:col-span-5 border-steel/50 shadow-md ring-2 ring-steel/15" : "hover:-translate-y-0.5 hover:border-ink/20 hover:shadow-sm"}`}
   ><CardContent class="pt-5"
     ><div class="flex items-start justify-between gap-4">
-      <div class="min-w-0">
-        <h2 class="text-lg font-semibold">{title}</h2>
-        <p class="mt-1 text-sm text-muted-foreground">{description}</p>
+      <div class="flex min-w-0 items-start gap-3">
+        <span
+          class={`flex size-10 shrink-0 items-center justify-center rounded-xl ${selected ? "bg-steel text-white" : "bg-steel/10 text-steel"}`}
+        >
+          <SourceIcon class="size-5" />
+        </span>
+        <div class="min-w-0">
+          <h2 class="font-semibold">{title}</h2>
+          <p class="mt-0.5 text-sm text-muted-foreground">{description}</p>
+        </div>
       </div>
       <Badge
+        class="shrink-0 whitespace-nowrap"
         variant={needsAction
           ? "destructive"
           : $settings.data?.configured
@@ -69,14 +100,20 @@
             : "尚無紀錄"}
         </p>
         <p class="mt-1">
-          排程：{job?.enabled ? `${job.intervalMinutes / 60} 小時` : "關閉"}
+          排程：{scheduleLabel}
         </p>
       </div>
       <Button
         size="sm"
         variant={selected ? "default" : "outline"}
-        onclick={onConfigure}>{selected ? "收合設定" : "設定"}</Button
+        aria-expanded={selected}
+        onclick={onConfigure}>{selected ? "收合" : "管理設定"}</Button
       >
-    </div></CardContent
+    </div>
+    {#if selected && children}
+      <div class="mt-5 border-t border-border pt-5">
+        {@render children()}
+      </div>
+    {/if}</CardContent
   ></Card
 >
