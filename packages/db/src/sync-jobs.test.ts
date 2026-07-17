@@ -29,4 +29,16 @@ describe("nextSyncRunAt", () => {
       nextSyncRunAt(360, "06:50", new Date("2026-07-17T00:00:00.000Z")),
     ).toBe("2026-07-17T06:00:00.000Z");
   });
+
+  it("anchors weekly schedules to the selected Taipei weekday", () => {
+    expect(
+      nextSyncRunAt(
+        10080,
+        "06:50",
+        new Date("2026-07-17T00:00:00.000Z"),
+        undefined,
+        1,
+      ),
+    ).toBe("2026-07-19T22:50:00.000Z");
+  });
 });

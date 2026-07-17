@@ -34,8 +34,18 @@
     { label: "每天", minutes: 1440 },
     { label: "每週", minutes: 10080 },
   ];
+  const weekdayOptions = [
+    "週日",
+    "週一",
+    "週二",
+    "週三",
+    "週四",
+    "週五",
+    "週六",
+  ];
   let intervalMinutes = $state(1440);
   let preferredTime = $state("06:00");
+  let preferredWeekday = $state(1);
   const inheritedJobs = $derived(
     jobs.filter((job) => job.scheduleMode === "inherit").length,
   );
@@ -45,6 +55,7 @@
       if (!result.data) return;
       intervalMinutes = result.data.intervalMinutes;
       preferredTime = result.data.preferredTime;
+      preferredWeekday = result.data.preferredWeekday;
     }),
   );
 
@@ -53,6 +64,7 @@
       api.put<SyncScheduleSettings>("/api/sync-schedule", {
         intervalMinutes,
         preferredTime,
+        preferredWeekday,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.syncSchedule });
@@ -87,24 +99,32 @@
       </span>
     </div>
   </div>
-  <div
-    class="grid gap-4 p-5 md:grid-cols-[minmax(180px,0.8fr)_minmax(180px,0.8fr)_1fr_auto] md:items-end"
-  >
-    <label class="grid gap-1.5 text-sm font-medium">
+  <div class="flex flex-col gap-4 p-5 md:flex-row md:flex-wrap md:items-end">
+    <label class="grid gap-1.5 text-sm font-medium md:w-44">
       同步頻率
-      <Select bind:value={intervalMinutes} disabled={demoMode}>
+      <Select bind:value={intervalMinutes}>
         {#each intervalOptions as option (option.minutes)}
           <option value={option.minutes}>{option.label}</option>
         {/each}
       </Select>
     </label>
+    {#if intervalMinutes === 10080}
+      <label class="grid gap-1.5 text-sm font-medium md:w-36">
+        執行日
+        <Select bind:value={preferredWeekday}>
+          {#each weekdayOptions as weekday, index (weekday)}
+            <option value={index}>{weekday}</option>
+          {/each}
+        </Select>
+      </label>
+    {/if}
     {#if intervalMinutes >= 1440}
-      <label class="grid gap-1.5 text-sm font-medium">
+      <label class="grid gap-1.5 text-sm font-medium md:w-44">
         開始時間
-        <TimePicker bind:value={preferredTime} disabled={demoMode} />
+        <TimePicker bind:value={preferredTime} />
       </label>
     {:else}
-      <div class="grid gap-1.5 text-sm font-medium">
+      <div class="grid gap-1.5 text-sm font-medium md:w-52">
         計時方式
         <div
           class="flex h-10 items-center rounded-md border border-border bg-muted/50 px-3 text-sm text-muted-foreground"
@@ -113,7 +133,9 @@
         </div>
       </div>
     {/if}
-    <p class="text-xs leading-relaxed text-muted-foreground md:pb-2">
+    <p
+      class="text-xs leading-relaxed text-muted-foreground md:min-w-52 md:flex-1 md:pb-2"
+    >
       修改後只會影響「跟隨預設」的來源；自訂排程不會改變。
     </p>
     <Button

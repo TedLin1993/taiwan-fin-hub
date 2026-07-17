@@ -76,6 +76,15 @@
     { label: "每天", minutes: 1440 },
     { label: "每週", minutes: 10080 },
   ];
+  const weekdayOptions = [
+    "週日",
+    "週一",
+    "週二",
+    "週三",
+    "週四",
+    "週五",
+    "週六",
+  ];
 
   onMount(() =>
     settings.subscribe((result) => {
@@ -465,7 +474,7 @@
     </div>
 
     {#if job?.enabled}
-      <div class="mt-3 grid gap-3 border-t border-ink/10 pt-3 md:grid-cols-3">
+      <div class="mt-3 grid gap-3 border-t border-ink/10 pt-3 md:grid-cols-4">
         <label class="grid gap-1 text-xs font-semibold text-ink/70">
           排程方式
           <Select
@@ -483,14 +492,20 @@
 
         {#if job.scheduleMode === "inherit"}
           <div
-            class="flex items-center rounded-lg border border-moss/15 bg-moss/5 px-3 py-2 text-sm text-moss md:col-span-2"
+            class="flex items-center rounded-lg border border-moss/15 bg-moss/5 px-3 py-2 text-sm text-moss md:col-span-3"
           >
             <span class="font-semibold">跟隨預設：</span>
             {#if $defaultSchedule.data}
-              {intervalLabel(
-                $defaultSchedule.data.intervalMinutes,
-              )}{#if $defaultSchedule.data.intervalMinutes >= 1440}
-                {$defaultSchedule.data.preferredTime} 起{/if}
+              {#if $defaultSchedule.data.intervalMinutes === 10080}
+                每{weekdayOptions[$defaultSchedule.data.preferredWeekday] ??
+                  "週一"}
+                {$defaultSchedule.data.preferredTime} 起
+              {:else}
+                {intervalLabel(
+                  $defaultSchedule.data.intervalMinutes,
+                )}{#if $defaultSchedule.data.intervalMinutes >= 1440}
+                  {$defaultSchedule.data.preferredTime} 起{/if}
+              {/if}
             {:else}
               讀取中…
             {/if}
@@ -513,16 +528,32 @@
               {/each}
             </Select>
           </label>
+          {#if job.intervalMinutes === 10080}
+            <label class="grid gap-1 text-xs font-semibold text-ink/70">
+              執行日
+              <Select
+                value={job.preferredWeekday}
+                disabled={demoMode || $updateJob.isPending}
+                onchange={(event: Event) =>
+                  $updateJob.mutate({
+                    preferredWeekday: Number(
+                      (event.currentTarget as HTMLSelectElement).value,
+                    ),
+                  })}
+              >
+                {#each weekdayOptions as weekday, index (weekday)}
+                  <option value={index}>{weekday}</option>
+                {/each}
+              </Select>
+            </label>
+          {/if}
           {#if job.intervalMinutes >= 1440}
             <label class="grid gap-1 text-xs font-semibold text-ink/70">
               開始時間
               <TimePicker
                 value={job.preferredTime}
-                disabled={demoMode || $updateJob.isPending}
                 onchange={(preferredTime) =>
-                  $updateJob.mutate({
-                    preferredTime,
-                  })}
+                  !demoMode && $updateJob.mutate({ preferredTime })}
               />
             </label>
           {:else}

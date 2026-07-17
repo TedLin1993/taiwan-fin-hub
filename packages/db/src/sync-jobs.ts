@@ -11,6 +11,7 @@ export interface SyncJobRow<TConnectorId extends string = string> {
   next_run_at: string;
   schedule_mode: SyncScheduleMode;
   preferred_time: string;
+  preferred_weekday: number;
   locked_until: string | null;
   locked_by: string | null;
   lock_trigger: SyncTrigger | null;
@@ -29,7 +30,8 @@ export function nextSyncRunAt(
   intervalMinutes: number,
   preferredTime: string,
   now = new Date(),
-  anchor?: string
+  _anchor?: string,
+  preferredWeekday = 1
 ) {
   if (intervalMinutes < 1440) {
     return new Date(now.getTime() + intervalMinutes * 60_000).toISOString();
@@ -43,18 +45,25 @@ export function nextSyncRunAt(
     return new Date(now.getTime() + intervalMinutes * 60_000).toISOString();
   }
 
-  const anchorDate = anchor ? new Date(anchor) : now;
-  const safeAnchor = Number.isNaN(anchorDate.getTime()) ? now : anchorDate;
-  const taipeiAnchor = new Date(safeAnchor.getTime() + TAIPEI_OFFSET_MS);
+  const taipeiNow = new Date(now.getTime() + TAIPEI_OFFSET_MS);
   let candidate = Date.UTC(
-    taipeiAnchor.getUTCFullYear(),
-    taipeiAnchor.getUTCMonth(),
-    taipeiAnchor.getUTCDate(),
+    taipeiNow.getUTCFullYear(),
+    taipeiNow.getUTCMonth(),
+    taipeiNow.getUTCDate(),
     hours,
     minutes
   ) - TAIPEI_OFFSET_MS;
-  const intervalMs = intervalMinutes * 60_000;
-  while (candidate <= now.getTime()) candidate += intervalMs;
+
+  if (intervalMinutes === 10080) {
+    const safeWeekday = Number.isInteger(preferredWeekday)
+      ? Math.min(6, Math.max(0, preferredWeekday))
+      : 1;
+    const daysAhead = (safeWeekday - taipeiNow.getUTCDay() + 7) % 7;
+    candidate += daysAhead * 86_400_000;
+    if (candidate <= now.getTime()) candidate += 7 * 86_400_000;
+  } else if (candidate <= now.getTime()) {
+    candidate += 86_400_000;
+  }
   return new Date(candidate).toISOString();
 }
 
@@ -136,7 +145,13 @@ export async function releaseSyncJobLock(db: D1Database, lockRowId: string, runI
 
 export async function completeSyncJob(db: D1Database, job: SyncJobRow) {
   const now = new Date();
-  const nextRunAt = nextSyncRunAt(job.interval_minutes, job.preferred_time, now, job.next_run_at);
+  const nextRunAt = nextSyncRunAt(
+    job.interval_minutes,
+    job.preferred_time,
+    now,
+    job.next_run_at,
+    job.preferred_weekday
+  );
   await db.prepare(
     `UPDATE sync_jobs
      SET last_status = 'success',
@@ -156,7 +171,13 @@ export async function failSyncJob(
 ) {
   const now = new Date();
   const nextRunAt = input.status === "failed"
-    ? nextSyncRunAt(job.interval_minutes, job.preferred_time, now, job.next_run_at)
+    ? nextSyncRunAt(
+        job.interval_minutes,
+        job.preferred_time,
+        now,
+        job.next_run_at,
+        job.preferred_weekday
+      )
     : job.next_run_at;
   await db.prepare(
     `UPDATE sync_jobs
@@ -188,7 +209,13 @@ export async function markManualSyncSuccess(
   if (!job) return;
 
   const now = new Date();
-  const nextRunAt = nextSyncRunAt(job.interval_minutes, job.preferred_time, now, job.next_run_at);
+  const nextRunAt = nextSyncRunAt(
+    job.interval_minutes,
+    job.preferred_time,
+    now,
+    job.next_run_at,
+    job.preferred_weekday
+  );
   await db.prepare(
     `UPDATE sync_jobs
      SET last_status = 'success',
