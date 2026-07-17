@@ -9,6 +9,8 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces",
+    "format": "npm run format -w @taiwan-fin-hub/web",
+    "format:check": "npm run format:check -w @taiwan-fin-hub/web",
     "typecheck": "npm run typecheck --workspaces",
     "test:unit": "npm run test:unit -w @taiwan-fin-hub/web",
     "test:backend": "npm test -w @taiwan-fin-hub/worker && npm run test:selfcheck -w @taiwan-fin-hub/connectors",

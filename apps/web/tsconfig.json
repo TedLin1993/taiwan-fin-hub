@@ -5,5 +5,13 @@
     "esModuleInterop": true,
     "lib": ["DOM", "DOM.Iterable", "ES2022"]
   },
-  "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.svelte", "vite.config.ts", "vitest.config.ts", "playwright.config.ts", "svelte.config.js"]
+  "include": [
+    "src/**/*.d.ts",
+    "src/**/*.ts",
+    "src/**/*.svelte",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "playwright.config.ts",
+    "svelte.config.js"
+  ]
 }
