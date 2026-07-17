@@ -74,7 +74,7 @@ test("uses app-like scrolling and history only in standalone display mode", asyn
 }) => {
   await page.goto("/");
   await expect(page.locator("html")).not.toHaveClass(/is-standalone/);
-  await expect(page.locator("html")).toHaveCSS("touch-action", "auto");
+  await expect(page.locator("html")).toHaveCSS("touch-action", "manipulation");
 
   await page.addInitScript(() => {
     const nativeMatchMedia = window.matchMedia.bind(window);
