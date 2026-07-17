@@ -118,9 +118,11 @@ const syncIntervalSchema = z.number().int().refine(
   "Unsupported sync interval."
 );
 const preferredTimeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+const preferredWeekdaySchema = z.number().int().min(0).max(6);
 const syncScheduleUpdateSchema = z.object({
   intervalMinutes: syncIntervalSchema,
-  preferredTime: preferredTimeSchema
+  preferredTime: preferredTimeSchema,
+  preferredWeekday: preferredWeekdaySchema
 });
 
 const PUBLIC_FIELDS: Record<string, string[]> = {
@@ -153,6 +155,7 @@ const syncJobUpdateSchema = z.object({
   nextRunAt: z.string().datetime().optional(),
   intervalMinutes: syncIntervalSchema.optional(),
   preferredTime: preferredTimeSchema.optional(),
+  preferredWeekday: preferredWeekdaySchema.optional(),
   scheduleMode: z.enum(["inherit", "custom"]).optional()
 }).refine(
   data => Object.values(data).some(value => value !== undefined),
@@ -177,6 +180,7 @@ function configEncryptionKey(env: Env) {
 type DefaultSyncSchedule = {
   intervalMinutes: number;
   preferredTime: string;
+  preferredWeekday: number;
   timezone: "Asia/Taipei";
   updatedAt: string;
 };
@@ -186,6 +190,7 @@ async function getDefaultSyncSchedule(db: D1Database) {
     `SELECT
        interval_minutes AS intervalMinutes,
        preferred_time AS preferredTime,
+       preferred_weekday AS preferredWeekday,
        timezone,
        updated_at AS updatedAt
      FROM sync_schedule_settings
@@ -655,26 +660,39 @@ api.put("/sync-schedule", async (c) => {
   const statements: D1PreparedStatement[] = [
     c.env.DB.prepare(
       `INSERT INTO sync_schedule_settings (
-         id, interval_minutes, preferred_time, timezone, updated_at
-       ) VALUES ('default', ?, ?, 'Asia/Taipei', ?)
+         id, interval_minutes, preferred_time, preferred_weekday, timezone, updated_at
+       ) VALUES ('default', ?, ?, ?, 'Asia/Taipei', ?)
        ON CONFLICT(id) DO UPDATE SET
          interval_minutes = excluded.interval_minutes,
          preferred_time = excluded.preferred_time,
+         preferred_weekday = excluded.preferred_weekday,
          timezone = excluded.timezone,
          updated_at = excluded.updated_at`
-    ).bind(body.data.intervalMinutes, body.data.preferredTime, now.toISOString())
+    ).bind(
+      body.data.intervalMinutes,
+      body.data.preferredTime,
+      body.data.preferredWeekday,
+      now.toISOString()
+    )
   ];
 
   for (const job of inheritedJobs.results) {
     statements.push(
       c.env.DB.prepare(
         `UPDATE sync_jobs
-         SET interval_minutes = ?, preferred_time = ?, next_run_at = ?, updated_at = ?
+         SET interval_minutes = ?, preferred_time = ?, preferred_weekday = ?, next_run_at = ?, updated_at = ?
          WHERE id = ?`
       ).bind(
         body.data.intervalMinutes,
         body.data.preferredTime,
-        nextSyncRunAt(body.data.intervalMinutes, body.data.preferredTime, now, job.nextRunAt),
+        body.data.preferredWeekday,
+        nextSyncRunAt(
+          body.data.intervalMinutes,
+          body.data.preferredTime,
+          now,
+          job.nextRunAt,
+          body.data.preferredWeekday
+        ),
         now.toISOString(),
         job.id
       )
@@ -685,6 +703,7 @@ api.put("/sync-schedule", async (c) => {
   return c.json({
     intervalMinutes: body.data.intervalMinutes,
     preferredTime: body.data.preferredTime,
+    preferredWeekday: body.data.preferredWeekday,
     timezone: "Asia/Taipei",
     updatedAt: now.toISOString()
   } satisfies DefaultSyncSchedule);
@@ -701,6 +720,7 @@ api.get("/sync-jobs", async (c) => {
        next_run_at AS nextRunAt,
        schedule_mode AS scheduleMode,
        preferred_time AS preferredTime,
+       preferred_weekday AS preferredWeekday,
        locked_until AS lockedUntil,
        locked_by AS lockedBy,
        lock_trigger AS lockTrigger,
@@ -721,6 +741,7 @@ api.get("/sync-jobs", async (c) => {
     nextRunAt: string;
     scheduleMode: SyncScheduleMode;
     preferredTime: string;
+    preferredWeekday: number;
     lockedUntil: string | null;
     lockedBy: string | null;
     lockTrigger: SyncTrigger | null;
@@ -773,12 +794,22 @@ api.patch("/sync-jobs/:connectorId/:scope", async (c) => {
   const preferredTime = defaultSchedule?.preferredTime
     ?? body.data.preferredTime
     ?? job.preferred_time;
+  const preferredWeekday = defaultSchedule?.preferredWeekday
+    ?? body.data.preferredWeekday
+    ?? job.preferred_weekday;
   const scheduleChanged = body.data.scheduleMode !== undefined
     || body.data.intervalMinutes !== undefined
-    || body.data.preferredTime !== undefined;
+    || body.data.preferredTime !== undefined
+    || body.data.preferredWeekday !== undefined;
   const nextRunAt = body.data.nextRunAt
     ?? (scheduleChanged || body.data.enabled === true
-      ? nextSyncRunAt(intervalMinutes, preferredTime, now, job.next_run_at)
+      ? nextSyncRunAt(
+          intervalMinutes,
+          preferredTime,
+          now,
+          job.next_run_at,
+          preferredWeekday
+        )
       : job.next_run_at);
   const result = await c.env.DB.prepare(
     `UPDATE sync_jobs
@@ -787,6 +818,7 @@ api.patch("/sync-jobs/:connectorId/:scope", async (c) => {
          interval_minutes = ?,
          schedule_mode = ?,
          preferred_time = ?,
+         preferred_weekday = ?,
          updated_at = ?
      WHERE connector_id = ?
        AND scope = ?`
@@ -796,6 +828,7 @@ api.patch("/sync-jobs/:connectorId/:scope", async (c) => {
     intervalMinutes,
     scheduleMode,
     preferredTime,
+    preferredWeekday,
     now.toISOString(),
     connectorId,
     scope
@@ -812,6 +845,7 @@ api.patch("/sync-jobs/:connectorId/:scope", async (c) => {
     enabled: body.data.enabled ?? Boolean(job.enabled),
     intervalMinutes,
     preferredTime,
+    preferredWeekday,
     scheduleMode,
     nextRunAt
   });

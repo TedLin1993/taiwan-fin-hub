@@ -41,6 +41,7 @@
   const needsAction = $derived(
     job?.lastStatus === "failed" || job?.lastStatus === "needs_user_action",
   );
+  const weekdays = ["週日", "週一", "週二", "週三", "週四", "週五", "週六"];
   const scheduleLabel = $derived(
     !job?.enabled
       ? "關閉"
@@ -49,7 +50,7 @@
         : job.intervalMinutes === 1440
           ? `每天 ${job.preferredTime}`
           : job.intervalMinutes === 10080
-            ? `每週 ${job.preferredTime}`
+            ? `每${weekdays[job.preferredWeekday] ?? "週一"} ${job.preferredTime}`
             : `每 ${job.intervalMinutes / 60} 小時`,
   );
   const SourceIcon = $derived(
