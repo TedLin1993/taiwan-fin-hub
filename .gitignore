@@ -29,4 +29,6 @@ docs/*
 !docs/
 !docs/*.md
 
-.vscode/
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json

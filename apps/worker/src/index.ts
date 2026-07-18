@@ -67,6 +67,10 @@ import { registerExchangeRateRoutes } from "./routes/exchange-rates";
 import { registerClassificationRoutes } from "./routes/classification";
 import { registerInvoiceRoutes } from "./routes/invoices";
 import { registerManualAssetRoutes } from "./routes/manual-assets";
+import {
+  registerBankTransactionRoutes,
+  resolveCalculationExclusion
+} from "./routes/bank-transactions";
 
 type SyncScope =
   | "all"
@@ -256,6 +260,7 @@ registerManualAssetRoutes(api);
 registerExchangeRateRoutes(api);
 registerInvoiceRoutes(api);
 registerClassificationRoutes(api);
+registerBankTransactionRoutes(api);
 
 api.get("/summary", async (c) => {
   const [invoiceRow, investmentRow, bankAccountRow, bankBalanceRow] = await Promise.all([
@@ -438,9 +443,12 @@ api.get("/bank", async (c) => {
         txn.amount,
         txn.currency,
         txn.description,
-        txn.counterparty
+        txn.counterparty,
+        preference.excluded_from_calculation AS calculationPreference
       FROM bank_transactions txn
       JOIN bank_accounts account ON account.id = txn.account_id
+      LEFT JOIN bank_transaction_preferences preference
+        ON preference.transaction_id = txn.id
       WHERE account.canonical_account_id IS NULL
       ORDER BY COALESCE(txn.posted_date, txn.authorized_at) DESC, txn.updated_at DESC
       LIMIT ? OFFSET ?`
@@ -467,6 +475,14 @@ api.get("/bank", async (c) => {
     accounts: accounts.results.map(normalizeBankAccountDisplay),
     transactions: transactionPage.map((t) => ({
       ...normalizeBankTransactionDisplay(t),
+      excludedFromCalculation: resolveCalculationExclusion({
+        accountType: t.accountType as string | null,
+        description: t.description as string | null,
+        counterparty: t.counterparty as string | null,
+        calculationPreference: t.calculationPreference as number | null,
+        classificationExcludedFromCalculation: classificationMap.get(String(t.id))
+          ?.excludedFromCalculation
+      }),
       classification: classificationMap.get(String(t.id))
     }))
   });

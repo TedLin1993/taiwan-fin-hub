@@ -3,6 +3,7 @@ export type ClassificationResult = {
   label: string;
   source: "override" | "user_rule" | "system_rule" | "fallback";
   ruleId?: string;
+  excludedFromCalculation?: boolean;
 };
 
 export type ClassifiedTransaction = {
@@ -56,7 +57,8 @@ export async function resolveClassifications(
        WHERE o.target_type = 'bank_transaction'`
     ).all<{ target_id: string; category_id: string; label: string }>(),
     db.prepare(
-      `SELECT r.id, r.category_id, c.label, r.target_type, r.field, r.operator, r.pattern, r.is_system
+      `SELECT r.id, r.category_id, c.label, r.target_type, r.field, r.operator, r.pattern,
+              r.is_system, r.excluded_from_calculation
        FROM classification_rules r
        JOIN classification_categories c ON c.id = r.category_id
        WHERE r.enabled = 1
@@ -70,6 +72,7 @@ export async function resolveClassifications(
       operator: string;
       pattern: string;
       is_system: number;
+      excluded_from_calculation: number;
     }>()
   ]);
 
@@ -99,7 +102,8 @@ export async function resolveClassifications(
         categoryId: rule.category_id,
         label: rule.label,
         source: rule.is_system ? "system_rule" : "user_rule",
-        ruleId: rule.id
+        ruleId: rule.id,
+        excludedFromCalculation: rule.excluded_from_calculation === 1
       };
       break;
     }

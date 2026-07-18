@@ -15,7 +15,11 @@
   import Select from "../../components/ui/Select.svelte";
   import type { ApiClient } from "../../lib/api";
   import { queryKeys } from "../../lib/api";
-  import { bankQuery, exchangeRatesQuery } from "../../lib/queries";
+  import {
+    bankQuery,
+    classificationCategoriesQuery,
+    exchangeRatesQuery,
+  } from "../../lib/queries";
   import type { BankTransactionRow, View } from "../../lib/types";
   import {
     formatBankAccountName,
@@ -29,6 +33,7 @@
     $props();
   const bank = createQuery(bankQuery(() => api));
   const rates = createQuery(exchangeRatesQuery(() => api));
+  const categoryRows = createQuery(classificationCategoriesQuery(() => api));
   const qc = useQueryClient();
   let search = $state("");
   let account = $state("all");
@@ -64,10 +69,10 @@
   );
   const cashFlow = $derived({
     inflow: filtered
-      .filter((t) => t.amount >= 0)
+      .filter((t) => t.amount >= 0 && !t.excludedFromCalculation)
       .reduce((s, t) => s + transactionValueTwd(t, rateValues), 0),
     outflow: filtered
-      .filter((t) => t.amount < 0)
+      .filter((t) => t.amount < 0 && !t.excludedFromCalculation)
       .reduce((s, t) => s + transactionValueTwd(t, rateValues), 0),
   });
   const override = createMutation({
@@ -118,22 +123,30 @@
       selected = null;
     },
   });
-  const categoryLabels: Record<string, string> = {
-    salary: "薪資",
-    transfer: "轉帳",
-    food: "餐飲",
-    transport: "交通",
-    shopping: "購物",
-    housing: "居住",
-    health: "醫療",
-    education: "教育",
-    entertainment: "娛樂",
-    investment: "投資",
-    insurance: "保險",
-    fee: "費用",
-    tax: "稅務",
-    other: "其他",
-  };
+  const fallbackCategories = [
+    { id: "salary", label: "薪資" },
+    { id: "transfer", label: "轉帳" },
+    { id: "food", label: "餐飲" },
+    { id: "transport", label: "交通" },
+    { id: "shopping", label: "購物" },
+    { id: "housing", label: "居住" },
+    { id: "health", label: "醫療" },
+    { id: "education", label: "教育" },
+    { id: "entertainment", label: "娛樂" },
+    { id: "investment", label: "投資" },
+    { id: "insurance", label: "保險" },
+    { id: "fee", label: "手續費" },
+    { id: "tax", label: "稅務" },
+    { id: "other", label: "其他" },
+  ];
+  const categoryOptions = $derived(
+    $categoryRows.data?.length ? $categoryRows.data : fallbackCategories,
+  );
+  const categoryLabels = $derived(
+    Object.fromEntries(
+      categoryOptions.map((category) => [category.id, category.label]),
+    ),
+  );
   function inRange(t: BankTransactionRow) {
     if (range === "all") return true;
     const date = new Date(t.postedDate ?? t.authorizedAt ?? "");
@@ -277,11 +290,11 @@
                 id: selected!.id,
                 categoryId: (e.currentTarget as HTMLSelectElement).value,
               })}
-            >{#each Object.entries(categoryLabels) as [key, label] (key)}<option
-                value={key}
-                selected={key ===
+            >{#each categoryOptions as category (category.id)}<option
+                value={category.id}
+                selected={category.id ===
                   (selected.classification?.categoryId ?? "other")}
-                >{label}</option
+                >{category.label}</option
               >{/each}</Select
           >{#if selected.classification?.source === "override"}<Button
               class="mt-3"

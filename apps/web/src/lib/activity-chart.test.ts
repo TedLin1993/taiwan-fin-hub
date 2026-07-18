@@ -53,4 +53,11 @@ describe("activity category chart", () => {
     ]);
     expect(slices[0]?.percentage).toBeCloseTo(66.67, 1);
   });
+
+  it("does not count transactions excluded by the user", () => {
+    const excluded = item({ amount: -500, excludedFromCalculation: true });
+
+    expect(activityCashAmountTwd(excluded, {})).toBe(0);
+    expect(buildActivityCategorySlices([excluded], "expense", {})).toEqual([]);
+  });
 });

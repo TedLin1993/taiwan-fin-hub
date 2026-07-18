@@ -28,11 +28,12 @@
   import { queryKeys } from "../../lib/api";
   import {
     bankQuery,
+    classificationCategoriesQuery,
     exchangeRatesQuery,
     investmentTransactionsQuery,
     invoicesQuery,
   } from "../../lib/queries";
-  import type { ActivityItem, View } from "../../lib/types";
+  import type { ActivityItem, BankData, View } from "../../lib/types";
   import {
     buildActivityCategorySlices,
     activityCashAmountTwd,
@@ -51,6 +52,7 @@
   const invoices = createQuery(invoicesQuery(() => api));
   const trades = createQuery(investmentTransactionsQuery(() => api));
   const rates = createQuery(exchangeRatesQuery(() => api));
+  const categoryRows = createQuery(classificationCategoriesQuery(() => api));
   const qc = useQueryClient();
   let source = $state<"all" | "bank" | "card" | "invoice">("all");
   let search = $state("");
@@ -66,22 +68,30 @@
     pattern: string;
     operator: "contains" | "equals";
   } | null>(null);
-  const categories: Record<string, string> = {
-    salary: "薪資",
-    transfer: "轉帳",
-    food: "餐飲",
-    transport: "交通",
-    shopping: "購物",
-    housing: "居住",
-    health: "醫療",
-    education: "教育",
-    entertainment: "娛樂",
-    investment: "投資",
-    insurance: "保險",
-    fee: "費用",
-    tax: "稅務",
-    other: "其他",
-  };
+  const fallbackCategories = [
+    { id: "salary", label: "薪資" },
+    { id: "transfer", label: "轉帳" },
+    { id: "food", label: "餐飲" },
+    { id: "transport", label: "交通" },
+    { id: "shopping", label: "購物" },
+    { id: "housing", label: "居住" },
+    { id: "health", label: "醫療" },
+    { id: "education", label: "教育" },
+    { id: "entertainment", label: "娛樂" },
+    { id: "investment", label: "投資" },
+    { id: "insurance", label: "保險" },
+    { id: "fee", label: "手續費" },
+    { id: "tax", label: "稅務" },
+    { id: "other", label: "其他" },
+  ];
+  const categoryOptions = $derived(
+    $categoryRows.data?.length ? $categoryRows.data : fallbackCategories,
+  );
+  const categories = $derived(
+    Object.fromEntries(
+      categoryOptions.map((category) => [category.id, category.label]),
+    ),
+  );
   const rateValues = $derived(rateMap($rates.data));
   const bankAccounts = $derived(
     new Map(
@@ -110,6 +120,7 @@
           category: t.classification?.label ?? "其他",
           categoryId: t.classification?.categoryId ?? "other",
           transactionId: t.id,
+          excludedFromCalculation: t.excludedFromCalculation,
           status: t.status,
         };
       }),
@@ -261,6 +272,34 @@
       pending = null;
     },
   });
+  const calculationMutation = createMutation({
+    mutationFn: (payload: {
+      transactionId: string;
+      excludedFromCalculation: boolean;
+    }) =>
+      api.patch(
+        `/api/bank/transactions/${encodeURIComponent(payload.transactionId)}/calculation`,
+        { excludedFromCalculation: payload.excludedFromCalculation },
+      ),
+    onSuccess: (_result, payload) => {
+      qc.setQueryData<BankData>(queryKeys.bank, (current) =>
+        current
+          ? {
+              ...current,
+              transactions: current.transactions.map((transaction) =>
+                transaction.id === payload.transactionId
+                  ? {
+                      ...transaction,
+                      excludedFromCalculation: payload.excludedFromCalculation,
+                    }
+                  : transaction,
+              ),
+            }
+          : current,
+      );
+      qc.invalidateQueries({ queryKey: queryKeys.bank });
+    },
+  });
   function openCategory(item: ActivityItem, categoryId: string) {
     if (item.transactionId && categoryId !== item.categoryId)
       pending = {
@@ -288,6 +327,13 @@
       investment: "投資",
       invoice: "發票",
     }[source];
+  }
+  function toggleCalculation(item: ActivityItem) {
+    if (!item.transactionId) return;
+    $calculationMutation.mutate({
+      transactionId: item.transactionId,
+      excludedFromCalculation: !item.excludedFromCalculation,
+    });
   }
   function renderedAmount(item: ActivityItem) {
     return item.source === "card" ? -Math.abs(item.amount ?? 0) : item.amount;
@@ -329,7 +375,9 @@
           <p class="mt-2 truncate text-2xl font-bold text-coral">
             −{formatCurrency(expenseTotal)}
           </p>
-          <p class="mt-1 text-xs text-ink/45">不重複計入發票</p></CardContent
+          <p class="mt-1 text-xs text-ink/45">
+            不計入發票與已排除活動
+          </p></CardContent
         ></Card
       >
       <Card
@@ -361,7 +409,7 @@
         <div class="min-w-0">
           <h2 class="text-lg font-semibold">每月分類比例</h2>
           <p class="mt-1 text-xs text-ink/45">
-            收入與支出分開計算，發票不重複列入
+            收入與支出分開計算，發票與已排除活動不列入
           </p>
         </div>
         <Select
@@ -486,6 +534,11 @@
               }}>{filter.label}</TabsTrigger
             >{/each}</TabsList
         >
+        {#if $calculationMutation.isError}<p
+            class="text-sm font-medium text-coral"
+          >
+            無法更新計算設定，請稍後再試。
+          </p>{/if}
       </CardHeader>
       <CardContent class="min-w-0 p-0">
         <div class="min-w-0 divide-y divide-ink/8 md:hidden">
@@ -495,7 +548,9 @@
               沒有符合條件的活動。
             </p>{:else}{#each filtered.slice(0, 100) as item (item.source + "-" + item.id)}{@const amount =
                 renderedAmount(item)}
-              <div class="flex min-w-0 items-center gap-3 px-4 py-3">
+              <div
+                class={`flex min-w-0 items-center gap-3 px-4 py-3 ${item.excludedFromCalculation ? "bg-ink/[0.025]" : ""}`}
+              >
                 <span
                   class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel"
                   >{#if item.source === "bank"}<Building2
@@ -511,22 +566,42 @@
                   <p class="mt-0.5 truncate text-xs text-ink/45">
                     {sourceLabel(item.source)} · {formatDate(item.date)}
                   </p>
-                  {#if item.transactionId}<Select
-                      aria-label={`更新 ${item.title} 分類`}
-                      class="mt-1 h-8 max-w-36 px-2 py-1 text-xs font-medium text-steel"
-                      value={item.categoryId}
-                      onchange={(e: Event) =>
-                        openCategory(
-                          item,
-                          (e.currentTarget as HTMLSelectElement).value,
-                        )}
-                      >{#each Object.entries(categories) as [key, label] (key)}<option
-                          value={key}>{label}</option
-                        >{/each}</Select
-                    >{/if}
+                  {#if item.transactionId}<div
+                      class="mt-1 flex flex-wrap items-center gap-1.5"
+                    >
+                      <Select
+                        aria-label={`更新 ${item.title} 分類`}
+                        class="h-8 max-w-36 px-2 py-1 text-xs font-medium text-steel"
+                        value={item.categoryId}
+                        onchange={(e: Event) =>
+                          openCategory(
+                            item,
+                            (e.currentTarget as HTMLSelectElement).value,
+                          )}
+                        >{#each categoryOptions as category (category.id)}<option
+                            value={category.id}>{category.label}</option
+                          >{/each}</Select
+                      >
+                      <Button
+                        aria-label={`${item.excludedFromCalculation ? "恢復" : "排除"} ${item.title} 的統計計算`}
+                        aria-pressed={item.excludedFromCalculation}
+                        class="h-8 px-2 text-[11px]"
+                        disabled={$calculationMutation.isPending &&
+                          $calculationMutation.variables?.transactionId ===
+                            item.transactionId}
+                        size="sm"
+                        variant={item.excludedFromCalculation
+                          ? "secondary"
+                          : "outline"}
+                        onclick={() => toggleCalculation(item)}
+                        >{item.excludedFromCalculation
+                          ? "恢復計算"
+                          : "排除計算"}</Button
+                      >
+                    </div>{/if}
                 </div>
                 <p
-                  class={`max-w-[42%] shrink-0 truncate text-sm font-semibold tabular-nums ${(amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}
+                  class={`max-w-[42%] shrink-0 truncate text-sm font-semibold tabular-nums ${item.excludedFromCalculation ? "text-ink/35 line-through" : (amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}
                 >
                   {amount == null
                     ? "—"
@@ -535,23 +610,24 @@
               </div>{/each}{/if}
         </div>
         <div class="hidden overflow-x-auto md:block">
-          <table class="w-full min-w-[820px] text-left text-sm">
+          <table class="w-full min-w-[920px] text-left text-sm">
             <thead class="bg-paper text-xs font-semibold text-ink/45"
               ><tr
                 ><th class="px-5 py-3">日期</th><th class="px-4 py-3">來源</th
                 ><th class="px-4 py-3">說明／商家</th><th class="px-4 py-3"
                   >分類</th
-                ><th class="px-4 py-3 text-right">金額</th><th class="px-5 py-3"
-                  >狀態</th
-                ></tr
+                ><th class="px-4 py-3 text-right">金額</th><th class="px-4 py-3"
+                  >計算</th
+                ><th class="px-5 py-3">狀態</th></tr
               ></thead
             ><tbody class="divide-y divide-ink/8"
               >{#if filtered.length === 0}<tr
-                  ><td class="px-5 py-8 text-center text-ink/50" colspan="6"
+                  ><td class="px-5 py-8 text-center text-ink/50" colspan="7"
                     >沒有符合條件的活動。</td
                   ></tr
                 >{:else}{#each filtered.slice(0, 100) as item (item.source + "-" + item.id)}{@const amount =
                     renderedAmount(item)}<tr
+                    class={item.excludedFromCalculation ? "bg-ink/[0.025]" : ""}
                     ><td class="whitespace-nowrap px-5 py-3 text-ink/55"
                       >{formatDate(item.date)}</td
                     ><td class="px-4 py-3">{sourceLabel(item.source)}</td><td
@@ -570,15 +646,31 @@
                               item,
                               (e.currentTarget as HTMLSelectElement).value,
                             )}
-                          >{#each Object.entries(categories) as [key, label] (key)}<option
-                              value={key}>{label}</option
+                          >{#each categoryOptions as category (category.id)}<option
+                              value={category.id}>{category.label}</option
                             >{/each}</Select
                         >{:else}{item.category}{/if}</td
                     ><td
-                      class={`whitespace-nowrap px-4 py-3 text-right font-semibold tabular-nums ${(amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}
+                      class={`whitespace-nowrap px-4 py-3 text-right font-semibold tabular-nums ${item.excludedFromCalculation ? "text-ink/35 line-through" : (amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}
                       >{amount == null
                         ? "—"
                         : formatCurrency(amount, item.currency)}</td
+                    ><td class="whitespace-nowrap px-4 py-3"
+                      >{#if item.transactionId}<Button
+                          aria-label={`${item.excludedFromCalculation ? "恢復" : "排除"} ${item.title} 的統計計算`}
+                          aria-pressed={item.excludedFromCalculation}
+                          disabled={$calculationMutation.isPending &&
+                            $calculationMutation.variables?.transactionId ===
+                              item.transactionId}
+                          size="sm"
+                          variant={item.excludedFromCalculation
+                            ? "secondary"
+                            : "outline"}
+                          onclick={() => toggleCalculation(item)}
+                          >{item.excludedFromCalculation
+                            ? "恢復計算"
+                            : "排除計算"}</Button
+                        >{:else}<span class="text-ink/35">—</span>{/if}</td
                     ><td class="whitespace-nowrap px-5 py-3 text-ink/55"
                       >{item.status === "pending"
                         ? "待入帳"
