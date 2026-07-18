@@ -211,8 +211,17 @@ test("excludes a bank transaction from activity calculations and restores it", a
     page.getByRole("button", { name: "恢復 台新卡費 的統計計算" }),
   ).toBeVisible();
   await expect(expenseSlice).toBeHidden();
+  const excludedExpenseSlice = page.getByRole("button", {
+    name: "其他 0.0% NT$0",
+  });
+  await expect(excludedExpenseSlice).toBeVisible();
+  await excludedExpenseSlice.click();
+  await expect(
+    page.getByRole("button", { name: "恢復 台新卡費 的統計計算" }),
+  ).toBeVisible();
 
   await page.reload();
+  await expect(excludedExpenseSlice).toBeVisible();
   await expect(
     page.getByRole("button", { name: "恢復 台新卡費 的統計計算" }),
   ).toBeVisible();

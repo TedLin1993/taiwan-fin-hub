@@ -37,6 +37,7 @@
   import {
     buildActivityCategorySlices,
     activityCashAmountTwd,
+    activityCashFlow,
   } from "../../lib/activity-chart";
   import {
     formatCompactTwd,
@@ -227,10 +228,8 @@
   );
   const filtered = $derived(
     rawItems.filter((item) => {
-      const amount = activityCashAmountTwd(item, rateValues);
       const matchesFlow =
-        !selectedCategory ||
-        (selectedCategory.flow === "income" ? amount > 0 : amount < 0);
+        !selectedCategory || activityCashFlow(item) === selectedCategory.flow;
       return (
         (source === "all" || item.source === source) &&
         item.date.startsWith(selectedMonth) &&
