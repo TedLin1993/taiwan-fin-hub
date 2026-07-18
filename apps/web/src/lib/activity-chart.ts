@@ -24,7 +24,11 @@ export function activityCashAmountTwd(
   item: ActivityItem,
   rates: Record<string, number>,
 ) {
-  if (item.amount == null || (item.source !== "bank" && item.source !== "card"))
+  if (
+    item.amount == null ||
+    item.excludedFromCalculation ||
+    (item.source !== "bank" && item.source !== "card")
+  )
     return 0;
   const rate = item.currency === "TWD" ? 1 : (rates[item.currency] ?? 0);
   const converted = item.amount * rate;

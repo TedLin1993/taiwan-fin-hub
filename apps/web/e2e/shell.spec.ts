@@ -24,6 +24,28 @@ test.beforeEach(async ({ page }) => {
     else if (path === "/api/exchange-rates") body = [];
     else if (path === "/api/history/net-worth") body = [];
     else if (path === "/api/sync-jobs") body = [];
+    else if (path === "/api/classification/categories")
+      body = [
+        { id: "salary", label: "薪資", sortOrder: 1, isSystem: true },
+        { id: "transfer", label: "轉帳", sortOrder: 2, isSystem: true },
+        { id: "food", label: "餐飲", sortOrder: 3, isSystem: true },
+        { id: "transport", label: "交通", sortOrder: 4, isSystem: true },
+        { id: "shopping", label: "購物", sortOrder: 5, isSystem: true },
+        { id: "housing", label: "居住", sortOrder: 6, isSystem: true },
+        { id: "health", label: "醫療", sortOrder: 7, isSystem: true },
+        { id: "education", label: "教育", sortOrder: 8, isSystem: true },
+        {
+          id: "entertainment",
+          label: "娛樂",
+          sortOrder: 9,
+          isSystem: true,
+        },
+        { id: "investment", label: "投資", sortOrder: 10, isSystem: true },
+        { id: "fee", label: "手續費", sortOrder: 11, isSystem: true },
+        { id: "insurance", label: "保險", sortOrder: 12, isSystem: true },
+        { id: "tax", label: "稅務", sortOrder: 13, isSystem: true },
+        { id: "other", label: "其他", sortOrder: 14, isSystem: true },
+      ];
     else if (path === "/api/classification/rules") body = [];
     else if (path.includes("/connectors/") && path.endsWith("/settings"))
       body = { configured: false, publicConfig: {} };
@@ -117,4 +139,87 @@ test("opens a primary view from its hash route", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "發票", exact: true }),
   ).toBeVisible();
+});
+
+test("excludes a bank transaction from activity calculations and restores it", async ({
+  page,
+}) => {
+  let excludedFromCalculation = false;
+  const month = new Date().toISOString().slice(0, 7);
+
+  await page.route("**/api/bank", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        accounts: [
+          {
+            id: "account-1",
+            connectorId: "cathaybk",
+            sourceId: "account-source-1",
+            institutionName: "測試銀行",
+            accountName: "活期帳戶",
+            accountType: "checking",
+            currency: "TWD",
+          },
+        ],
+        transactions: [
+          {
+            id: "transaction-1",
+            connectorId: "cathaybk",
+            accountId: "account-1",
+            sourceId: "transaction-source-1",
+            postedDate: `${month}-07`,
+            amount: -8318,
+            currency: "TWD",
+            description: "台新卡費",
+            status: "posted",
+            excludedFromCalculation,
+            classification: {
+              categoryId: "other",
+              label: "其他",
+              source: "fallback",
+            },
+          },
+        ],
+      }),
+    });
+  });
+  await page.route(
+    "**/api/bank/transactions/transaction-1/calculation",
+    async (route) => {
+      const body = route.request().postDataJSON() as {
+        excludedFromCalculation: boolean;
+      };
+      excludedFromCalculation = body.excludedFromCalculation;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ success: true, excludedFromCalculation }),
+      });
+    },
+  );
+
+  await page.goto("/#/activity");
+  const expenseSlice = page.getByRole("button", {
+    name: "其他 100.0% NT$8,318",
+  });
+  await expect(expenseSlice).toBeVisible();
+
+  await page.getByRole("button", { name: "排除 台新卡費 的統計計算" }).click();
+  await expect(
+    page.getByRole("button", { name: "恢復 台新卡費 的統計計算" }),
+  ).toBeVisible();
+  await expect(expenseSlice).toBeHidden();
+
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "恢復 台新卡費 的統計計算" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "恢復 台新卡費 的統計計算" }).click();
+  await expect(
+    page.getByRole("button", { name: "排除 台新卡費 的統計計算" }),
+  ).toBeVisible();
+  await expect(expenseSlice).toBeVisible();
 });

@@ -3,6 +3,7 @@ import type { ApiClient } from "./api";
 import { queryKeys } from "./api";
 import type {
   BankData,
+  ClassificationCategoryRow,
   ClassificationRuleRow,
   ConnectorSettings,
   CreditCardBillRow,
@@ -98,6 +99,15 @@ export const classificationRulesQuery = (getApi: ApiProvider) =>
     queryKey: queryKeys.classificationRules,
     queryFn: () =>
       getApi().get<ClassificationRuleRow[]>("/api/classification/rules"),
+  });
+
+export const classificationCategoriesQuery = (getApi: ApiProvider) =>
+  queryOptions({
+    queryKey: queryKeys.classificationCategories,
+    queryFn: () =>
+      getApi().get<ClassificationCategoryRow[]>(
+        "/api/classification/categories",
+      ),
   });
 
 export const connectorSettingsQuery = (

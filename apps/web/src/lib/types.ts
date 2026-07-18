@@ -51,6 +51,7 @@ export interface ActivityItem {
   category: string;
   categoryId?: string;
   transactionId?: string;
+  excludedFromCalculation?: boolean;
   status: string;
 }
 export type ConnectorId = CoreConnectorId;
@@ -142,11 +143,13 @@ export interface BankTransactionRow {
   description?: string;
   counterparty?: string;
   status: "pending" | "posted";
+  excludedFromCalculation: boolean;
   classification?: {
     categoryId: string;
     label: string;
     source: "override" | "user_rule" | "system_rule" | "fallback";
     ruleId?: string;
+    excludedFromCalculation?: boolean;
   };
 }
 export interface CreditCardBillRow {
@@ -222,6 +225,14 @@ export interface ClassificationRuleRow {
   pattern: string;
   priority: number;
   enabled: boolean;
+  isSystem: boolean;
+  excludedFromCalculation: boolean;
   description?: string;
   createdAt?: string;
+}
+export interface ClassificationCategoryRow {
+  id: string;
+  label: string;
+  sortOrder: number;
+  isSystem: boolean;
 }

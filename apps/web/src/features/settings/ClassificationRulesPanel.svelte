@@ -4,6 +4,7 @@
     createQuery,
     useQueryClient,
   } from "@tanstack/svelte-query";
+  import { Plus } from "@lucide/svelte";
   import Card from "../../components/ui/Card.svelte";
   import CardHeader from "../../components/ui/CardHeader.svelte";
   import CardContent from "../../components/ui/CardContent.svelte";
@@ -12,26 +13,17 @@
   import Checkbox from "../../components/ui/Checkbox.svelte";
   import Input from "../../components/ui/Input.svelte";
   import Select from "../../components/ui/Select.svelte";
+  import Switch from "../../components/ui/Switch.svelte";
   import type { ApiClient } from "../../lib/api";
-  import { queryKeys } from "../../lib/api";
-  import { classificationRulesQuery } from "../../lib/queries";
+  import { messageFromError, queryKeys } from "../../lib/api";
+  import {
+    classificationCategoriesQuery,
+    classificationRulesQuery,
+  } from "../../lib/queries";
+  import type { ClassificationCategoryRow } from "../../lib/types";
+
   let { api }: { api: ApiClient } = $props();
-  const categoryLabels: Record<string, string> = {
-    salary: "薪資",
-    transfer: "轉帳",
-    food: "餐飲",
-    transport: "交通",
-    shopping: "購物",
-    housing: "居住",
-    health: "醫療",
-    education: "教育",
-    entertainment: "娛樂",
-    investment: "投資",
-    insurance: "保險",
-    fee: "費用",
-    tax: "稅務",
-    other: "其他",
-  };
+
   const operatorLabels: Record<string, string> = {
     contains: "包含",
     equals: "完全等於",
@@ -39,11 +31,38 @@
     regex: "符合正規表示式",
   };
   const rules = createQuery(classificationRulesQuery(() => api));
+  const categories = createQuery(classificationCategoriesQuery(() => api));
   const qc = useQueryClient();
+  const categoryLabels = $derived(
+    Object.fromEntries(
+      ($categories.data ?? []).map((category) => [category.id, category.label]),
+    ),
+  );
   let newRule = $state({
     categoryId: "food",
     pattern: "",
     operator: "contains",
+    excludedFromCalculation: false,
+  });
+  let showCategoryForm = $state(false);
+  let categoryName = $state("");
+
+  function invalidateRuleResults() {
+    qc.invalidateQueries({ queryKey: queryKeys.classificationRules });
+    qc.invalidateQueries({ queryKey: queryKeys.bank });
+  }
+
+  const addCategory = createMutation({
+    mutationFn: () =>
+      api.post<ClassificationCategoryRow>("/api/classification/categories", {
+        label: categoryName,
+      }),
+    onSuccess: (category) => {
+      qc.invalidateQueries({ queryKey: queryKeys.classificationCategories });
+      newRule.categoryId = category.id;
+      categoryName = "";
+      showCategoryForm = false;
+    },
   });
   const add = createMutation({
     mutationFn: () =>
@@ -54,8 +73,9 @@
         priority: 200,
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.classificationRules });
-      newRule = { categoryId: "food", pattern: "", operator: "contains" };
+      invalidateRuleResults();
+      newRule.pattern = "";
+      newRule.excludedFromCalculation = false;
     },
   });
   const toggle = createMutation({
@@ -63,66 +83,186 @@
       api.put(`/api/classification/rules/${payload.id}`, {
         enabled: payload.enabled,
       }),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: queryKeys.classificationRules }),
+    onSuccess: invalidateRuleResults,
   });
   const remove = createMutation({
     mutationFn: (id: string) => api.delete(`/api/classification/rules/${id}`),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: queryKeys.classificationRules }),
+    onSuccess: invalidateRuleResults,
   });
 </script>
 
-<Card
-  ><CardHeader class="flex-row items-center justify-between"
-    ><div>
+<Card>
+  <CardHeader class="gap-4 sm:flex-row sm:items-start sm:justify-between">
+    <div>
       <h2 class="text-lg font-semibold">分類規則</h2>
-      <p class="text-xs text-muted-foreground">讓銀行交易依條件自動分類</p>
+      <p class="text-xs text-muted-foreground">
+        讓銀行交易依條件自動分類，也可選擇不計入收支
+      </p>
     </div>
-    <Badge variant="secondary">{$rules.data?.length ?? 0} 條</Badge></CardHeader
-  ><CardContent
-    ><div
-      class="mb-4 grid gap-2 rounded-lg border border-border bg-muted/60 p-3 md:grid-cols-[120px_120px_1fr_auto]"
-    >
-      <Select bind:value={newRule.categoryId}
-        ><option value="food">餐飲</option><option value="shopping">購物</option
-        ><option value="transport">交通</option><option value="other"
-          >其他</option
-        ></Select
-      ><Select bind:value={newRule.operator}
-        ><option value="contains">包含</option><option value="equals"
-          >完全等於</option
-        ></Select
-      ><Input placeholder="比對文字" bind:value={newRule.pattern} /><Button
-        variant="primary"
-        disabled={!newRule.pattern.trim()}
-        onclick={() => $add.mutate()}>新增</Button
+    <div class="flex flex-wrap items-center gap-2">
+      <Button
+        size="sm"
+        variant="outline"
+        aria-expanded={showCategoryForm}
+        onclick={() => (showCategoryForm = !showCategoryForm)}
       >
+        <Plus class="size-4" />新增分類
+      </Button>
+      <Badge variant="secondary">{$rules.data?.length ?? 0} 條</Badge>
     </div>
-    <div class="divide-y divide-border">
-      {#each $rules.data ?? [] as rule (rule.id)}<div
-          class="flex items-center gap-3 py-3 text-sm"
+  </CardHeader>
+  <CardContent>
+    {#if showCategoryForm}
+      <form
+        class="mb-4 grid gap-3 rounded-lg border border-border bg-background p-4 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-end"
+        onsubmit={(event) => {
+          event.preventDefault();
+          if (categoryName.trim()) $addCategory.mutate();
+        }}
+      >
+        <label class="grid gap-1.5 text-sm font-medium">
+          分類名稱
+          <Input
+            maxlength="24"
+            placeholder="例如：寵物、旅遊"
+            bind:value={categoryName}
+          />
+        </label>
+        <Button
+          type="submit"
+          variant="primary"
+          disabled={!categoryName.trim() || $addCategory.isPending}
         >
-          <Checkbox
-            checked={rule.enabled}
-            onchange={(e: Event) =>
-              $toggle.mutate({
-                id: rule.id,
-                enabled: (e.currentTarget as HTMLInputElement).checked,
-              })}
-          /><span class="min-w-0 flex-1 truncate"
-            ><strong
-              >{categoryLabels[rule.categoryId] ?? rule.categoryId}</strong
-            >
-            · {operatorLabels[rule.operator] ??
-              rule.operator}「{rule.pattern}」</span
-          ><Button
-            class="text-destructive hover:text-destructive"
-            size="sm"
-            variant="ghost"
-            onclick={() => $remove.mutate(rule.id)}>刪除</Button
-          >
-        </div>{/each}
-    </div></CardContent
-  ></Card
->
+          {$addCategory.isPending ? "新增中…" : "儲存分類"}
+        </Button>
+        <Button
+          variant="ghost"
+          onclick={() => {
+            showCategoryForm = false;
+            categoryName = "";
+          }}>取消</Button
+        >
+        {#if $addCategory.isError}
+          <p class="text-sm text-destructive sm:col-span-3" role="alert">
+            {messageFromError($addCategory.error)}
+          </p>
+        {/if}
+      </form>
+    {/if}
+
+    <div
+      class="mb-4 overflow-hidden rounded-lg border border-border bg-muted/40"
+    >
+      <div
+        class="grid gap-3 p-4 md:grid-cols-[minmax(0,140px)_minmax(0,140px)_minmax(0,1fr)]"
+      >
+        <label class="grid gap-1.5 text-sm font-medium">
+          分類
+          <Select bind:value={newRule.categoryId}>
+            {#each $categories.data ?? [] as category (category.id)}
+              <option value={category.id}>{category.label}</option>
+            {/each}
+          </Select>
+        </label>
+        <label class="grid gap-1.5 text-sm font-medium">
+          條件
+          <Select bind:value={newRule.operator}>
+            <option value="contains">包含</option>
+            <option value="equals">完全等於</option>
+            <option value="starts_with">開頭為</option>
+          </Select>
+        </label>
+        <label class="grid gap-1.5 text-sm font-medium">
+          關鍵字
+          <Input placeholder="例如：卡費" bind:value={newRule.pattern} />
+        </label>
+      </div>
+      <div
+        class="flex flex-col gap-3 border-t border-border bg-background px-4 py-3 sm:flex-row sm:items-center"
+      >
+        <div class="flex min-w-0 flex-1 items-center gap-3">
+          <Switch
+            aria-label="符合規則時不計入收支"
+            bind:checked={newRule.excludedFromCalculation}
+          />
+          <div class="min-w-0">
+            <p class="text-sm font-semibold">符合時不計入收支</p>
+            <p class="text-xs text-muted-foreground">
+              仍保留所選分類，只排除圖表與收支加總。
+            </p>
+          </div>
+        </div>
+        <Button
+          class="w-full sm:w-auto"
+          variant="primary"
+          disabled={!newRule.pattern.trim() || $add.isPending}
+          onclick={() => $add.mutate()}
+        >
+          {$add.isPending ? "新增中…" : "新增規則"}
+        </Button>
+      </div>
+    </div>
+
+    {#if $categories.isError || $rules.isError}
+      <p class="py-3 text-sm text-destructive" role="alert">
+        無法載入分類設定，請稍後再試。
+      </p>
+    {:else if $rules.isPending}
+      <p class="py-3 text-sm text-muted-foreground">載入分類規則中…</p>
+    {:else if ($rules.data?.length ?? 0) === 0}
+      <p class="py-3 text-sm text-muted-foreground">目前還沒有分類規則。</p>
+    {:else}
+      <div class="divide-y divide-border">
+        {#each $rules.data ?? [] as rule (rule.id)}
+          <div class="flex items-start gap-3 py-3.5 text-sm">
+            <Checkbox
+              aria-label={`${rule.enabled ? "停用" : "啟用"}${categoryLabels[rule.categoryId] ?? rule.categoryId}規則`}
+              class="mt-1"
+              checked={rule.enabled}
+              disabled={rule.isSystem}
+              onchange={(event: Event) =>
+                $toggle.mutate({
+                  id: rule.id,
+                  enabled: (event.currentTarget as HTMLInputElement).checked,
+                })}
+            />
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <Badge variant="outline">
+                  {categoryLabels[rule.categoryId] ?? rule.categoryId}
+                </Badge>
+                {#if rule.excludedFromCalculation}
+                  <Badge class="border-transparent bg-coral/10 text-coral">
+                    不計入收支
+                  </Badge>
+                {/if}
+                {#if rule.isSystem}
+                  <Badge variant="secondary">內建</Badge>
+                {/if}
+              </div>
+              <p class="mt-1.5 break-words text-foreground/80">
+                {operatorLabels[rule.operator] ??
+                  rule.operator}「{rule.pattern}」
+              </p>
+            </div>
+            {#if !rule.isSystem}
+              <Button
+                class="text-destructive hover:text-destructive"
+                size="sm"
+                variant="ghost"
+                disabled={$remove.isPending && $remove.variables === rule.id}
+                onclick={() => $remove.mutate(rule.id)}>刪除</Button
+              >
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    {#if $add.isError || $toggle.isError || $remove.isError}
+      <p class="mt-3 text-sm text-destructive" role="alert">
+        {messageFromError($add.error ?? $toggle.error ?? $remove.error)}
+      </p>
+    {/if}
+  </CardContent>
+</Card>

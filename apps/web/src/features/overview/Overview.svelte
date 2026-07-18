@@ -111,7 +111,9 @@
       (transaction) =>
         (transaction.postedDate ?? transaction.authorizedAt ?? "").startsWith(
           monthKey,
-        ) && transaction.accountType !== "credit",
+        ) &&
+        transaction.accountType !== "credit" &&
+        !transaction.excludedFromCalculation,
     ),
   );
   const monthlyIncome = $derived(
