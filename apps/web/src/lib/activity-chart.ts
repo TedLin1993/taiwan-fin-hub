@@ -20,6 +20,15 @@ export const ACTIVITY_CATEGORY_COLORS = [
   "#68747b",
 ];
 
+export function activityCashFlow(item: ActivityItem): ActivityFlow | null {
+  if (item.amount == null || (item.source !== "bank" && item.source !== "card"))
+    return null;
+  if (item.source === "card") return "expense";
+  if (item.amount > 0) return "income";
+  if (item.amount < 0) return "expense";
+  return null;
+}
+
 export function activityCashAmountTwd(
   item: ActivityItem,
   rates: Record<string, number>,
@@ -43,12 +52,9 @@ export function buildActivityCategorySlices(
   const grouped = new Map<string, number>();
 
   for (const item of items) {
-    const amount = activityCashAmountTwd(item, rates);
-    if (flow === "income" ? amount <= 0 : amount >= 0) continue;
-    grouped.set(
-      item.category,
-      (grouped.get(item.category) ?? 0) + Math.abs(amount),
-    );
+    if (activityCashFlow(item) !== flow) continue;
+    const amount = Math.abs(activityCashAmountTwd(item, rates));
+    grouped.set(item.category, (grouped.get(item.category) ?? 0) + amount);
   }
 
   const sorted = [...grouped.entries()].sort((a, b) => b[1] - a[1]);

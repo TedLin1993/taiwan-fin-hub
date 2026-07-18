@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activityCashAmountTwd,
+  activityCashFlow,
   buildActivityCategorySlices,
 } from "./activity-chart";
 import type { ActivityItem } from "./types";
@@ -54,10 +55,45 @@ describe("activity category chart", () => {
     expect(slices[0]?.percentage).toBeCloseTo(66.67, 1);
   });
 
-  it("does not count transactions excluded by the user", () => {
+  it("keeps excluded categories selectable without counting their amount", () => {
     const excluded = item({ amount: -500, excludedFromCalculation: true });
 
     expect(activityCashAmountTwd(excluded, {})).toBe(0);
-    expect(buildActivityCategorySlices([excluded], "expense", {})).toEqual([]);
+    expect(activityCashFlow(excluded)).toBe("expense");
+    expect(buildActivityCategorySlices([excluded], "expense", {})).toEqual([
+      {
+        category: "其他",
+        amount: 0,
+        percentage: 0,
+        color: "#3e6f7c",
+      },
+    ]);
+  });
+
+  it("sorts zero-value excluded categories after counted categories", () => {
+    const slices = buildActivityCategorySlices(
+      [
+        item({ amount: -500, category: "餐飲" }),
+        item({
+          id: "2",
+          amount: -300,
+          category: "其他",
+          excludedFromCalculation: true,
+        }),
+      ],
+      "expense",
+      {},
+    );
+
+    expect(
+      slices.map(({ category, amount, percentage }) => ({
+        category,
+        amount,
+        percentage,
+      })),
+    ).toEqual([
+      { category: "餐飲", amount: 500, percentage: 100 },
+      { category: "其他", amount: 0, percentage: 0 },
+    ]);
   });
 });
