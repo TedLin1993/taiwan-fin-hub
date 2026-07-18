@@ -91,6 +91,44 @@ test("renders the mobile bottom navigation", async ({ page }) => {
   ).toBeVisible();
 });
 
+test("keeps long recent activity inside the overview card", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.route("**/api/bank", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        accounts: [],
+        transactions: [
+          {
+            id: "long-transaction",
+            connectorId: "cathaybk",
+            accountId: "account-1",
+            sourceId: "long-source-id",
+            postedDate: new Date().toISOString().slice(0, 10),
+            amount: -88,
+            currency: "TWD",
+            description:
+              "YSSL80300000051500038491812BDF7C03202607172521LONGACTIVITY",
+            institutionName: "測試銀行",
+            status: "posted",
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.goto("/#/overview");
+  await expect(page.getByRole("heading", { name: "近期活動" })).toBeVisible();
+  const pageWidth = await page.evaluate(() => ({
+    client: document.documentElement.clientWidth,
+    scroll: document.documentElement.scrollWidth,
+  }));
+  expect(pageWidth.scroll).toBe(pageWidth.client);
+});
+
 test("uses app-like scrolling and history only in standalone display mode", async ({
   page,
 }) => {
@@ -231,4 +269,19 @@ test("excludes a bank transaction from activity calculations and restores it", a
     page.getByRole("button", { name: "排除 台新卡費 的統計計算" }),
   ).toBeVisible();
   await expect(expenseSlice).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const categorySelect = page.getByRole("combobox", {
+    name: "更新 台新卡費 分類",
+  });
+  const calculationButton = page.getByRole("button", {
+    name: "排除 台新卡費 的統計計算",
+  });
+  const [selectBox, buttonBox] = await Promise.all([
+    categorySelect.boundingBox(),
+    calculationButton.boundingBox(),
+  ]);
+  if (!selectBox || !buttonBox)
+    throw new Error("Mobile activity controls are not visible.");
+  expect(Math.abs(selectBox.y - buttonBox.y)).toBeLessThan(2);
 });

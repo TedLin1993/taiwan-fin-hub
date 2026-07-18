@@ -566,11 +566,11 @@
                     {sourceLabel(item.source)} · {formatDate(item.date)}
                   </p>
                   {#if item.transactionId}<div
-                      class="mt-1 flex flex-wrap items-center gap-1.5"
+                      class="mt-1 flex min-w-0 items-center gap-1.5"
                     >
                       <Select
                         aria-label={`更新 ${item.title} 分類`}
-                        class="h-8 max-w-36 px-2 py-1 text-xs font-medium text-steel"
+                        class="h-8 w-24 shrink-0 px-2 py-1 text-xs font-medium text-steel"
                         value={item.categoryId}
                         onchange={(e: Event) =>
                           openCategory(
@@ -584,7 +584,7 @@
                       <Button
                         aria-label={`${item.excludedFromCalculation ? "恢復" : "排除"} ${item.title} 的統計計算`}
                         aria-pressed={item.excludedFromCalculation}
-                        class="h-8 px-2 text-[11px]"
+                        class="h-8 shrink-0 px-2 text-[11px]"
                         disabled={$calculationMutation.isPending &&
                           $calculationMutation.variables?.transactionId ===
                             item.transactionId}
