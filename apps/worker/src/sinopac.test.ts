@@ -249,6 +249,38 @@ describe("sinopac App JSON parser", () => {
     });
   });
 
+  it("applies rotated mobile cookies to later requests and persists the refreshed session", async () => {
+    const rotatingCookies = JSON.stringify([
+      ...JSON.parse(sessionCookies),
+      { name: "sinopac_cookie", value: "stale-cookie", domain: "m.sinopac.com", path: "/" }
+    ]);
+    const requestCookies: string[] = [];
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestCookies.push(new Headers(init?.headers).get("cookie") ?? "");
+      const call = requestCookies.length;
+      const payload = call === 1 ? summaryPayload : call === 2 ? billPayload : unbilledPayload;
+      const nextCookie = call === 1 ? "summary-cookie" : call === 2 ? "billing-cookie" : "unbilled-cookie";
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Set-Cookie": `sinopac_cookie=${nextCookie}; Path=/; HttpOnly; Secure` }
+      });
+    });
+
+    const result = await createSinopacConnector(undefined, fetchMock as typeof fetch).sync({
+      sessionCookies: rotatingCookies,
+      protocol: "sinopac-mobile-app-json-v1"
+    });
+
+    expect(requestCookies[0]).toContain("sinopac_cookie=stale-cookie");
+    expect(requestCookies[1]).toContain("sinopac_cookie=summary-cookie");
+    expect(requestCookies[2]).toContain("sinopac_cookie=billing-cookie");
+    const refreshedCookies = JSON.parse(JSON.parse(result.cursor ?? "{}").sessionCookies) as Array<{
+      name: string;
+      value: string;
+    }>;
+    expect(refreshedCookies.find((cookie) => cookie.name === "sinopac_cookie")?.value).toBe("unbilled-cookie");
+  });
+
   it("fetches the remaining statement months advertised by the default response", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

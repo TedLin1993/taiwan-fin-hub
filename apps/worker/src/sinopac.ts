@@ -95,6 +95,7 @@ export function createSinopacConnector(browser?: Fetcher, fetchImpl: FetchImpl =
       const client = new SinopacAppClient(sessionCookies, fetchImpl);
       const payloads = await client.fetchCreditCards(lookbackMonths);
       const cards = parseSinopacCardData(payloads, lookbackMonths);
+      sessionCookies = client.serializedCookies();
       const now = new Date();
 
       return {
@@ -112,13 +113,17 @@ export function createSinopacConnector(browser?: Fetcher, fetchImpl: FetchImpl =
 }
 
 class SinopacAppClient {
-  private readonly cookieHeader: string;
+  private readonly cookies: SinopacCookieJar;
 
   constructor(
     serializedCookies: string,
     private readonly fetchImpl: FetchImpl
   ) {
-    this.cookieHeader = cookieHeaderFromSerialized(serializedCookies);
+    this.cookies = new SinopacCookieJar(serializedCookies);
+  }
+
+  serializedCookies() {
+    return this.cookies.serialize();
   }
 
   async fetchCreditCards(lookbackMonths: number): Promise<SinopacApiPayloads> {
@@ -140,13 +145,14 @@ class SinopacAppClient {
       headers: {
         Accept: "application/json, text/plain, */*",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        Cookie: this.cookieHeader,
+        Cookie: this.cookies.header(),
         Referer: `${MOBILE_HOST}/m/m_home.aspx`,
         "User-Agent": ANDROID_USER_AGENT,
         "X-Requested-With": "XMLHttpRequest"
       },
       body: ""
     });
+    this.cookies.updateFromResponse(response.headers);
     const text = await response.text();
     if (!response.ok) {
       throw new Error(`永豐${label} API 回應 HTTP ${response.status}。`);
@@ -342,33 +348,110 @@ function captchaHasVisibleDigits(bytes: Uint8Array | string) {
   }
 }
 
-function cookieHeaderFromSerialized(serialized: string) {
-  let cookies: unknown;
-  try {
-    cookies = JSON.parse(serialized);
-  } catch {
-    throw new SinopacVerificationRequiredError("永豐銀行 session 格式無效，請重新完成圖形驗證。");
-  }
-  if (!Array.isArray(cookies)) {
-    throw new SinopacVerificationRequiredError("永豐銀行 session 格式無效，請重新完成圖形驗證。");
-  }
-  const header = cookies
-    .filter((cookie): cookie is JsonRecord => isRecord(cookie))
-    .filter((cookie) => {
-      const domain = stringValue(cookie.domain).toLowerCase();
-      return !domain || domain === "m.sinopac.com" || domain.endsWith(".sinopac.com");
-    })
-    .map((cookie) => {
+class SinopacCookieJar {
+  private readonly cookies = new Map<string, JsonRecord>();
+
+  constructor(serialized: string) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(serialized);
+    } catch {
+      throw new SinopacVerificationRequiredError("永豐銀行 session 格式無效，請重新完成圖形驗證。");
+    }
+    if (!Array.isArray(parsed)) {
+      throw new SinopacVerificationRequiredError("永豐銀行 session 格式無效，請重新完成圖形驗證。");
+    }
+    for (const cookie of parsed) {
+      if (!isRecord(cookie) || !isSinopacCookie(cookie)) continue;
       const name = stringValue(cookie.name);
       const value = stringValue(cookie.value);
-      return name && value ? `${name}=${value}` : "";
-    })
-    .filter(Boolean)
-    .join("; ");
-  if (!header) {
-    throw new SinopacVerificationRequiredError("永豐銀行 session 沒有可用 Cookie，請重新完成圖形驗證。");
+      if (name && value) this.cookies.set(cookieKey(cookie), cookie);
+    }
+    if (this.cookies.size === 0) {
+      throw new SinopacVerificationRequiredError("永豐銀行 session 沒有可用 Cookie，請重新完成圖形驗證。");
+    }
   }
-  return header;
+
+  header() {
+    const nowSeconds = Date.now() / 1000;
+    return Array.from(this.cookies.values())
+      .filter((cookie) => {
+        const expires = numberValue(cookie.expires);
+        return expires == null || expires <= 0 || expires > nowSeconds;
+      })
+      .sort((left, right) => stringValue(right.path).length - stringValue(left.path).length)
+      .map((cookie) => `${stringValue(cookie.name)}=${stringValue(cookie.value)}`)
+      .join("; ");
+  }
+
+  updateFromResponse(headers: Headers) {
+    for (const value of readSetCookieHeaders(headers)) {
+      const cookie = parseSetCookie(value);
+      if (!cookie) continue;
+      const key = cookieKey(cookie);
+      const expires = numberValue(cookie.expires);
+      if (!stringValue(cookie.value) || (expires != null && expires > 0 && expires <= Date.now() / 1000)) {
+        this.cookies.delete(key);
+      } else {
+        this.cookies.set(key, cookie);
+      }
+    }
+  }
+
+  serialize() {
+    return JSON.stringify(Array.from(this.cookies.values()));
+  }
+}
+
+function isSinopacCookie(cookie: JsonRecord) {
+  const domain = stringValue(cookie.domain).replace(/^\./, "").toLowerCase();
+  return !domain || domain === "sinopac.com" || domain.endsWith(".sinopac.com");
+}
+
+function cookieKey(cookie: JsonRecord) {
+  const domain = stringValue(cookie.domain).replace(/^\./, "").toLowerCase() || "m.sinopac.com";
+  const path = stringValue(cookie.path) || "/";
+  return `${domain}\t${path}\t${stringValue(cookie.name)}`;
+}
+
+function readSetCookieHeaders(headers: Headers) {
+  const getSetCookie = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+  const values = typeof getSetCookie === "function" ? getSetCookie.call(headers) : [];
+  if (values.length > 0) return values;
+  const combined = headers.get("set-cookie");
+  return combined ? combined.split(/,(?=\s*[^=;,\s]+=)/g) : [];
+}
+
+function parseSetCookie(value: string): JsonRecord | undefined {
+  const parts = value.split(";").map((part) => part.trim());
+  const first = parts.shift();
+  if (!first) return undefined;
+  const separator = first.indexOf("=");
+  if (separator <= 0) return undefined;
+  const cookie: JsonRecord = {
+    name: first.slice(0, separator).trim(),
+    value: first.slice(separator + 1),
+    domain: "m.sinopac.com",
+    path: "/"
+  };
+  let maxAge: number | undefined;
+  for (const attribute of parts) {
+    const attributeSeparator = attribute.indexOf("=");
+    const rawName = (attributeSeparator < 0 ? attribute : attribute.slice(0, attributeSeparator)).trim().toLowerCase();
+    const rawValue = attributeSeparator < 0 ? "" : attribute.slice(attributeSeparator + 1).trim();
+    if (rawName === "domain" && rawValue) cookie.domain = rawValue.replace(/^\./, "").toLowerCase();
+    else if (rawName === "path" && rawValue) cookie.path = rawValue;
+    else if (rawName === "secure") cookie.secure = true;
+    else if (rawName === "httponly") cookie.httpOnly = true;
+    else if (rawName === "samesite" && rawValue) cookie.sameSite = rawValue;
+    else if (rawName === "max-age") maxAge = Number.parseInt(rawValue, 10);
+    else if (rawName === "expires") {
+      const expiresAt = Date.parse(rawValue);
+      if (Number.isFinite(expiresAt)) cookie.expires = expiresAt / 1000;
+    }
+  }
+  if (maxAge != null && Number.isFinite(maxAge)) cookie.expires = Date.now() / 1000 + maxAge;
+  return cookie;
 }
 
 function assertSinopacApiSuccess(payload: unknown, label: string) {
@@ -906,4 +989,8 @@ function isRecord(value: unknown): value is JsonRecord {
 
 function stringValue(value: unknown) {
   return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
