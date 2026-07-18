@@ -2,17 +2,57 @@
 
 自架個人理財整合工具，將銀行、投資、信用卡、電子發票集中在同一個介面查看。
 
-**支援資料來源：**
+> 本專案由 [kevchentw/taiwan-fin-hub](https://github.com/kevchentw/taiwan-fin-hub) 分支而來，並在原專案基礎上持續擴充資料來源、同步流程與 UI/UX。感謝原作者與貢獻者奠定專案基礎。
 
-1. 集保 e 存摺（股票基金持倉、三個月交易紀錄、銀行餘額與明細）
-   - 支援銀行列表：https://epassbook.tdcc.com.tw/zh/g1.aspx
-2. 電子發票載具
-3. 玉山銀行
-4. 國泰世華銀行
+## 支援資料來源
 
-| 總覽 | 投資 | 銀行 |
-|---|---|---|
-| <img src="images/screenshots/01-dashboard.png"> | <img src="images/screenshots/03-investments.png"> | <img src="images/screenshots/04-bank.png"> |
+| 資料來源     | 銀行帳戶與交易                                                                 | 信用卡帳務                       | 投資                          | 發票               | 驗證與登入                                              |
+| ------------ | ------------------------------------------------------------------------------ | -------------------------------- | ----------------------------- | ------------------ | ------------------------------------------------------- |
+| 電子發票載具 | —                                                                              | —                                | —                             | 載具發票與品項明細 | 使用電子發票 App 帳號與密碼；登入狀態失效時會重新登入   |
+| 集保 e 存摺  | 交割帳戶餘額與明細（[支援銀行列表](https://epassbook.tdcc.com.tw/zh/g1.aspx)） | —                                | 股票、ETF、基金持倉與投資交易 | —                  | 首次或新裝置登入可能需要 Email／簡訊 OTP                |
+| 玉山銀行     | 存款帳戶、餘額與交易                                                           | 信用卡帳單與刷卡交易             | —                             | —                  | 透過 Browser Rendering 登入；session 失效時需要重新登入 |
+| 國泰世華銀行 | 存款帳戶、餘額與交易                                                           | 信用卡帳單與刷卡交易             | —                             | —                  | 每次同步透過 Browser Rendering 登入；額外驗證需人工處理 |
+| 永豐行動銀行 | —                                                                              | 信用卡總覽、近期帳單與未出帳消費 | —                             | —                  | 首次登入或 session 失效時需要輸入圖形驗證碼             |
+
+## 已知限制
+
+- 本專案並非銀行或政府機關提供的官方服務。連接器依賴各資料來源的網頁、App API 或回應格式；對方改版後可能需要更新連接器才能恢復同步。
+- 銀行可能臨時要求圖形驗證碼、OTP、裝置驗證或處理重複登入，也可能主動讓既有 session 失效。玉山、國泰世華與永豐遇到這些情況時，仍需回到設定頁重新登入或完成驗證。
+- 集保 e 存摺在首次登入、新裝置或信任狀態失效時，可能要求 Email 與簡訊 OTP；系統不會繞過任何互動式安全驗證。
+- 排程同步只能沿用仍有效的登入狀態。需要人工驗證時，該次同步會停止並標示為「需要處理」，完成驗證後才能繼續。
+- 資料更新時間與完整性取決於外部服務，畫面內容不應視為銀行、券商或財政部的即時正式對帳資料。
+
+## 目前介面
+
+以下畫面取自本分支目前版本，內容使用匿名 Demo 資料。
+
+### 桌面／手機對照
+
+| 桌面版總覽                                                                                                                         | 手機版總覽                                                                                                                                     |
+| ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| <a href="images/screenshots/01-dashboard.png"><img src="images/screenshots/01-dashboard.png" alt="桌面版總覽畫面" width="720"></a> | <a href="images/screenshots/08-overview-mobile.png"><img src="images/screenshots/08-overview-mobile.png" alt="手機版總覽畫面" width="260"></a> |
+
+### 更多畫面
+
+| 資產                                                                                                       | 活動                                                                                                           | 發票                                                                                                           |
+| ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| <a href="images/screenshots/05-assets.png"><img src="images/screenshots/05-assets.png" alt="資產畫面"></a> | <a href="images/screenshots/07-activity.png"><img src="images/screenshots/07-activity.png" alt="活動畫面"></a> | <a href="images/screenshots/02-invoices.png"><img src="images/screenshots/02-invoices.png" alt="發票畫面"></a> |
+
+| 投資                                                                                                                 | 銀行                                                                                                   | 設定與資料來源                                                                                                           |
+| -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| <a href="images/screenshots/03-investments.png"><img src="images/screenshots/03-investments.png" alt="投資畫面"></a> | <a href="images/screenshots/04-bank.png"><img src="images/screenshots/04-bank.png" alt="銀行畫面"></a> | <a href="images/screenshots/06-settings.png"><img src="images/screenshots/06-settings.png" alt="設定與資料來源畫面"></a> |
+
+## 技術架構
+
+| 層級       | 技術                                    | 用途                                                 |
+| ---------- | --------------------------------------- | ---------------------------------------------------- |
+| Web        | Svelte 5、TypeScript、Tailwind CSS 4    | 響應式介面、資料查詢與視覺化                         |
+| API        | Cloudflare Workers、Hono                | 提供 API、執行同步流程與靜態網站                     |
+| 資料庫     | Cloudflare D1                           | 儲存加密後的連接器設定、金融資料、分類規則與同步狀態 |
+| 登入保護   | Cloudflare Access                       | 驗證使用者身分，Worker 端驗證 Access JWT             |
+| 銀行連接器 | Cloudflare Browser Rendering、Puppeteer | 處理需要瀏覽器的銀行登入與資料擷取                   |
+| 排程同步   | Workers Cron Triggers、D1 sync jobs     | 執行週期同步、鎖定同步工作並記錄需要人工處理的狀態   |
+| 專案結構   | npm workspaces                          | 管理 Web、Worker、共用型別、資料庫與連接器套件       |
 
 ---
 
@@ -28,7 +68,7 @@
 
 點擊下方按鈕，程式碼會自動複製到你的 GitHub 並部署至 Cloudflare Workers：
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/kevchentw/taiwan-fin-hub)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/TedLin1993/taiwan-fin-hub)
 
 首次使用需透過 **Git account → New Github Connection** 授權 Cloudflare 存取 GitHub：
 
@@ -42,8 +82,8 @@
 
 <img src="images/deploy-setup.png" width="450">
 
-| Secret | 說明 |
-| --- | --- |
+| Secret                  | 說明                                                                                              |
+| ----------------------- | ------------------------------------------------------------------------------------------------- |
 | `CONFIG_ENCRYPTION_KEY` | 加密連接器帳密的金鑰，至少 32 字元，**設定後不可更換**。可用此指令產生：`openssl rand -base64 32` |
 
 其他兩個設定值待會才會設定
@@ -67,11 +107,11 @@
 
 <img src="images/deploy-secrets.png" width="700">
 
-| Secret | 值 |
-| --- | --- |
+| Secret        | 值                                                            |
+| ------------- | ------------------------------------------------------------- |
 | `TEAM_DOMAIN` | JWKs URL 的網域，例如 `https://yourteam.cloudflareaccess.com` |
-| `POLICY_AUD` | Audience (aud) 的 hex 值 |
-| `POLICY_AUDS` | 選填，多個 Audience (aud) 的 hex 值，以逗號或空白分隔 |
+| `POLICY_AUD`  | Audience (aud) 的 hex 值                                      |
+| `POLICY_AUDS` | 選填，多個 Audience (aud) 的 hex 值，以逗號或空白分隔         |
 
 ---
 
@@ -104,7 +144,7 @@ npm run dev
 **方法一：透過 Git 更新（推薦）**
 
 ```bash
-git remote add upstream git@github.com:kevchentw/taiwan-fin-hub.git
+git remote add upstream git@github.com:TedLin1993/taiwan-fin-hub.git
 git fetch upstream
 git merge upstream/main
 ```
@@ -115,7 +155,7 @@ git merge upstream/main
 
 點擊下方按鈕重新走一次部署流程：
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/kevchentw/taiwan-fin-hub)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/TedLin1993/taiwan-fin-hub)
 
 1. **Project Name** 填新名稱，例如 `taiwan-fin-hub-v2`
 2. **Select D1 Database** 選擇原有資料庫（`taiwan-fin-hub` 或你自訂的名稱）
@@ -159,3 +199,9 @@ POLICY_AUDS=production-aud-hex,private-aud-hex
 ## 免責聲明
 
 本程式僅供個人研究與自用，未與臺灣集中保管結算所、財政部、金融監督管理委員會、各銀行或任何金融機構合作，亦未獲前述機構授權或背書。本程式所呈現之資料以您自行提供之憑證取得，作者不保證資料之即時性、正確性與完整性，亦不對因使用本程式所產生之任何直接或間接損失負責。請勿將本程式用於任何商業用途。
+
+---
+
+## License
+
+本專案採用 [MIT License](LICENSE)，並保留原專案的著作權與授權聲明。
