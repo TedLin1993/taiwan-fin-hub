@@ -388,17 +388,19 @@
           {/each}
         </CardContent>
       </Card>
-      <Card>
+      <Card class="min-w-0 overflow-hidden">
         <CardHeader><h2 class="text-lg font-semibold">近期活動</h2></CardHeader>
-        <CardContent class="grid gap-4">
+        <CardContent class="grid min-w-0 gap-4">
           {#each recent as item (item.id)}
-            <div class="flex items-center justify-between gap-3 text-sm">
-              <div class="min-w-0">
+            <div
+              class="flex min-w-0 items-center justify-between gap-3 text-sm"
+            >
+              <div class="min-w-0 flex-1 overflow-hidden">
                 <p class="truncate font-semibold">{item.title}</p>
                 <p class="truncate text-xs text-ink/40">{item.detail}</p>
               </div>
               <span
-                class={`shrink-0 font-semibold tabular-nums ${item.amount != null && item.amount < 0 ? "text-coral" : item.amount != null ? "text-moss" : "text-ink/40"}`}
+                class={`max-w-[42%] shrink-0 truncate font-semibold tabular-nums ${item.amount != null && item.amount < 0 ? "text-coral" : item.amount != null ? "text-moss" : "text-ink/40"}`}
                 >{item.amount == null
                   ? "—"
                   : `${item.amount >= 0 ? "+" : ""}${formatCurrency(item.amount, item.currency)}`}</span
