@@ -101,4 +101,32 @@ describe("classification rule actions", () => {
     expect(insert?.sql).toContain("excluded_from_calculation");
     expect(insert?.values[8]).toBe(1);
   });
+
+  it("updates an editable rule's category, condition, keyword, and calculation action", async () => {
+    const { calls, db } = createDb();
+    const response = await testApp().request(
+      "/classification/rules/user:rule-1",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          categoryId: "investment",
+          operator: "equals",
+          pattern: "定期買股",
+          excludedFromCalculation: false
+        })
+      },
+      { DB: db } as Env
+    );
+
+    expect(response.status).toBe(200);
+    const update = calls.find(({ sql }) => sql.includes("UPDATE classification_rules"));
+    expect(update?.sql).toContain("category_id = ?");
+    expect(update?.sql).toContain("operator = ?");
+    expect(update?.sql).toContain("pattern = ?");
+    expect(update?.sql).toContain("excluded_from_calculation = ?");
+    expect(update?.sql).toContain("is_system = 0");
+    expect(update?.values).toContain("equals");
+    expect(update?.values).toContain(0);
+  });
 });

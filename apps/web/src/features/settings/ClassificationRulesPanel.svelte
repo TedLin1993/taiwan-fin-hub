@@ -4,7 +4,7 @@
     createQuery,
     useQueryClient,
   } from "@tanstack/svelte-query";
-  import { Plus } from "@lucide/svelte";
+  import { Pencil, Plus } from "@lucide/svelte";
   import Card from "../../components/ui/Card.svelte";
   import CardHeader from "../../components/ui/CardHeader.svelte";
   import CardContent from "../../components/ui/CardContent.svelte";
@@ -20,7 +20,19 @@
     classificationCategoriesQuery,
     classificationRulesQuery,
   } from "../../lib/queries";
-  import type { ClassificationCategoryRow } from "../../lib/types";
+  import type {
+    ClassificationCategoryRow,
+    ClassificationRuleRow,
+  } from "../../lib/types";
+
+  type RuleOperator = "contains" | "equals" | "starts_with" | "regex";
+  type EditableRule = {
+    id: string;
+    categoryId: string;
+    pattern: string;
+    operator: RuleOperator;
+    excludedFromCalculation: boolean;
+  };
 
   let { api }: { api: ApiClient } = $props();
 
@@ -46,6 +58,17 @@
   });
   let showCategoryForm = $state(false);
   let categoryName = $state("");
+  let editingRule = $state<EditableRule | undefined>();
+
+  function startEditing(rule: ClassificationRuleRow) {
+    editingRule = {
+      id: rule.id,
+      categoryId: rule.categoryId,
+      pattern: rule.pattern,
+      operator: rule.operator as RuleOperator,
+      excludedFromCalculation: rule.excludedFromCalculation,
+    };
+  }
 
   function invalidateRuleResults() {
     qc.invalidateQueries({ queryKey: queryKeys.classificationRules });
@@ -84,6 +107,19 @@
         enabled: payload.enabled,
       }),
     onSuccess: invalidateRuleResults,
+  });
+  const update = createMutation({
+    mutationFn: (rule: EditableRule) =>
+      api.put(`/api/classification/rules/${rule.id}`, {
+        categoryId: rule.categoryId,
+        pattern: rule.pattern,
+        operator: rule.operator,
+        excludedFromCalculation: rule.excludedFromCalculation,
+      }),
+    onSuccess: () => {
+      invalidateRuleResults();
+      editingRule = undefined;
+    },
   });
   const remove = createMutation({
     mutationFn: (id: string) => api.delete(`/api/classification/rules/${id}`),
@@ -214,54 +250,137 @@
     {:else}
       <div class="divide-y divide-border">
         {#each $rules.data ?? [] as rule (rule.id)}
-          <div class="flex items-start gap-3 py-3.5 text-sm">
-            <Checkbox
-              aria-label={`${rule.enabled ? "停用" : "啟用"}${categoryLabels[rule.categoryId] ?? rule.categoryId}規則`}
-              class="mt-1"
-              checked={rule.enabled}
-              disabled={rule.isSystem}
-              onchange={(event: Event) =>
-                $toggle.mutate({
-                  id: rule.id,
-                  enabled: (event.currentTarget as HTMLInputElement).checked,
-                })}
-            />
-            <div class="min-w-0 flex-1">
-              <div class="flex flex-wrap items-center gap-1.5">
-                <Badge variant="outline">
-                  {categoryLabels[rule.categoryId] ?? rule.categoryId}
-                </Badge>
-                {#if rule.excludedFromCalculation}
-                  <Badge class="border-transparent bg-coral/10 text-coral">
-                    不計入收支
-                  </Badge>
-                {/if}
-                {#if rule.isSystem}
-                  <Badge variant="secondary">內建</Badge>
+          <div class="py-3.5 text-sm">
+            {#if editingRule && editingRule.id === rule.id}
+              <form
+                class="rounded-lg border border-border bg-muted/30 p-4"
+                onsubmit={(event) => {
+                  event.preventDefault();
+                  if (editingRule?.pattern.trim()) $update.mutate(editingRule);
+                }}
+              >
+                <div
+                  class="grid gap-3 md:grid-cols-[minmax(0,140px)_minmax(0,140px)_minmax(0,1fr)]"
+                >
+                  <label class="grid gap-1.5 font-medium">
+                    分類
+                    <Select bind:value={editingRule.categoryId}>
+                      {#each $categories.data ?? [] as category (category.id)}
+                        <option value={category.id}>{category.label}</option>
+                      {/each}
+                    </Select>
+                  </label>
+                  <label class="grid gap-1.5 font-medium">
+                    條件
+                    <Select bind:value={editingRule.operator}>
+                      <option value="contains">包含</option>
+                      <option value="equals">完全等於</option>
+                      <option value="starts_with">開頭為</option>
+                      <option value="regex">符合正規表示式</option>
+                    </Select>
+                  </label>
+                  <label class="grid gap-1.5 font-medium">
+                    關鍵字
+                    <Input bind:value={editingRule.pattern} />
+                  </label>
+                </div>
+                <div
+                  class="mt-4 flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-center"
+                >
+                  <div class="flex min-w-0 flex-1 items-center gap-3">
+                    <Switch
+                      aria-label="編輯規則是否不計入收支"
+                      bind:checked={editingRule.excludedFromCalculation}
+                    />
+                    <div class="min-w-0">
+                      <p class="font-semibold">符合時不計入收支</p>
+                      <p class="text-xs text-muted-foreground">
+                        仍保留所選分類，只排除圖表與收支加總。
+                      </p>
+                    </div>
+                  </div>
+                  <div class="flex justify-end gap-2">
+                    <Button
+                      variant="ghost"
+                      disabled={$update.isPending}
+                      onclick={() => (editingRule = undefined)}>取消</Button
+                    >
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      disabled={!editingRule.pattern.trim() ||
+                        $update.isPending}
+                    >
+                      {$update.isPending ? "儲存中…" : "儲存變更"}
+                    </Button>
+                  </div>
+                </div>
+              </form>
+            {:else}
+              <div class="flex items-start gap-3">
+                <Checkbox
+                  aria-label={`${rule.enabled ? "停用" : "啟用"}${categoryLabels[rule.categoryId] ?? rule.categoryId}規則`}
+                  class="mt-1"
+                  checked={rule.enabled}
+                  disabled={rule.isSystem}
+                  onchange={(event: Event) =>
+                    $toggle.mutate({
+                      id: rule.id,
+                      enabled: (event.currentTarget as HTMLInputElement)
+                        .checked,
+                    })}
+                />
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <Badge variant="outline">
+                      {categoryLabels[rule.categoryId] ?? rule.categoryId}
+                    </Badge>
+                    {#if rule.excludedFromCalculation}
+                      <Badge class="border-transparent bg-coral/10 text-coral">
+                        不計入收支
+                      </Badge>
+                    {/if}
+                    {#if rule.isSystem}
+                      <Badge variant="secondary">內建</Badge>
+                    {/if}
+                  </div>
+                  <p class="mt-1.5 break-words text-foreground/80">
+                    {operatorLabels[rule.operator] ??
+                      rule.operator}「{rule.pattern}」
+                  </p>
+                </div>
+                {#if !rule.isSystem}
+                  <div class="flex items-center gap-1">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={$update.isPending || $remove.isPending}
+                      onclick={() => startEditing(rule)}
+                    >
+                      <Pencil class="size-4" />編輯
+                    </Button>
+                    <Button
+                      class="text-destructive hover:text-destructive"
+                      size="sm"
+                      variant="ghost"
+                      disabled={$remove.isPending &&
+                        $remove.variables === rule.id}
+                      onclick={() => $remove.mutate(rule.id)}>刪除</Button
+                    >
+                  </div>
                 {/if}
               </div>
-              <p class="mt-1.5 break-words text-foreground/80">
-                {operatorLabels[rule.operator] ??
-                  rule.operator}「{rule.pattern}」
-              </p>
-            </div>
-            {#if !rule.isSystem}
-              <Button
-                class="text-destructive hover:text-destructive"
-                size="sm"
-                variant="ghost"
-                disabled={$remove.isPending && $remove.variables === rule.id}
-                onclick={() => $remove.mutate(rule.id)}>刪除</Button
-              >
             {/if}
           </div>
         {/each}
       </div>
     {/if}
 
-    {#if $add.isError || $toggle.isError || $remove.isError}
+    {#if $add.isError || $toggle.isError || $update.isError || $remove.isError}
       <p class="mt-3 text-sm text-destructive" role="alert">
-        {messageFromError($add.error ?? $toggle.error ?? $remove.error)}
+        {messageFromError(
+          $add.error ?? $toggle.error ?? $update.error ?? $remove.error,
+        )}
       </p>
     {/if}
   </CardContent>

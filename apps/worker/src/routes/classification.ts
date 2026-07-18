@@ -20,6 +20,7 @@ const createRuleSchema = z.object({
 });
 const updateRuleSchema = z.object({
   categoryId: z.string().min(1).max(64).optional(),
+  operator: z.enum(["contains", "equals", "starts_with", "regex"]).optional(),
   pattern: z.string().min(1).max(300).optional(),
   priority: z.number().int().min(0).max(10_000).optional(),
   enabled: z.boolean().optional(),
@@ -169,9 +170,18 @@ export function registerClassificationRoutes(api: Hono<AppBindings>) {
   api.put("/classification/rules/:ruleId", async (c) => {
     const parsed = updateRuleSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return jsonError("INVALID_REQUEST", "Classification rule update is invalid.");
+    if (parsed.data.categoryId) {
+      const category = await c.env.DB.prepare(
+        "SELECT id FROM classification_categories WHERE id = ?"
+      ).bind(parsed.data.categoryId).first<{ id: string }>();
+      if (!category) {
+        return jsonError("CATEGORY_NOT_FOUND", "Classification category was not found.", 404);
+      }
+    }
     const sets: string[] = [];
     const values: unknown[] = [];
     if (parsed.data.categoryId) { sets.push("category_id = ?"); values.push(parsed.data.categoryId); }
+    if (parsed.data.operator !== undefined) { sets.push("operator = ?"); values.push(parsed.data.operator); }
     if (parsed.data.pattern !== undefined) { sets.push("pattern = ?"); values.push(parsed.data.pattern); }
     if (parsed.data.priority !== undefined) { sets.push("priority = ?"); values.push(parsed.data.priority); }
     if (parsed.data.enabled !== undefined) { sets.push("enabled = ?"); values.push(parsed.data.enabled ? 1 : 0); }
