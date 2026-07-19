@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Env } from "../../../src/platform/env";
 import { activityRoutes } from "../../../src/features/activity/route";
+import { honoFactory } from "../../../src/platform/hono";
+import { apiErrorResponse } from "../../../src/platform/http";
 
 type Preference = {
   invoiceId: string;
@@ -212,5 +214,35 @@ describe("activity invoice transaction mappings", () => {
       { DB: db } as Env,
     );
     expect(unavailable.status).toBe(409);
+  });
+
+  it("passes unexpected errors to the parent API error handler", async () => {
+    const api = honoFactory.createApp();
+    api.route("/", activityRoutes);
+    api.onError(apiErrorResponse);
+    const unexpected = new Error("D1 query failed");
+    const db = {
+      prepare() {
+        throw unexpected;
+      },
+    } as unknown as D1Database;
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await api.request(
+      "/activity/invoice-mappings",
+      {},
+      { DB: db } as Env,
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      success: false,
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "An unexpected error occurred.",
+      },
+    });
+    expect(errorLog).toHaveBeenCalledWith("[api] unhandled error:", unexpected);
+    errorLog.mockRestore();
   });
 });
