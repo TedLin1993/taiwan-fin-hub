@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { createTdccConnector, parseTdccConfig, TdccOtpExpiredError } from "./tdcc";
 
 const calls: string[] = [];
-let mode: "flag_otp" | "error_code_otp" | "stale_session" | "otp_expired" = "flag_otp";
+const tspPageTokens: string[] = [];
+let mode: "flag_otp" | "error_code_otp" | "stale_session" | "otp_expired" | "pagination_incomplete" = "flag_otp";
 let fundUpdateTime = "20240615090000";
 
 function errorResponse(returnCode: string) {
@@ -77,10 +78,32 @@ function errorResponse(returnCode: string) {
     });
   }
   if (endpoint === "tsp/TSP007") {
+    const pageToken = String(body.requestBody.pageToken ?? "");
+    tspPageTokens.push(pageToken);
+    if (mode === "pagination_incomplete") {
+      return respond("0000", {
+        transactionDetails: [
+          { stan: "incomplete-cash-move", txnDateTime: "20240616140000", transferInAmount: "100", transferOutAmount: "0" }
+        ],
+        pageToken: "",
+        totalCount: 2
+      });
+    }
+    if (pageToken === "NEXT-1") {
+      return respond("0000", {
+        transactionDetails: [
+          { stan: "live-cash-move-2", txnDateTime: "20240615130000", transferInAmount: "0", transferOutAmount: "250", memo: "Settlement debit" }
+        ],
+        pageToken: "",
+        totalCount: 2
+      });
+    }
     return respond("0000", {
       transactionDetails: [
         { stan: "live-cash-move-1", txnDateTime: "20240614120000", transferInAmount: "1000", transferOutAmount: "0", summary: "Settlement credit" }
-      ]
+      ],
+      pageToken: "NEXT-1",
+      totalCount: 2
     });
   }
   throw new Error(`unexpected endpoint ${endpoint}`);
@@ -103,9 +126,12 @@ async function main() {
   assert.equal(result.bankAccounts?.[0]?.sourceId, "settlement:004:1234567890:TWD");
   assert.equal(result.bankBalanceSnapshots?.length, 1);
   assert.equal(result.bankBalanceSnapshots?.[0]?.balance, 45678);
-  assert.equal(result.bankTransactions?.length, 1);
+  assert.equal(result.bankTransactions?.length, 2);
   assert.equal(result.bankTransactions?.[0]?.sourceId, "live-cash-move-1");
   assert.equal(result.bankTransactions?.[0]?.amount, 1000);
+  assert.equal(result.bankTransactions?.[1]?.sourceId, "live-cash-move-2");
+  assert.equal(result.bankTransactions?.[1]?.amount, -250);
+  assert.deepEqual(tspPageTokens.slice(0, 2), ["", "NEXT-1"], "bank transactions should follow pageToken until exhausted");
   assert.equal(JSON.parse(result.cursor!).session.tokenId, "TKN-1");
 
   const manualWithMovement = parseTdccConfig({
@@ -169,6 +195,13 @@ async function main() {
   const recovered = await connector.sync(configWithOtp, staleCursor);
   assert.equal(recovered.records.length, 3, "stale session should recover via fresh login");
   assert.equal(JSON.parse(recovered.cursor!).session.tokenId, "TKN-1", "fresh login should replace the stale token");
+
+  mode = "pagination_incomplete";
+  await assert.rejects(
+    connector.sync(configWithOtp, result.cursor),
+    /PAGINATION_INCOMPLETE/,
+    "an incomplete bank transaction page sequence must fail instead of silently truncating data"
+  );
 
   // An expired OTP must surface as a distinguishable error so the caller can
   // drop it from stored config instead of retrying with the same dead code.

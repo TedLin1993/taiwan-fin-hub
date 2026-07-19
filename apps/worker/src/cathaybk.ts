@@ -9,6 +9,11 @@ const CREDIT_CARD_BILL_URL = "https://www.cathaybk.com.tw/OnlineBanking/CQuery/C
 
 const API_DEPOSIT_TX = "B_ACCT_Q_TransferDetail";
 
+function maskAccountNumber(value: string) {
+  const suffix = value.slice(-4);
+  return suffix ? `***${suffix}` : "***";
+}
+
 type Scraped = {
   bankAccounts: Array<Omit<BankAccount, "id" | "connectorId">>;
   bankBalanceSnapshots: Array<Omit<BankBalanceSnapshot, "id" | "connectorId">>;
@@ -79,11 +84,10 @@ async function scrapeWithBrowser(browserBinding: Fetcher, config: CathaybkConfig
       freshCookies
     };
   } catch (error) {
-    const url = page.url();
-    const text = await page
-      .evaluate(() => document.body.innerText.replace(/\s+/g, " ").trim().slice(0, 300))
-      .catch(() => "<unavailable>");
-    console.log(`[cathaybk] error at url=${url} body="${text}"`);
+    console.error(JSON.stringify({
+      event: "cathaybk_scrape_failed",
+      errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR"
+    }));
     throw error;
   } finally {
     // Always logout so next run doesn't hit the "未完成正常的登出" interstitial
@@ -141,7 +145,7 @@ async function login(page: Page, config: CathaybkConfig) {
     );
 
     if (page.url().includes("/OnlineBanking/")) {
-      console.log(`[cathaybk] login succeeded, url=${page.url()}`);
+      console.log("[cathaybk] login succeeded");
       return;
     }
 
@@ -154,7 +158,7 @@ async function login(page: Page, config: CathaybkConfig) {
       continue;
     }
 
-    throw new Error(`Cathay United Bank login failed at ${page.url()}: ${bodyText}`);
+    throw new Error("Cathay United Bank login failed.");
   }
 
   throw new Error("Cathay United Bank login failed after 3 attempts — persistent dirty session interstitial");
@@ -276,9 +280,9 @@ async function scrapeDeposits(page: Page, lookbackDays: number): Promise<Scraped
   const asOfAt = new Date().toISOString();
 
   await page.goto(DEPOSIT_OVERVIEW_URL, { waitUntil: "networkidle2", timeout: 60000 });
-  console.log(`[cathaybk] deposit page url: ${page.url()}`);
+  console.log("[cathaybk] deposit page opened");
   if (page.url().includes("/logout/")) {
-    throw new Error(`Cathay Bank forced logout on deposit page (url=${page.url()})`);
+    throw new Error("Cathay Bank forced logout on deposit page.");
   }
 
   // Wait for account number buttons to render
@@ -288,7 +292,7 @@ async function scrapeDeposits(page: Page, lookbackDays: number): Promise<Scraped
   ).catch(() => null);
 
   const accounts = await scrapeDomAccounts(page);
-  console.log(`[cathaybk] found ${accounts.length} deposit accounts: ${accounts.map(a => a.acctNo).join(", ")}`);
+  console.log(`[cathaybk] found ${accounts.length} deposit accounts`);
 
   for (const acct of accounts) {
     const sourceId = `bank:cathaybk:${acct.acctNo}`;
@@ -326,7 +330,7 @@ async function scrapeDeposits(page: Page, lookbackDays: number): Promise<Scraped
     }, acct.acctNo);
 
     if (!clicked) {
-      console.log(`[cathaybk] no button found for account ${acct.acctNo}`);
+      console.log(`[cathaybk] no button found for account ${maskAccountNumber(acct.acctNo)}`);
       continue;
     }
 
@@ -360,7 +364,7 @@ async function scrapeDeposits(page: Page, lookbackDays: number): Promise<Scraped
 
     const datas = txData.content?.datas ?? [];
     const details: TransferDetail[] = datas.flatMap(d => d.details ?? []);
-    console.log(`[cathaybk] account ${acct.acctNo}: ${details.length} tx (period=${periodLabel(lookbackDays)})`);
+    console.log(`[cathaybk] account ${maskAccountNumber(acct.acctNo)}: ${details.length} tx (period=${periodLabel(lookbackDays)})`);
 
     appendDepositTransactions(bankTransactions, details, sourceId, acct.currency);
 
@@ -440,7 +444,7 @@ async function scrapeCreditCards(page: Page, lookbackMonths: number): Promise<Sc
 
   // ── C0101: card overview (DOM) ─────────────────────────────────────────
   await page.goto(CREDIT_CARD_OVERVIEW_URL, { waitUntil: "networkidle2", timeout: 60000 });
-  console.log(`[cathaybk] credit card overview url: ${page.url()}`);
+  console.log("[cathaybk] credit card overview opened");
   await new Promise(r => setTimeout(r, 2000));
 
   const cardOverview = await page.evaluate(() => {
@@ -466,7 +470,12 @@ async function scrapeCreditCards(page: Page, lookbackMonths: number): Promise<Sc
     };
   });
 
-  console.log(`[cathaybk] card overview: ${JSON.stringify(cardOverview)}`);
+  console.log(JSON.stringify({
+    event: "cathaybk_card_overview_parsed",
+    cardDetected: Boolean(cardOverview.last4),
+    paymentDueDateAvailable: Boolean(cardOverview.paymentDueDate),
+    noPaymentNeeded: cardOverview.noPaymentNeeded
+  }));
 
   // ponytail: always use main — CathayBK pools limit across all cards
   const sourceId = "credit:cathaybk:main";

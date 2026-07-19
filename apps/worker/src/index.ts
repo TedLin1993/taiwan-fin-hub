@@ -1005,7 +1005,7 @@ async function syncEinvoice(
   const config = await decryptJson<unknown>(settings.encrypted_config, configEncryptionKey(env));
   const parsedConfig = parseInvoiceConfig({ ...(config as Record<string, unknown>), ...overrides });
   const originalInvoiceConfig = invoiceConfigSnapshot(config as Record<string, unknown>);
-  console.log(`[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ?? "none"})`);
+  console.log(`[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ? "set" : "none"})`);
   const result = await einvoiceConnector.sync(parsedConfig, settings.sync_cursor ?? undefined);
   const invoiceLineItems = result.invoiceLineItems ?? [];
   const detailErrorCount =
@@ -1092,7 +1092,7 @@ async function syncEsun(env: Env, trigger: SyncTrigger): Promise<SyncOutcome> {
   const stored = await decryptJson<unknown>(settings.encrypted_config, configEncryptionKey(env));
   const config = parseEsunConfig(stored);
 
-  console.log(`[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ?? "none"})`);
+  console.log(`[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ? "set" : "none"})`);
   const result = await createEsunConnector(env.BROWSER).sync(config, settings.sync_cursor ?? undefined);
 
   const bankAccounts = result.bankAccounts ?? [];
@@ -1143,7 +1143,7 @@ async function syncCathaybk(env: Env, trigger: SyncTrigger): Promise<SyncOutcome
   const publicStored = settings.public_config ? JSON.parse(settings.public_config) : {};
   const config = parseCathaybkConfig({ ...(stored as object), ...publicStored });
 
-  console.log(`[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ?? "none"})`);
+  console.log(`[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ? "set" : "none"})`);
   const result = await createCathaybkConnector(env.BROWSER).sync(config, settings.sync_cursor ?? undefined);
 
   const bankAccounts = result.bankAccounts ?? [];
@@ -1327,7 +1327,7 @@ async function syncTdccPositionsAndBank(
   const mergedConfig = { ...(config as Record<string, unknown>), ...overrides };
   const parsedConfig = parseTdccConfig(mergedConfig);
   const syncScope = options.scope;
-  console.log(`[sync] ${connectorId}/${syncScope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ?? "none"})`);
+  console.log(`[sync] ${connectorId}/${syncScope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ? "set" : "none"})`);
 
   let result: Awaited<ReturnType<typeof tdccConnector.sync>>;
   try {
@@ -1391,7 +1391,7 @@ async function syncTdccTrades(
   const config = await decryptJson<unknown>(settings.encrypted_config, configEncryptionKey(env));
   const mergedConfig = { ...(config as Record<string, unknown>), ...overrides };
   const parsedConfig = parseTdccConfig(mergedConfig);
-  console.log(`[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ?? "none"})`);
+  console.log(`[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ? "set" : "none"})`);
 
   let result: Awaited<ReturnType<typeof syncTdccTradeHistory>>;
   try {

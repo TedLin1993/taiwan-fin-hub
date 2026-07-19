@@ -11,6 +11,19 @@ const ACCOUNT_OVERVIEW_URL = "https://ebank.esunbank.com.tw/fms01/fms01029/home/
 const ACCOUNT_TX_INIT_URL = "https://ebank.esunbank.com.tw/fao01/fao01013/home/initData.json";
 const ACCOUNT_TX_URL = "https://ebank.esunbank.com.tw/fao01/fao01002/search/findTxDetails.json";
 
+function maskAccountNumber(value: string) {
+  const suffix = value.slice(-4);
+  return suffix ? `***${suffix}` : "***";
+}
+
+function endpointPath(value: string) {
+  try {
+    return new URL(value).pathname;
+  } catch {
+    return "unknown";
+  }
+}
+
 export function createEsunConnector(browser?: Fetcher) {
   return {
     id: "esun" as const,
@@ -77,7 +90,7 @@ async function loginWithBrowser(browserBinding: Fetcher, client: EsunHttpClient,
     await page.setUserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/147.0.0.0 Mobile/15E148 Safari/604.1");
     console.log(`[esun debug] navigating to ${HOME_URL}`);
     await page.goto(HOME_URL, { waitUntil: "networkidle0", timeout: 30000 });
-    console.log(`[esun debug] navigated, page url=${page.url()}`);
+    console.log("[esun debug] login page opened");
     await loginMobilePage(page, config);
     console.log("[esun debug] login succeeded, setting up credit card session");
     await setupCreditCardBrowserSession(page);
@@ -88,8 +101,10 @@ async function loginWithBrowser(browserBinding: Fetcher, client: EsunHttpClient,
     }
     console.log("[esun debug] browser login complete");
   } catch (error) {
-    const text = await page.evaluate(() => document.body.innerText.replace(/\s+/g, " ").trim().slice(0, 300)).catch(() => "<unavailable>");
-    console.log(`[esun debug] browser login failed at url=${page.url()} body="${text}"`);
+    console.error(JSON.stringify({
+      event: "esun_browser_login_failed",
+      errorType: error instanceof Error ? error.name : "UNKNOWN_ERROR"
+    }));
     throw error;
   } finally {
     await browser.close();
@@ -131,8 +146,7 @@ async function waitForMobileLogin(page: Page, depth = 0) {
   }
 
   if (result === "error" && !(await page.evaluate(() => document.cookie.includes("LOGINKEY")))) {
-    const text = await page.evaluate(() => document.body.innerText.replace(/\s+/g, " ").trim().slice(0, 300));
-    throw new Error(`E.SUN browser login failed: ${text}`);
+    throw new Error("E.SUN browser login failed.");
   }
 }
 
@@ -317,7 +331,15 @@ async function scrapeCreditCards(client: EsunHttpClient, lookbackMonths: number)
   const statementBalance = currentBill?.tamt ?? overview.tamt ?? undefined;
   const noPaymentNeeded = outstanding === 0;
 
-  console.log(`[esun debug] creditLimit=${creditLimit} availableCredit=${availableCredit} outstanding=${outstanding} statementBalance=${statementBalance} paymentDueDate=${paymentDueDate} statementClosingDate=${statementClosingDate}`);
+  console.log(JSON.stringify({
+    event: "esun_credit_card_overview_parsed",
+    creditLimitAvailable: creditLimit !== undefined,
+    availableCreditAvailable: availableCredit !== undefined,
+    statementBalanceAvailable: statementBalance !== undefined,
+    paymentDueDateAvailable: paymentDueDate !== undefined,
+    statementClosingDateAvailable: statementClosingDate !== undefined,
+    noPaymentNeeded
+  }));
 
   const cardBySourceId = new Map(cards.map((card) => [creditCardSourceId(card.cardNo), card]));
   const bankAccounts: Scraped["bankAccounts"] = Array.from(accountIds).map((sourceId) => {
@@ -568,9 +590,9 @@ async function scrapeDepositAccounts(
       raw: row
     });
 
-    console.log(`[esun debug] tw account ${account} (${row.accountType ?? "401"}): watermark=${watermarks[account] ?? "none"} cutoff=${cutoffDateStr}`);
+    console.log(`[esun debug] tw account ${maskAccountNumber(account)} (${row.accountType ?? "401"}): watermark=${watermarks[account] ? "set" : "none"}`);
     const rows = await fetchAccountTransactionPages(client, account, row.accountType ?? "401", false, watermarks[account], cutoffDateStr);
-    console.log(`[esun debug] tw account ${account}: fetched ${rows.length} transaction rows`);
+    console.log(`[esun debug] tw account ${maskAccountNumber(account)}: fetched ${rows.length} transaction rows`);
     appendDepositTransactions(bankTransactions, rows, accountId, currency);
     newWatermarks[account] = watermarks[account];
   }
@@ -602,9 +624,9 @@ async function scrapeDepositAccounts(
       });
     }
 
-    console.log(`[esun debug] fr account ${account} (${row.accountType ?? "A01"}): watermark=${watermarks[account] ?? "none"} cutoff=${cutoffDateStr}`);
+    console.log(`[esun debug] fr account ${maskAccountNumber(account)} (${row.accountType ?? "A01"}): watermark=${watermarks[account] ? "set" : "none"}`);
     const rows = await fetchAccountTransactionPages(client, account, row.accountType ?? "A01", true, watermarks[account], cutoffDateStr);
-    console.log(`[esun debug] fr account ${account}: fetched ${rows.length} transaction rows`);
+    console.log(`[esun debug] fr account ${maskAccountNumber(account)}: fetched ${rows.length} transaction rows`);
     for (const detail of rows) {
       const currency = detail.displayCurrency?.trim() || primaryCurrency;
       appendDepositTransactions(bankTransactions, [detail], depositSourceId(account, currency), currency);
@@ -654,8 +676,16 @@ async function fetchAccountTransactionPages(
         rows.push(detail);
       }
     }
-    const months = (data.txMasters ?? []).map((m) => `${m.year}/${m.month}(${m.details?.length ?? 0})`).join(",");
-    console.log(`[esun debug] ${account} page ${page}: months=[${months}] added=${rows.length} skippedCutoff=${skippedCutoff} skippedWatermark=${skippedWatermark} searchKxy=${data.searchKxy ?? "null"} reachedCutoff=${reachedCutoff}`);
+    console.log(JSON.stringify({
+      event: "esun_bank_transactions_page",
+      account: maskAccountNumber(account),
+      page,
+      records: rows.length,
+      skippedCutoff,
+      skippedWatermark,
+      hasNextPage: Boolean(data.searchKxy),
+      reachedCutoff
+    }));
 
     if (reachedCutoff || !data.searchKxy) break;
     searchKxy = data.searchKxy;
@@ -824,7 +854,7 @@ class EsunHttpClient {
       console.log("[esun debug] hasAuthenticatedSession: stored session still valid");
       return true;
     } catch (error) {
-      console.log(`[esun debug] hasAuthenticatedSession: stored session invalid (${error instanceof Error ? error.message : error}), will log in`);
+      console.log(`[esun debug] hasAuthenticatedSession: stored session invalid (${error instanceof Error ? error.name : "UNKNOWN_ERROR"}), will log in`);
       return false;
     }
   }
@@ -882,13 +912,17 @@ class EsunHttpClient {
     });
 
     if (response.rsStatus?.code === "3018") {
-      console.log(`[esun debug] ${url} returned 3018 (no data), treating as empty result`);
+      console.log(`[esun debug] ${endpointPath(url)} returned 3018 (no data), treating as empty result`);
       return {} as T;
     }
 
     if (response.rsStatus?.code && response.rsStatus.code !== "0000") {
-      console.log(`[esun debug] ${url} error`, JSON.stringify({ rqData, rsStatus: response.rsStatus }));
-      throw new Error(`E.SUN API error ${response.rsStatus.code}: ${response.rsStatus.message ?? ""}`.trim());
+      console.error(JSON.stringify({
+        event: "esun_api_error",
+        endpoint: endpointPath(url),
+        code: response.rsStatus.code
+      }));
+      throw new Error(`E.SUN API error ${response.rsStatus.code}.`);
     }
 
     return (response.rsData ?? {}) as T;
@@ -939,8 +973,9 @@ class EsunHttpClient {
     const response = await this.request(url, init);
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.toLowerCase().includes("json")) {
-      const body = await response.text();
-      throw new Error(`E.SUN expected JSON from ${url}, got ${contentType || "unknown content type"}: ${body.slice(0, 120).replace(/\s+/g, " ").trim()}`);
+      throw new Error(
+        `E.SUN expected JSON from ${endpointPath(url)}, got ${contentType || "unknown content type"}.`
+      );
     }
     return (await response.json()) as T;
   }
