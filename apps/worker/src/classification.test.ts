@@ -21,9 +21,16 @@ describe("matchesClassificationRule", () => {
 
 describe("resolveClassifications", () => {
   it("returns the calculation action from the first matching rule", async () => {
+    const calls: Array<{ sql: string; values: unknown[] }> = [];
     const db = {
       prepare(sql: string) {
+        let values: unknown[] = [];
         return {
+          bind(...bound: unknown[]) {
+            values = bound;
+            calls.push({ sql, values });
+            return this;
+          },
           async all() {
             if (sql.includes("classification_overrides")) return { results: [] };
             return {
@@ -54,5 +61,8 @@ describe("resolveClassifications", () => {
       categoryId: "transfer",
       excludedFromCalculation: true
     });
+    const overrideQuery = calls.find(({ sql }) => sql.includes("classification_overrides"));
+    expect(overrideQuery?.sql).toContain("json_each(?)");
+    expect(overrideQuery?.values).toEqual([JSON.stringify(["tx-card-payment"])]);
   });
 });

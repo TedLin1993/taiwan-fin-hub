@@ -5,8 +5,9 @@ import type { AppBindings, Env } from "./env";
 import {
   apiErrorResponse,
   demoReadOnlyMiddleware,
+  encodePageCursor,
   isDemoMode,
-  parsePagination
+  parseKeysetPagination
 } from "./http";
 
 function testApp() {
@@ -41,9 +42,15 @@ describe("demo read-only middleware", () => {
 });
 
 describe("HTTP helpers", () => {
-  it("coerces and bounds pagination input", () => {
-    expect(parsePagination({ limit: "25", offset: "50" })).toEqual({ limit: 25, offset: 50 });
-    expect(() => parsePagination({ limit: "101" })).toThrow(z.ZodError);
+  it("round-trips an opaque keyset cursor", () => {
+    const schema = z.object({ effectiveDate: z.string(), name: z.string() });
+    const cursor = encodePageCursor({ effectiveDate: "2026-07-19", name: "台積電" });
+    expect(parseKeysetPagination({ limit: "25", cursor }, schema)).toEqual({
+      limit: 25,
+      cursor: { effectiveDate: "2026-07-19", name: "台積電" }
+    });
+    expect(() => parseKeysetPagination({ cursor: "invalid" }, schema)).toThrow(z.ZodError);
+    expect(() => parseKeysetPagination({ limit: "101" }, schema)).toThrow(z.ZodError);
   });
 
   it("maps validation errors to 400 without exposing details", async () => {

@@ -27,6 +27,7 @@ import {
   type CreditCardBill,
   type InvestmentPosition,
   type InvestmentTransaction,
+  type Invoice,
   type InvoiceLineItem,
   type NetWorthHistoryPoint,
   isConnectorId
@@ -57,10 +58,11 @@ import type { AppBindings, Env } from "./env";
 import {
   apiErrorResponse,
   demoReadOnlyMiddleware,
+  encodePageCursor,
   isDemoMode,
   jsonError,
-  parsePagination,
-  setPaginationHeaders
+  parseKeysetPagination,
+  setKeysetPaginationHeaders
 } from "./http";
 import { readValidateNumberFromImage } from "./validate-number-ocr";
 import { registerExchangeRateRoutes } from "./routes/exchange-rates";
@@ -71,6 +73,10 @@ import {
   registerBankTransactionRoutes,
   resolveCalculationExclusion
 } from "./routes/bank-transactions";
+import {
+  persistStagedSyncWrite,
+  type SyncWriteRecord
+} from "./sync-write";
 
 type SyncScope =
   | "all"
@@ -153,6 +159,54 @@ const bankHistoryRebuildBodySchema = z.object({
   from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
 });
+
+const investmentPageCursorSchema = z.object({
+  asOfDate: z.string(),
+  assetType: z.string(),
+  name: z.string(),
+  id: z.string()
+});
+
+const transactionPageCursorSchema = z.object({
+  effectiveDate: z.string(),
+  updatedAt: z.string(),
+  id: z.string()
+});
+
+const creditCardBillPageCursorSchema = z.object({
+  billingPeriod: z.string(),
+  accountId: z.string(),
+  id: z.string()
+});
+
+const netWorthPageCursorSchema = z.object({
+  date: z.string(),
+  source: z.string(),
+  assetType: z.string(),
+  id: z.string()
+});
+
+type BankTransactionPageRow = {
+  id: string;
+  connectorId: string;
+  accountId: string;
+  accountSourceId: string;
+  accountName: string | null;
+  institutionName: string | null;
+  accountType: string | null;
+  bankCode: string | null;
+  accountLast4: string | null;
+  sourceId: string;
+  postedDate: string | null;
+  authorizedAt: string | null;
+  amount: number;
+  currency: string;
+  description: string | null;
+  counterparty: string | null;
+  effectiveDate: string;
+  updatedAt: string;
+  calculationPreference: number | null;
+};
 
 const syncJobUpdateSchema = z.object({
   enabled: z.boolean().optional(),
@@ -336,8 +390,17 @@ api.post("/ocr/validate-number", async (c) => {
 });
 
 api.get("/investments", async (c) => {
-  const { limit, offset } = parsePagination(c.req.query(), 100);
-  const result = await c.env.DB.prepare(
+  const { limit, cursor } = parseKeysetPagination(c.req.query(), investmentPageCursorSchema, 100);
+  const cursorClause = cursor
+    ? `AND (
+        investment_positions.as_of_date < ?
+        OR (
+          investment_positions.as_of_date = ?
+          AND (investment_positions.asset_type, investment_positions.name, investment_positions.id) > (?, ?, ?)
+        )
+      )`
+    : "";
+  const statement = c.env.DB.prepare(
     `SELECT
       id,
       asset_type AS assetType,
@@ -354,18 +417,55 @@ api.get("/investments", async (c) => {
       WHERE p2.connector_id = investment_positions.connector_id
         AND p2.asset_type = investment_positions.asset_type
     )
-    ORDER BY as_of_date DESC, asset_type ASC, name ASC
-    LIMIT ? OFFSET ?`
-  ).bind(limit + 1, offset).all();
+    ${cursorClause}
+    ORDER BY as_of_date DESC, asset_type ASC, name ASC, id ASC
+    LIMIT ?`
+  );
+  const result = await (cursor
+    ? statement.bind(
+        cursor.asOfDate,
+        cursor.asOfDate,
+        cursor.assetType,
+        cursor.name,
+        cursor.id,
+        limit + 1
+      )
+    : statement.bind(limit + 1)
+  ).all<{
+    id: string;
+    assetType: string;
+    symbol: string | null;
+    name: string;
+    quantity: number | null;
+    marketValue: number | null;
+    cashBalance: number | null;
+    currency: string;
+    asOfDate: string;
+  }>();
 
   const hasMore = result.results.length > limit;
-  setPaginationHeaders((name, value) => c.header(name, value), { offset, limit, hasMore });
-  return c.json(result.results.slice(0, limit));
+  const page = result.results.slice(0, limit);
+  const last = page.at(-1);
+  setKeysetPaginationHeaders((name, value) => c.header(name, value), {
+    hasMore,
+    nextCursor: hasMore && last
+      ? encodePageCursor({
+          asOfDate: last.asOfDate,
+          assetType: last.assetType,
+          name: last.name,
+          id: last.id
+        })
+      : undefined
+  });
+  return c.json(page);
 });
 
 api.get("/investment-transactions", async (c) => {
-  const { limit, offset } = parsePagination(c.req.query(), 100);
-  const result = await c.env.DB.prepare(
+  const { limit, cursor } = parseKeysetPagination(c.req.query(), transactionPageCursorSchema, 100);
+  const cursorClause = cursor
+    ? "WHERE (effective_date, updated_at, id) < (?, ?, ?)"
+    : "";
+  const statement = c.env.DB.prepare(
     `SELECT
       id,
       connector_id AS connectorId,
@@ -384,19 +484,78 @@ api.get("/investment-transactions", async (c) => {
       quantity,
       price,
       amount,
-      currency
+      currency,
+      effective_date AS effectiveDate,
+      updated_at AS updatedAt
     FROM investment_transactions
-    ORDER BY COALESCE(trade_date, posted_date) DESC, updated_at DESC
-    LIMIT ? OFFSET ?`
-  ).bind(limit + 1, offset).all();
+    ${cursorClause}
+    ORDER BY effective_date DESC, updated_at DESC, id DESC
+    LIMIT ?`
+  );
+  const result = await (cursor
+    ? statement.bind(cursor.effectiveDate, cursor.updatedAt, cursor.id, limit + 1)
+    : statement.bind(limit + 1)
+  ).all<Record<string, unknown> & {
+    id: string;
+    effectiveDate: string;
+    updatedAt: string;
+  }>();
 
   const hasMore = result.results.length > limit;
-  setPaginationHeaders((name, value) => c.header(name, value), { offset, limit, hasMore });
-  return c.json(result.results.slice(0, limit));
+  const page = result.results.slice(0, limit);
+  const last = page.at(-1);
+  setKeysetPaginationHeaders((name, value) => c.header(name, value), {
+    hasMore,
+    nextCursor: hasMore && last
+      ? encodePageCursor({
+          effectiveDate: last.effectiveDate,
+          updatedAt: last.updatedAt,
+          id: last.id
+        })
+      : undefined
+  });
+  return c.json(page.map(({ effectiveDate: _effectiveDate, updatedAt: _updatedAt, ...transaction }) => transaction));
 });
 
 api.get("/bank", async (c) => {
-  const { limit, offset } = parsePagination(c.req.query(), 100);
+  const { limit, cursor } = parseKeysetPagination(c.req.query(), transactionPageCursorSchema, 100);
+  const transactionCursorClause = cursor
+    ? "AND (txn.effective_date, txn.updated_at, txn.id) < (?, ?, ?)"
+    : "";
+  const transactionStatement = c.env.DB.prepare(
+    `SELECT
+      txn.id,
+      txn.connector_id AS connectorId,
+      txn.account_id AS accountId,
+      account.source_id AS accountSourceId,
+      account.account_name AS accountName,
+      account.institution_name AS institutionName,
+      account.account_type AS accountType,
+      account.bank_code AS bankCode,
+      account.account_last4 AS accountLast4,
+      txn.source_id AS sourceId,
+      txn.posted_date AS postedDate,
+      txn.authorized_at AS authorizedAt,
+      txn.amount,
+      txn.currency,
+      txn.description,
+      txn.counterparty,
+      txn.effective_date AS effectiveDate,
+      txn.updated_at AS updatedAt,
+      preference.excluded_from_calculation AS calculationPreference
+    FROM bank_transactions txn
+    JOIN bank_accounts account ON account.id = txn.account_id
+    LEFT JOIN bank_transaction_preferences preference
+      ON preference.transaction_id = txn.id
+    WHERE account.canonical_account_id IS NULL
+    ${transactionCursorClause}
+    ORDER BY txn.effective_date DESC, txn.updated_at DESC, txn.id DESC
+    LIMIT ?`
+  );
+  const transactionQuery = (cursor
+    ? transactionStatement.bind(cursor.effectiveDate, cursor.updatedAt, cursor.id, limit + 1)
+    : transactionStatement.bind(limit + 1)
+  ).all<BankTransactionPageRow>();
   const [accounts, transactions] = await Promise.all([
     c.env.DB.prepare(
       `SELECT
@@ -426,33 +585,7 @@ api.get("/bank", async (c) => {
       WHERE account.canonical_account_id IS NULL
       ORDER BY account.institution_name ASC, account.account_name ASC, account.source_id ASC`
     ).all(),
-    c.env.DB.prepare(
-      `SELECT
-        txn.id,
-        txn.connector_id AS connectorId,
-        txn.account_id AS accountId,
-        account.source_id AS accountSourceId,
-        account.account_name AS accountName,
-        account.institution_name AS institutionName,
-        account.account_type AS accountType,
-        account.bank_code AS bankCode,
-        account.account_last4 AS accountLast4,
-        txn.source_id AS sourceId,
-        txn.posted_date AS postedDate,
-        txn.authorized_at AS authorizedAt,
-        txn.amount,
-        txn.currency,
-        txn.description,
-        txn.counterparty,
-        preference.excluded_from_calculation AS calculationPreference
-      FROM bank_transactions txn
-      JOIN bank_accounts account ON account.id = txn.account_id
-      LEFT JOIN bank_transaction_preferences preference
-        ON preference.transaction_id = txn.id
-      WHERE account.canonical_account_id IS NULL
-      ORDER BY COALESCE(txn.posted_date, txn.authorized_at) DESC, txn.updated_at DESC
-      LIMIT ? OFFSET ?`
-    ).bind(limit + 1, offset).all()
+    transactionQuery
   ]);
 
   const hasMore = transactions.results.length > limit;
@@ -469,11 +602,21 @@ api.get("/bank", async (c) => {
     classificationMap = new Map();
   }
 
-  setPaginationHeaders((name, value) => c.header(name, value), { offset, limit, hasMore });
+  const lastTransaction = transactionPage.at(-1);
+  setKeysetPaginationHeaders((name, value) => c.header(name, value), {
+    hasMore,
+    nextCursor: hasMore && lastTransaction
+      ? encodePageCursor({
+          effectiveDate: lastTransaction.effectiveDate,
+          updatedAt: lastTransaction.updatedAt,
+          id: lastTransaction.id
+        })
+      : undefined
+  });
 
   return c.json({
     accounts: accounts.results.map(normalizeBankAccountDisplay),
-    transactions: transactionPage.map((t) => ({
+    transactions: transactionPage.map(({ effectiveDate: _effectiveDate, updatedAt: _updatedAt, ...t }) => ({
       ...normalizeBankTransactionDisplay(t),
       excludedFromCalculation: resolveCalculationExclusion({
         accountType: t.accountType as string | null,
@@ -489,8 +632,17 @@ api.get("/bank", async (c) => {
 });
 
 api.get("/bank/bills", async (c) => {
-  const { limit, offset } = parsePagination(c.req.query(), 50);
-  const rows = await c.env.DB.prepare(
+  const { limit, cursor } = parseKeysetPagination(c.req.query(), creditCardBillPageCursorSchema, 50);
+  const cursorClause = cursor
+    ? `WHERE (
+        b.billing_period < ?
+        OR (
+          b.billing_period = ?
+          AND (b.account_id, b.id) > (?, ?)
+        )
+      )`
+    : "";
+  const statement = c.env.DB.prepare(
     `SELECT
       b.id,
       b.connector_id AS connectorId,
@@ -507,25 +659,85 @@ api.get("/bank/bills", async (c) => {
       b.currency
     FROM credit_card_bills b
     JOIN bank_accounts a ON a.id = b.account_id
-    ORDER BY b.billing_period DESC, b.account_id ASC
-    LIMIT ? OFFSET ?`
-  ).bind(limit + 1, offset).all();
+    ${cursorClause}
+    ORDER BY b.billing_period DESC, b.account_id ASC, b.id ASC
+    LIMIT ?`
+  );
+  const rows = await (cursor
+    ? statement.bind(
+        cursor.billingPeriod,
+        cursor.billingPeriod,
+        cursor.accountId,
+        cursor.id,
+        limit + 1
+      )
+    : statement.bind(limit + 1)
+  ).all<{
+    id: string;
+    accountId: string;
+    billingPeriod: string;
+    [key: string]: unknown;
+  }>();
   const hasMore = rows.results.length > limit;
-  setPaginationHeaders((name, value) => c.header(name, value), { offset, limit, hasMore });
-  return c.json(rows.results.slice(0, limit));
+  const page = rows.results.slice(0, limit);
+  const last = page.at(-1);
+  setKeysetPaginationHeaders((name, value) => c.header(name, value), {
+    hasMore,
+    nextCursor: hasMore && last
+      ? encodePageCursor({
+          billingPeriod: last.billingPeriod,
+          accountId: last.accountId,
+          id: last.id
+        })
+      : undefined
+  });
+  return c.json(page);
 });
 
 api.get("/history/net-worth", async (c) => {
-  const { limit, offset } = parsePagination(c.req.query(), 100);
-  const rows = await c.env.DB.prepare(
-    `SELECT date, net_worth AS netWorth, asset_type AS assetType, source
+  const { limit, cursor } = parseKeysetPagination(c.req.query(), netWorthPageCursorSchema, 100);
+  const cursorClause = cursor
+    ? `WHERE (
+        date < ?
+        OR (
+          date = ?
+          AND (source, asset_type, id) > (?, ?, ?)
+        )
+      )`
+    : "";
+  const statement = c.env.DB.prepare(
+    `SELECT id, date, net_worth AS netWorth, asset_type AS assetType, source
      FROM net_worth_history
-     ORDER BY date DESC, source ASC, asset_type ASC
-     LIMIT ? OFFSET ?`
-  ).bind(limit + 1, offset).all<{ date: string; netWorth: number; assetType: string; source: string }>();
+     ${cursorClause}
+     ORDER BY date DESC, source ASC, asset_type ASC, id ASC
+     LIMIT ?`
+  );
+  const rows = await (cursor
+    ? statement.bind(
+        cursor.date,
+        cursor.date,
+        cursor.source,
+        cursor.assetType,
+        cursor.id,
+        limit + 1
+      )
+    : statement.bind(limit + 1)
+  ).all<{ id: string; date: string; netWorth: number; assetType: string; source: string }>();
   const hasMore = rows.results.length > limit;
-  setPaginationHeaders((name, value) => c.header(name, value), { offset, limit, hasMore });
-  return c.json(rows.results.slice(0, limit).reverse());
+  const page = rows.results.slice(0, limit);
+  const last = page.at(-1);
+  setKeysetPaginationHeaders((name, value) => c.header(name, value), {
+    hasMore,
+    nextCursor: hasMore && last
+      ? encodePageCursor({
+          date: last.date,
+          source: last.source,
+          assetType: last.assetType,
+          id: last.id
+        })
+      : undefined
+  });
+  return c.json(page.map(({ id: _id, ...row }) => row).reverse());
 });
 
 api.post("/history/net-worth/rebuild-bank", async (c) => {
@@ -1018,51 +1230,18 @@ async function syncEinvoice(
   );
   const now = new Date().toISOString();
 
-  const statements = result.records.map((invoice) => {
-    const id = stableId(connectorId, invoice.sourceId);
-    return env.DB.prepare(
-      `INSERT INTO invoices (
-        id,
-        connector_id,
-        source_id,
-        invoice_number,
-        invoice_date,
-        seller_name,
-        amount,
-        raw_payload,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(connector_id, source_id) DO UPDATE SET
-        invoice_number = excluded.invoice_number,
-        invoice_date = excluded.invoice_date,
-        seller_name = excluded.seller_name,
-        amount = excluded.amount,
-        raw_payload = excluded.raw_payload,
-        updated_at = excluded.updated_at`
-    ).bind(
-      id,
-      connectorId,
-      invoice.sourceId,
-      invoice.invoiceNumber ?? null,
-      invoice.invoiceDate,
-      invoice.sellerName ?? null,
-      invoice.amount,
-      JSON.stringify(invoice.raw ?? invoice),
-      now,
-      now
-    );
-  });
-  statements.push(
-    ...invoiceLineItems.map((item) => invoiceLineItemStatement(env.DB, connectorId, item, now))
-  );
+  const records: SyncWriteRecord[] = [
+    ...result.records.map((invoice) => invoiceRecord(connectorId, invoice, now)),
+    ...invoiceLineItems.map((item) => invoiceLineItemRecord(connectorId, item, now))
+  ];
+  const finalizeStatements: D1PreparedStatement[] = [];
 
   if (result.cursor) {
-    statements.push(cursorStatement(env.DB, connectorId, result.cursor, now));
+    finalizeStatements.push(cursorStatement(env.DB, connectorId, result.cursor, now));
   }
 
   if (invoiceConfigChanged(originalInvoiceConfig, parsedConfig)) {
-    statements.push(
+    finalizeStatements.push(
       env.DB.prepare(
         `UPDATE connector_settings
         SET encrypted_config = ?, updated_at = ?
@@ -1071,9 +1250,7 @@ async function syncEinvoice(
     );
   }
 
-  if (statements.length > 0) {
-    await env.DB.batch(statements);
-  }
+  await persistStagedSyncWrite(env.DB, { records, finalizeStatements });
 
   return {
     success: true,
@@ -1102,25 +1279,27 @@ async function syncEsun(env: Env, trigger: SyncTrigger): Promise<SyncOutcome> {
   console.log(`[sync] ${connectorId}/${scope}: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} bills=${creditCardBills.length}`);
 
   const now = new Date().toISOString();
-  const statements: D1PreparedStatement[] = [
-    ...bankAccounts.map((a) => bankAccountStatement(env.DB, connectorId, a, now)),
-    ...bankBalanceSnapshots.map((s) => bankBalanceSnapshotStatement(env.DB, connectorId, s, now)),
-    ...bankTransactions.map((t) => bankTransactionStatement(env.DB, connectorId, t, now)),
-    ...creditCardBills.map((b) => creditCardBillStatement(env.DB, connectorId, b, now)),
-    ...(bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(env.DB)] : [])
+  const records: SyncWriteRecord[] = [
+    ...bankAccounts.map((account) => bankAccountRecord(connectorId, account, now)),
+    ...bankBalanceSnapshots.map((snapshot) => bankBalanceSnapshotRecord(connectorId, snapshot, now)),
+    ...bankTransactions.map((transaction) => bankTransactionRecord(connectorId, transaction, now)),
+    ...creditCardBills.map((bill) => creditCardBillRecord(connectorId, bill, now))
   ];
+  const finalizeStatements: D1PreparedStatement[] = [];
 
   if (result.cursor) {
     const updatedConfig = { ...config, ...JSON.parse(result.cursor) };
-    statements.push(
+    finalizeStatements.push(
       env.DB.prepare(`UPDATE connector_settings SET encrypted_config = ?, sync_cursor = ?, updated_at = ? WHERE connector_id = ?`)
         .bind(await encryptJson(updatedConfig, configEncryptionKey(env)), result.cursor, now, connectorId)
     );
   }
 
-  if (statements.length > 0) {
-    await env.DB.batch(statements);
-  }
+  await persistStagedSyncWrite(env.DB, {
+    records,
+    afterPromoteStatements: bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(env.DB)] : [],
+    finalizeStatements
+  });
 
   if (bankBalanceSnapshots.length > 0) {
     await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
@@ -1153,26 +1332,28 @@ async function syncCathaybk(env: Env, trigger: SyncTrigger): Promise<SyncOutcome
   console.log(`[sync] ${connectorId}/${scope}: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} bills=${creditCardBills.length}`);
 
   const now = new Date().toISOString();
-  const statements: D1PreparedStatement[] = [
-    ...bankAccounts.map((a) => bankAccountStatement(env.DB, connectorId, a, now)),
-    ...bankBalanceSnapshots.map((s) => bankBalanceSnapshotStatement(env.DB, connectorId, s, now)),
-    ...bankTransactions.map((t) => bankTransactionStatement(env.DB, connectorId, t, now)),
-    ...creditCardBills.map((b) => creditCardBillStatement(env.DB, connectorId, b, now)),
-    ...(bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(env.DB)] : [])
+  const records: SyncWriteRecord[] = [
+    ...bankAccounts.map((account) => bankAccountRecord(connectorId, account, now)),
+    ...bankBalanceSnapshots.map((snapshot) => bankBalanceSnapshotRecord(connectorId, snapshot, now)),
+    ...bankTransactions.map((transaction) => bankTransactionRecord(connectorId, transaction, now)),
+    ...creditCardBills.map((bill) => creditCardBillRecord(connectorId, bill, now))
   ];
+  const finalizeStatements: D1PreparedStatement[] = [];
 
   if (result.cursor) {
     const cursorState = JSON.parse(result.cursor) as Record<string, unknown>;
     const updatedConfig = { ...config, ...cursorState };
-    statements.push(
+    finalizeStatements.push(
       env.DB.prepare(`UPDATE connector_settings SET encrypted_config = ?, sync_cursor = ?, updated_at = ? WHERE connector_id = ?`)
         .bind(await encryptJson(updatedConfig, configEncryptionKey(env)), result.cursor, now, connectorId)
     );
   }
 
-  if (statements.length > 0) {
-    await env.DB.batch(statements);
-  }
+  await persistStagedSyncWrite(env.DB, {
+    records,
+    afterPromoteStatements: bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(env.DB)] : [],
+    finalizeStatements
+  });
 
   if (bankBalanceSnapshots.length > 0) {
     await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
@@ -1233,15 +1414,13 @@ async function syncSinopac(
   console.log(`[sync] ${connectorId}/${scope}: accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} bills=${creditCardBills.length}`);
 
   const now = new Date().toISOString();
-  const statements: D1PreparedStatement[] = [
-    env.DB.prepare(`DELETE FROM bank_transactions WHERE connector_id = ?`).bind(connectorId),
-    env.DB.prepare(`DELETE FROM credit_card_bills WHERE connector_id = ?`).bind(connectorId),
-    ...bankAccounts.map((account) => bankAccountStatement(env.DB, connectorId, account, now)),
-    ...bankBalanceSnapshots.map((snapshot) => bankBalanceSnapshotStatement(env.DB, connectorId, snapshot, now)),
-    ...bankTransactions.map((transaction) => bankTransactionStatement(env.DB, connectorId, transaction, now)),
-    ...creditCardBills.map((bill) => creditCardBillStatement(env.DB, connectorId, bill, now)),
-    ...(bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(env.DB)] : [])
+  const records: SyncWriteRecord[] = [
+    ...bankAccounts.map((account) => bankAccountRecord(connectorId, account, now)),
+    ...bankBalanceSnapshots.map((snapshot) => bankBalanceSnapshotRecord(connectorId, snapshot, now)),
+    ...bankTransactions.map((transaction) => bankTransactionRecord(connectorId, transaction, now)),
+    ...creditCardBills.map((bill) => creditCardBillRecord(connectorId, bill, now))
   ];
+  const finalizeStatements: D1PreparedStatement[] = [];
   let persistedCursor: string | undefined;
   if (result.cursor) {
     const cursorState = JSON.parse(result.cursor) as Record<string, unknown>;
@@ -1257,12 +1436,20 @@ async function syncSinopac(
       captcha: _captcha,
       ...reusableConfig
     } = config;
-    statements.push(
+    finalizeStatements.push(
       env.DB.prepare(`UPDATE connector_settings SET encrypted_config = ?, sync_cursor = ?, updated_at = ? WHERE connector_id = ?`)
         .bind(await encryptJson({ ...reusableConfig, ...cursorState }, configEncryptionKey(env)), persistedCursor, now, connectorId)
     );
   }
-  if (statements.length > 0) await env.DB.batch(statements);
+  await persistStagedSyncWrite(env.DB, {
+    records,
+    beforePromoteStatements: [
+      env.DB.prepare(`DELETE FROM bank_transactions WHERE connector_id = ?`).bind(connectorId),
+      env.DB.prepare(`DELETE FROM credit_card_bills WHERE connector_id = ?`).bind(connectorId)
+    ],
+    afterPromoteStatements: bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(env.DB)] : [],
+    finalizeStatements
+  });
   if (bankBalanceSnapshots.length > 0) await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
   return {
     success: true,
@@ -1345,28 +1532,32 @@ async function syncTdccPositionsAndBank(
   const bankTransactions = result.bankTransactions ?? [];
   const netWorthHistory = result.netWorthHistory ?? [];
   console.log(`[sync] ${connectorId}/${syncScope}: bank accounts=${bankAccounts.length} snapshots=${bankBalanceSnapshots.length} transactions=${bankTransactions.length} history=${netWorthHistory.length}`);
-  const statements: D1PreparedStatement[] = [
-    ...(options.writeBank ? bankAccounts.map((account) => bankAccountStatement(env.DB, connectorId, account, now)) : []),
+  const records: SyncWriteRecord[] = [
+    ...(options.writeBank ? bankAccounts.map((account) => bankAccountRecord(connectorId, account, now)) : []),
     ...(options.writeBank
-      ? bankBalanceSnapshots.map((snapshot) => bankBalanceSnapshotStatement(env.DB, connectorId, snapshot, now))
+      ? bankBalanceSnapshots.map((snapshot) => bankBalanceSnapshotRecord(connectorId, snapshot, now))
       : []),
     ...(options.writeBank
-      ? bankTransactions.map((transaction) => bankTransactionStatement(env.DB, connectorId, transaction, now))
+      ? bankTransactions.map((transaction) => bankTransactionRecord(connectorId, transaction, now))
       : []),
     ...(options.writeInvestments
-      ? result.records.map((position) => investmentPositionStatement(env.DB, connectorId, position, now))
+      ? result.records.map((position) => investmentPositionRecord(connectorId, position, now))
       : []),
-    ...netWorthHistory.map((point) => netWorthHistoryStatement(env.DB, connectorId, point, now)),
-    ...(options.writeBank && bankAccounts.length > 0 ? [linkCanonicalBankAccountsStatement(env.DB)] : [])
+    ...netWorthHistory.map((point) => netWorthHistoryRecord(connectorId, point, now))
   ];
+  const finalizeStatements: D1PreparedStatement[] = [];
 
   if (result.cursor) {
-    statements.push(cursorStatement(env.DB, connectorId, result.cursor, now));
+    finalizeStatements.push(cursorStatement(env.DB, connectorId, result.cursor, now));
   }
 
-  if (statements.length > 0) {
-    await env.DB.batch(statements);
-  }
+  await persistStagedSyncWrite(env.DB, {
+    records,
+    afterPromoteStatements: options.writeBank && bankAccounts.length > 0
+      ? [linkCanonicalBankAccountsStatement(env.DB)]
+      : [],
+    finalizeStatements
+  });
 
   if (options.writeBank && bankBalanceSnapshots.length > 0) {
     await rebuildBankDepositHistory(env.DB, [dateFromIso(now)]);
@@ -1404,17 +1595,16 @@ async function syncTdccTrades(
   const now = new Date().toISOString();
   const investmentTransactions = result.investmentTransactions ?? [];
   console.log(`[sync] ${connectorId}/${scope}: fetched ${investmentTransactions.length} investment transactions`);
-  const statements: D1PreparedStatement[] = [
-    ...investmentTransactions.map((transaction) => investmentTransactionStatement(env.DB, connectorId, transaction, now))
-  ];
+  const records = investmentTransactions.map((transaction) =>
+    investmentTransactionRecord(connectorId, transaction, now)
+  );
+  const finalizeStatements: D1PreparedStatement[] = [];
 
   if (result.cursor) {
-    statements.push(cursorStatement(env.DB, connectorId, result.cursor, now));
+    finalizeStatements.push(cursorStatement(env.DB, connectorId, result.cursor, now));
   }
 
-  if (statements.length > 0) {
-    await env.DB.batch(statements);
-  }
+  await persistStagedSyncWrite(env.DB, { records, finalizeStatements });
 
   return {
     records: investmentTransactions.length,
@@ -1677,55 +1867,56 @@ function invoiceConfigChanged(
   return Object.keys(before).some((key) => before[key] !== after[key]);
 }
 
-function invoiceLineItemStatement(
-  db: D1Database,
+function invoiceRecord(
+  connectorId: ConnectorId,
+  invoice: Omit<Invoice, "id" | "connectorId">,
+  now: string
+): SyncWriteRecord {
+  const id = stableId(connectorId, invoice.sourceId);
+  return {
+    entityType: "invoice",
+    recordKey: id,
+    payload: {
+      id,
+      connector_id: connectorId,
+      source_id: invoice.sourceId,
+      invoice_number: invoice.invoiceNumber ?? null,
+      invoice_date: invoice.invoiceDate,
+      seller_name: invoice.sellerName ?? null,
+      amount: invoice.amount,
+      raw_payload: JSON.stringify(invoice.raw ?? invoice),
+      created_at: now,
+      updated_at: now
+    }
+  };
+}
+
+function invoiceLineItemRecord(
   connectorId: ConnectorId,
   item: Omit<InvoiceLineItem, "id" | "connectorId" | "invoiceId">,
   now: string
-) {
+): SyncWriteRecord {
   const invoiceId = stableId(connectorId, item.invoiceSourceId);
-  return db
-    .prepare(
-      `INSERT INTO invoice_line_items (
-        id,
-        invoice_id,
-        connector_id,
-        invoice_source_id,
-        source_id,
-        line_number,
-        description,
-        quantity,
-        unit_price,
-        amount,
-        raw_payload,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(connector_id, invoice_source_id, source_id) DO UPDATE SET
-        invoice_id = excluded.invoice_id,
-        line_number = excluded.line_number,
-        description = excluded.description,
-        quantity = excluded.quantity,
-        unit_price = excluded.unit_price,
-        amount = excluded.amount,
-        raw_payload = excluded.raw_payload,
-        updated_at = excluded.updated_at`
-    )
-    .bind(
-      stableId(connectorId, item.invoiceSourceId, "item", item.sourceId),
-      invoiceId,
-      connectorId,
-      item.invoiceSourceId,
-      item.sourceId,
-      item.lineNumber,
-      item.description,
-      item.quantity ?? null,
-      item.unitPrice ?? null,
-      item.amount,
-      JSON.stringify(item.raw ?? item),
-      now,
-      now
-    );
+  const id = stableId(connectorId, item.invoiceSourceId, "item", item.sourceId);
+  return {
+    entityType: "invoice_line_item",
+    recordKey: id,
+    payload: {
+      id,
+      invoice_id: invoiceId,
+      connector_id: connectorId,
+      invoice_source_id: item.invoiceSourceId,
+      source_id: item.sourceId,
+      line_number: item.lineNumber,
+      description: item.description,
+      quantity: item.quantity ?? null,
+      unit_price: item.unitPrice ?? null,
+      amount: item.amount,
+      raw_payload: JSON.stringify(item.raw ?? item),
+      created_at: now,
+      updated_at: now
+    }
+  };
 }
 
 // E.SUN's source IDs are "bank:esun:<accountNo>[:CCY]"; TDCC's settlement IDs are
@@ -1848,56 +2039,32 @@ function accountLast5FromSourceId(sourceId: string) {
   return digits ? digits.slice(-5) : undefined;
 }
 
-function bankAccountStatement(
-  db: D1Database,
+function bankAccountRecord(
   connectorId: ConnectorId,
   account: Omit<BankAccount, "id" | "connectorId">,
   now: string
-) {
+): SyncWriteRecord {
   const { bankCode, last4 } = deriveBankMatchKey(connectorId, account.sourceId);
-  return db
-    .prepare(
-      `INSERT INTO bank_accounts (
-        id,
-        connector_id,
-        source_id,
-        institution_name,
-        account_name,
-        account_type,
-        currency,
-        credit_limit,
-        bank_code,
-        account_last4,
-        raw_payload,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(connector_id, source_id) DO UPDATE SET
-        institution_name = excluded.institution_name,
-        account_name = excluded.account_name,
-        account_type = excluded.account_type,
-        currency = excluded.currency,
-        credit_limit = excluded.credit_limit,
-        bank_code = excluded.bank_code,
-        account_last4 = excluded.account_last4,
-        raw_payload = excluded.raw_payload,
-        updated_at = excluded.updated_at`
-    )
-    .bind(
-      stableId(connectorId, account.sourceId),
-      connectorId,
-      account.sourceId,
-      account.institutionName ?? null,
-      account.accountName ?? null,
-      account.accountType ?? null,
-      account.currency || "TWD",
-      account.creditLimit ?? null,
-      bankCode,
-      last4,
-      JSON.stringify(account.raw ?? account),
-      now,
-      now
-    );
+  const id = stableId(connectorId, account.sourceId);
+  return {
+    entityType: "bank_account",
+    recordKey: id,
+    payload: {
+      id,
+      connector_id: connectorId,
+      source_id: account.sourceId,
+      institution_name: account.institutionName ?? null,
+      account_name: account.accountName ?? null,
+      account_type: account.accountType ?? null,
+      currency: account.currency || "TWD",
+      credit_limit: account.creditLimit ?? null,
+      bank_code: bankCode,
+      account_last4: last4,
+      raw_payload: JSON.stringify(account.raw ?? account),
+      created_at: now,
+      updated_at: now
+    }
+  };
 }
 
 function linkCanonicalBankAccountsStatement(db: D1Database) {
@@ -1916,298 +2083,156 @@ function linkCanonicalBankAccountsStatement(db: D1Database) {
   );
 }
 
-function bankBalanceSnapshotStatement(
-  db: D1Database,
+function bankBalanceSnapshotRecord(
   connectorId: ConnectorId,
   snapshot: Omit<BankBalanceSnapshot, "id" | "connectorId">,
   now: string
-) {
+): SyncWriteRecord {
   const accountId = stableId(connectorId, snapshot.accountId);
-  return db
-    .prepare(
-      `INSERT INTO bank_balance_snapshots (
-        id,
-        connector_id,
-        account_id,
-        source_id,
-        balance,
-        available_balance,
-        statement_balance,
-        payment_due_date,
-        statement_closing_date,
-        no_payment_needed,
-        currency,
-        as_of_at,
-        raw_payload,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(connector_id, account_id, source_id) DO UPDATE SET
-        balance = excluded.balance,
-        available_balance = excluded.available_balance,
-        statement_balance = excluded.statement_balance,
-        payment_due_date = excluded.payment_due_date,
-        statement_closing_date = excluded.statement_closing_date,
-        no_payment_needed = excluded.no_payment_needed,
-        currency = excluded.currency,
-        as_of_at = excluded.as_of_at,
-        raw_payload = excluded.raw_payload,
-        updated_at = excluded.updated_at`
-    )
-    .bind(
-      stableId(connectorId, snapshot.accountId, snapshot.sourceId),
-      connectorId,
-      accountId,
-      snapshot.sourceId,
-      snapshot.balance,
-      snapshot.availableBalance ?? null,
-      snapshot.statementBalance ?? null,
-      snapshot.paymentDueDate ?? null,
-      snapshot.statementClosingDate ?? null,
-      snapshot.noPaymentNeeded == null ? null : (snapshot.noPaymentNeeded ? 1 : 0),
-      snapshot.currency || "TWD",
-      snapshot.asOfAt,
-      JSON.stringify(snapshot.raw ?? snapshot),
-      now,
-      now
-    );
+  const id = stableId(connectorId, snapshot.accountId, snapshot.sourceId);
+  return {
+    entityType: "bank_balance_snapshot",
+    recordKey: id,
+    payload: {
+      id,
+      connector_id: connectorId,
+      account_id: accountId,
+      source_id: snapshot.sourceId,
+      balance: snapshot.balance,
+      available_balance: snapshot.availableBalance ?? null,
+      statement_balance: snapshot.statementBalance ?? null,
+      payment_due_date: snapshot.paymentDueDate ?? null,
+      statement_closing_date: snapshot.statementClosingDate ?? null,
+      no_payment_needed: snapshot.noPaymentNeeded == null ? null : (snapshot.noPaymentNeeded ? 1 : 0),
+      currency: snapshot.currency || "TWD",
+      as_of_at: snapshot.asOfAt,
+      raw_payload: JSON.stringify(snapshot.raw ?? snapshot),
+      created_at: now,
+      updated_at: now
+    }
+  };
 }
 
-function bankTransactionStatement(
-  db: D1Database,
+function bankTransactionRecord(
   connectorId: ConnectorId,
   transaction: Omit<BankTransaction, "id" | "connectorId">,
   now: string
-) {
+): SyncWriteRecord {
   const accountId = stableId(connectorId, transaction.accountId);
-  return db
-    .prepare(
-      `INSERT INTO bank_transactions (
-        id,
-        connector_id,
-        account_id,
-        source_id,
-        posted_date,
-        authorized_at,
-        amount,
-        currency,
-        description,
-        counterparty,
-        raw_payload,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(connector_id, account_id, source_id) DO UPDATE SET
-        posted_date = excluded.posted_date,
-        authorized_at = excluded.authorized_at,
-        amount = excluded.amount,
-        currency = excluded.currency,
-        description = excluded.description,
-        counterparty = excluded.counterparty,
-        raw_payload = excluded.raw_payload,
-        updated_at = excluded.updated_at`
-    )
-    .bind(
-      stableId(connectorId, transaction.accountId, transaction.sourceId),
-      connectorId,
-      accountId,
-      transaction.sourceId,
-      transaction.postedDate ?? null,
-      transaction.authorizedAt ?? null,
-      transaction.amount,
-      transaction.currency || "TWD",
-      transaction.description ?? null,
-      transaction.counterparty ?? null,
-      JSON.stringify(transaction.raw ?? transaction),
-      now,
-      now
-    );
+  const id = stableId(connectorId, transaction.accountId, transaction.sourceId);
+  return {
+    entityType: "bank_transaction",
+    recordKey: id,
+    payload: {
+      id,
+      connector_id: connectorId,
+      account_id: accountId,
+      source_id: transaction.sourceId,
+      posted_date: transaction.postedDate ?? null,
+      authorized_at: transaction.authorizedAt ?? null,
+      amount: transaction.amount,
+      currency: transaction.currency || "TWD",
+      description: transaction.description ?? null,
+      counterparty: transaction.counterparty ?? null,
+      raw_payload: JSON.stringify(transaction.raw ?? transaction),
+      created_at: now,
+      updated_at: now
+    }
+  };
 }
 
-function creditCardBillStatement(
-  db: D1Database,
+function creditCardBillRecord(
   connectorId: ConnectorId,
   bill: Omit<CreditCardBill, "id" | "connectorId">,
   now: string
-) {
+): SyncWriteRecord {
   const accountId = stableId(connectorId, bill.accountId);
-  return db
-    .prepare(
-      `INSERT INTO credit_card_bills (
-        id,
-        connector_id,
-        account_id,
-        source_id,
-        billing_period,
-        statement_amount,
-        minimum_payment,
-        paid_amount,
-        is_paid,
-        payment_due_date,
-        statement_closing_date,
-        currency,
-        raw_payload,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(connector_id, account_id, billing_period) DO UPDATE SET
-        source_id = excluded.source_id,
-        statement_amount = excluded.statement_amount,
-        minimum_payment = excluded.minimum_payment,
-        paid_amount = excluded.paid_amount,
-        is_paid = excluded.is_paid,
-        payment_due_date = excluded.payment_due_date,
-        statement_closing_date = excluded.statement_closing_date,
-        currency = excluded.currency,
-        raw_payload = excluded.raw_payload,
-        updated_at = excluded.updated_at`
-    )
-    .bind(
-      stableId(connectorId, bill.accountId, bill.billingPeriod),
-      connectorId,
-      accountId,
-      bill.sourceId,
-      bill.billingPeriod,
-      bill.statementAmount ?? null,
-      bill.minimumPayment ?? null,
-      bill.paidAmount ?? null,
-      bill.isPaid == null ? null : (bill.isPaid ? 1 : 0),
-      bill.paymentDueDate ?? null,
-      bill.statementClosingDate ?? null,
-      bill.currency || "TWD",
-      JSON.stringify(bill.raw ?? bill),
-      now,
-      now
-    );
+  const id = stableId(connectorId, bill.accountId, bill.billingPeriod);
+  return {
+    entityType: "credit_card_bill",
+    recordKey: id,
+    payload: {
+      id,
+      connector_id: connectorId,
+      account_id: accountId,
+      source_id: bill.sourceId,
+      billing_period: bill.billingPeriod,
+      statement_amount: bill.statementAmount ?? null,
+      minimum_payment: bill.minimumPayment ?? null,
+      paid_amount: bill.paidAmount ?? null,
+      is_paid: bill.isPaid == null ? null : (bill.isPaid ? 1 : 0),
+      payment_due_date: bill.paymentDueDate ?? null,
+      statement_closing_date: bill.statementClosingDate ?? null,
+      currency: bill.currency || "TWD",
+      raw_payload: JSON.stringify(bill.raw ?? bill),
+      created_at: now,
+      updated_at: now
+    }
+  };
 }
 
-function investmentPositionStatement(
-  db: D1Database,
+function investmentPositionRecord(
   connectorId: ConnectorId,
   position: Omit<InvestmentPosition, "id" | "connectorId">,
   now: string
-) {
+): SyncWriteRecord {
   const normalized = normalizePosition(position);
   const id = stableId(connectorId, normalized.sourceId, normalized.asOfDate);
-  return db
-    .prepare(
-      `INSERT INTO investment_positions (
-        id,
-        connector_id,
-        source_id,
-        asset_type,
-        symbol,
-        name,
-        quantity,
-        market_value,
-        cash_balance,
-        currency,
-        as_of_date,
-        raw_payload,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(connector_id, source_id, as_of_date) DO UPDATE SET
-        asset_type = excluded.asset_type,
-        symbol = excluded.symbol,
-        name = excluded.name,
-        quantity = excluded.quantity,
-        market_value = excluded.market_value,
-        cash_balance = excluded.cash_balance,
-        currency = excluded.currency,
-        raw_payload = excluded.raw_payload,
-        updated_at = excluded.updated_at`
-    )
-    .bind(
+  return {
+    entityType: "investment_position",
+    recordKey: id,
+    payload: {
       id,
-      connectorId,
-      normalized.sourceId,
-      normalized.assetType,
-      normalized.symbol ?? null,
-      normalized.name,
-      normalized.quantity ?? null,
-      normalized.marketValue ?? null,
-      normalized.cashBalance ?? null,
-      normalized.currency,
-      normalized.asOfDate,
-      JSON.stringify(normalized.raw ?? normalized),
-      now,
-      now
-    );
+      connector_id: connectorId,
+      source_id: normalized.sourceId,
+      asset_type: normalized.assetType,
+      symbol: normalized.symbol ?? null,
+      name: normalized.name,
+      quantity: normalized.quantity ?? null,
+      market_value: normalized.marketValue ?? null,
+      cash_balance: normalized.cashBalance ?? null,
+      currency: normalized.currency,
+      as_of_date: normalized.asOfDate,
+      raw_payload: JSON.stringify(normalized.raw ?? normalized),
+      created_at: now,
+      updated_at: now
+    }
+  };
 }
 
-function investmentTransactionStatement(
-  db: D1Database,
+function investmentTransactionRecord(
   connectorId: ConnectorId,
   transaction: Omit<InvestmentTransaction, "id" | "connectorId">,
   now: string
-) {
-  return db
-    .prepare(
-      `INSERT INTO investment_transactions (
-        id,
-        connector_id,
-        account_id,
-        source_id,
-        broker_no,
-        broker_account,
-        broker_name,
-        symbol,
-        name,
-        asset_type,
-        trade_date,
-        posted_date,
-        transaction_code,
-        transaction_name,
-        quantity,
-        price,
-        amount,
-        currency,
-        raw_payload,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(connector_id, account_id, source_id) DO UPDATE SET
-        broker_no = excluded.broker_no,
-        broker_account = excluded.broker_account,
-        broker_name = excluded.broker_name,
-        symbol = excluded.symbol,
-        name = excluded.name,
-        asset_type = excluded.asset_type,
-        trade_date = excluded.trade_date,
-        posted_date = excluded.posted_date,
-        transaction_code = excluded.transaction_code,
-        transaction_name = excluded.transaction_name,
-        quantity = excluded.quantity,
-        price = excluded.price,
-        amount = excluded.amount,
-        currency = excluded.currency,
-        raw_payload = excluded.raw_payload,
-        updated_at = excluded.updated_at`
-    )
-    .bind(
-      stableId(connectorId, transaction.accountId, transaction.sourceId),
-      connectorId,
-      transaction.accountId,
-      transaction.sourceId,
-      transaction.brokerNo ?? null,
-      transaction.brokerAccount ?? null,
-      transaction.brokerName ?? null,
-      transaction.symbol ?? null,
-      transaction.name ?? null,
-      transaction.assetType ?? null,
-      transaction.tradeDate ?? null,
-      transaction.postedDate ?? null,
-      transaction.transactionCode ?? null,
-      transaction.transactionName ?? null,
-      transaction.quantity ?? null,
-      transaction.price ?? null,
-      transaction.amount ?? null,
-      transaction.currency || "TWD",
-      JSON.stringify(transaction.raw ?? transaction),
-      now,
-      now
-    );
+): SyncWriteRecord {
+  const id = stableId(connectorId, transaction.accountId, transaction.sourceId);
+  return {
+    entityType: "investment_transaction",
+    recordKey: id,
+    payload: {
+      id,
+      connector_id: connectorId,
+      account_id: transaction.accountId,
+      source_id: transaction.sourceId,
+      broker_no: transaction.brokerNo ?? null,
+      broker_account: transaction.brokerAccount ?? null,
+      broker_name: transaction.brokerName ?? null,
+      symbol: transaction.symbol ?? null,
+      name: transaction.name ?? null,
+      asset_type: transaction.assetType ?? null,
+      trade_date: transaction.tradeDate ?? null,
+      posted_date: transaction.postedDate ?? null,
+      transaction_code: transaction.transactionCode ?? null,
+      transaction_name: transaction.transactionName ?? null,
+      quantity: transaction.quantity ?? null,
+      price: transaction.price ?? null,
+      amount: transaction.amount ?? null,
+      currency: transaction.currency || "TWD",
+      raw_payload: JSON.stringify(transaction.raw ?? transaction),
+      created_at: now,
+      updated_at: now
+    }
+  };
 }
 
 function dateFromIso(iso: string) {
@@ -2305,15 +2330,21 @@ async function rebuildBankDepositHistory(db: D1Database, dates: string[]) {
   }
 }
 
-function netWorthHistoryStatement(db: D1Database, source: string, point: NetWorthHistoryPoint, now: string) {
+function netWorthHistoryRecord(source: string, point: NetWorthHistoryPoint, now: string): SyncWriteRecord {
   const assetType = point.assetType ?? "total";
-  return db
-    .prepare(
-      `INSERT INTO net_worth_history (id, date, net_worth, asset_type, source, snapshotted_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(source, asset_type, date) DO UPDATE SET net_worth = excluded.net_worth, snapshotted_at = excluded.snapshotted_at`
-    )
-    .bind(`${source}:${assetType}:${point.date}`, point.date, point.netWorth, assetType, source, now);
+  const id = `${source}:${assetType}:${point.date}`;
+  return {
+    entityType: "net_worth_history",
+    recordKey: id,
+    payload: {
+      id,
+      date: point.date,
+      net_worth: point.netWorth,
+      asset_type: assetType,
+      source,
+      snapshotted_at: now
+    }
+  };
 }
 
 function normalizePosition(position: Omit<InvestmentPosition, "id" | "connectorId">) {

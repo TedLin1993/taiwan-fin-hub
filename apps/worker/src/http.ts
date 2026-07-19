@@ -47,22 +47,46 @@ export const demoReadOnlyMiddleware: MiddlewareHandler<AppBindings> = async (c, 
   );
 };
 
-export const paginationSchema = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(50),
-  offset: z.coerce.number().int().min(0).default(0)
-});
+const paginationLimitSchema = z.coerce.number().int().min(1).max(100);
 
-export function parsePagination(query: Record<string, string | undefined>, defaultLimit = 50) {
-  return paginationSchema.parse({
-    limit: query.limit ?? defaultLimit,
-    offset: query.offset ?? 0
-  });
+export function parseKeysetPagination<T extends z.ZodTypeAny>(
+  query: Record<string, string | undefined>,
+  cursorSchema: T,
+  defaultLimit = 50
+): { limit: number; cursor?: z.infer<T> } {
+  const limit = paginationLimitSchema.parse(query.limit ?? defaultLimit);
+  return query.cursor
+    ? { limit, cursor: cursorSchema.parse(decodePageCursor(query.cursor)) }
+    : { limit };
 }
 
-export function setPaginationHeaders(
+export function encodePageCursor(value: Record<string, unknown>) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export function setKeysetPaginationHeaders(
   headers: (name: string, value: string) => void,
-  input: { offset: number; limit: number; hasMore: boolean }
+  input: { hasMore: boolean; nextCursor?: string }
 ) {
   headers("X-Has-More", String(input.hasMore));
-  if (input.hasMore) headers("X-Next-Offset", String(input.offset + input.limit));
+  if (input.hasMore && input.nextCursor) headers("X-Next-Cursor", input.nextCursor);
+}
+
+function decodePageCursor(value: string) {
+  try {
+    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } catch {
+    throw new z.ZodError([{
+      code: "custom",
+      path: ["cursor"],
+      message: "Invalid pagination cursor."
+    }]);
+  }
 }

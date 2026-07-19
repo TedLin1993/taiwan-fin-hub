@@ -1,7 +1,19 @@
 import type { ConnectorId } from "@taiwan-fin-hub/core";
 import type { Context, Hono } from "hono";
+import { z } from "zod";
 import type { AppBindings } from "../env";
-import { jsonError, parsePagination, setPaginationHeaders } from "../http";
+import {
+  encodePageCursor,
+  jsonError,
+  parseKeysetPagination,
+  setKeysetPaginationHeaders
+} from "../http";
+
+const invoicePageCursorSchema = z.object({
+  invoiceDate: z.string(),
+  updatedAt: z.string(),
+  id: z.string()
+});
 
 type InvoiceItemRow = {
   id: string;
@@ -16,8 +28,11 @@ type InvoiceItemRow = {
 
 export function registerInvoiceRoutes(api: Hono<AppBindings>) {
   api.get("/invoices", async (c) => {
-    const { limit, offset } = parsePagination(c.req.query(), 50);
-    const invoices = await c.env.DB.prepare(
+    const { limit, cursor } = parseKeysetPagination(c.req.query(), invoicePageCursorSchema, 50);
+    const cursorClause = cursor
+      ? "WHERE (invoice_date, updated_at, id) < (?, ?, ?)"
+      : "";
+    const statement = c.env.DB.prepare(
       `SELECT
         id,
         connector_id AS connectorId,
@@ -25,11 +40,17 @@ export function registerInvoiceRoutes(api: Hono<AppBindings>) {
         invoice_number AS invoiceNumber,
         invoice_date AS invoiceDate,
         seller_name AS sellerName,
-        amount
+        amount,
+        updated_at AS updatedAt
       FROM invoices
-      ORDER BY invoice_date DESC, updated_at DESC
-      LIMIT ? OFFSET ?`
-    ).bind(limit + 1, offset).all<{
+      ${cursorClause}
+      ORDER BY invoice_date DESC, updated_at DESC, id DESC
+      LIMIT ?`
+    );
+    const invoices = await (cursor
+      ? statement.bind(cursor.invoiceDate, cursor.updatedAt, cursor.id, limit + 1)
+      : statement.bind(limit + 1)
+    ).all<{
       id: string;
       connectorId: ConnectorId;
       sourceId: string;
@@ -37,6 +58,7 @@ export function registerInvoiceRoutes(api: Hono<AppBindings>) {
       invoiceDate: string;
       sellerName: string | null;
       amount: number;
+      updatedAt: string;
     }>();
 
     const hasMore = invoices.results.length > limit;
@@ -69,8 +91,14 @@ export function registerInvoiceRoutes(api: Hono<AppBindings>) {
       itemsByInvoiceId.set(item.invoiceId, current);
     }
 
-    setPaginationHeaders((name, value) => c.header(name, value), { offset, limit, hasMore });
-    return c.json(page.map((invoice) => ({
+    const last = page.at(-1);
+    setKeysetPaginationHeaders((name, value) => c.header(name, value), {
+      hasMore,
+      nextCursor: hasMore && last
+        ? encodePageCursor({ invoiceDate: last.invoiceDate, updatedAt: last.updatedAt, id: last.id })
+        : undefined
+    });
+    return c.json(page.map(({ updatedAt: _updatedAt, ...invoice }) => ({
       ...invoice,
       invoiceNumber: invoice.invoiceNumber ?? undefined,
       sellerName: invoice.sellerName ?? undefined,

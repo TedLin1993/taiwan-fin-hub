@@ -48,14 +48,17 @@ export async function resolveClassifications(
 
   // URL paths normalize backslashes, so compare override ids in their normalized form.
   const normalizeId = (id: string) => id.replace(/\\/g, "/");
-  const transactionIds = new Set(transactions.map((transaction) => normalizeId(transaction.id)));
+  const transactionIds = [...new Set(
+    transactions.flatMap((transaction) => [transaction.id, normalizeId(transaction.id)])
+  )];
   const [overrides, rules] = await Promise.all([
     db.prepare(
       `SELECT o.target_id, o.category_id, c.label
        FROM classification_overrides o
        JOIN classification_categories c ON c.id = o.category_id
-       WHERE o.target_type = 'bank_transaction'`
-    ).all<{ target_id: string; category_id: string; label: string }>(),
+       WHERE o.target_type = 'bank_transaction'
+         AND o.target_id IN (SELECT value FROM json_each(?))`
+    ).bind(JSON.stringify(transactionIds)).all<{ target_id: string; category_id: string; label: string }>(),
     db.prepare(
       `SELECT r.id, r.category_id, c.label, r.target_type, r.field, r.operator, r.pattern,
               r.is_system, r.excluded_from_calculation
@@ -78,7 +81,6 @@ export async function resolveClassifications(
 
   const overrideMap = new Map(
     overrides.results
-      .filter((override) => transactionIds.has(normalizeId(override.target_id)))
       .map((override) => [normalizeId(override.target_id), override])
   );
   const result = new Map<string, ClassificationResult>();
