@@ -1,14 +1,14 @@
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import type { AppBindings, Env } from "./env";
+import type { AppBindings, Env } from "../../src/platform/env";
 import {
   apiErrorResponse,
   demoReadOnlyMiddleware,
   encodePageCursor,
   isDemoMode,
   parseKeysetPagination
-} from "./http";
+} from "../../src/platform/http";
 
 function testApp() {
   const app = new Hono<AppBindings>();

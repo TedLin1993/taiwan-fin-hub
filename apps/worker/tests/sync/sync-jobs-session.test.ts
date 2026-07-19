@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
 import { failSyncJob, findNextDueSyncJob, markManualSyncFailure, type SyncJobRow } from "@taiwan-fin-hub/db";
+import { describe, expect, it, vi } from "vitest";
 
 describe("sync job user-action pause", () => {
   it("keeps an enabled job out of the scheduler while user action is required", async () => {

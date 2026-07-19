@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run tests"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240620.0",

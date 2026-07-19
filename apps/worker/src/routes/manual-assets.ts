@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import { z } from "zod";
-import type { AppBindings } from "../env";
-import { jsonError } from "../http";
+import type { AppBindings } from "../platform/env";
+import { jsonError } from "../platform/http";
 
 const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const createSchema = z.object({

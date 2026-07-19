@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { matchesClassificationRule, resolveClassifications } from "./classification";
+import { matchesClassificationRule, resolveClassifications } from "../../src/services/classification";
 
 const transaction = {
   id: "tx-1",

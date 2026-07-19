@@ -5,7 +5,7 @@ import {
   parseDate,
   parseSinopacCardData,
   SinopacVerificationRequiredError
-} from "./sinopac";
+} from "../../src/connectors/sinopac";
 
 const summaryPayload = [{
   Header: "SUCCESS",

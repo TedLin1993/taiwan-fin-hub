@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import { z } from "zod";
-import type { AppBindings } from "../env";
-import { jsonError } from "../http";
+import type { AppBindings } from "../platform/env";
+import { jsonError } from "../platform/http";
 
 const targetTypeSchema = z.enum(["bank_transaction"]);
 const categorySchema = z.object({ categoryId: z.string().min(1).max(64) });

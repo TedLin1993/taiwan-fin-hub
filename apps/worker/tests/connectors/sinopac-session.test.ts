@@ -18,7 +18,7 @@ import {
   prepareSinopacCaptcha,
   SinopacBrowserCapacityError,
   SinopacVerificationRequiredError
-} from "./sinopac";
+} from "../../src/connectors/sinopac";
 
 const credentials = {
   userId: "A123456789",

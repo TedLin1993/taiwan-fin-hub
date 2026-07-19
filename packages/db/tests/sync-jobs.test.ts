@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nextSyncRunAt } from "./sync-jobs";
+import { nextSyncRunAt } from "../src/sync-jobs";
 
 describe("nextSyncRunAt", () => {
   it("keeps a daily schedule anchored to Asia/Taipei time", () => {

@@ -11,14 +11,14 @@ import {
   tdccConnector,
   TdccOtpExpiredError
 } from "@taiwan-fin-hub/connectors";
-import { createCathaybkConnector } from "./cathaybk";
-import { createEsunConnector } from "./esun";
+import { createCathaybkConnector } from "./connectors/cathaybk";
+import { createEsunConnector } from "./connectors/esun";
 import {
   createSinopacConnector,
   prepareSinopacCaptcha,
   SinopacBrowserCapacityError,
   SinopacVerificationRequiredError
-} from "./sinopac";
+} from "./connectors/sinopac";
 import {
   type BankAccount,
   type BankBalanceSnapshot,
@@ -51,10 +51,10 @@ import {
 } from "@taiwan-fin-hub/db";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
-import { verifyAccessIdentity } from "./access-auth";
-import { resolveClassifications, type ClassificationResult } from "./classification";
-import { encryptJson, decryptJson } from "./crypto";
-import type { AppBindings, Env } from "./env";
+import { verifyAccessIdentity } from "./platform/access-auth";
+import { resolveClassifications, type ClassificationResult } from "./services/classification";
+import { encryptJson, decryptJson } from "./platform/crypto";
+import type { AppBindings, Env } from "./platform/env";
 import {
   apiErrorResponse,
   demoReadOnlyMiddleware,
@@ -63,8 +63,8 @@ import {
   jsonError,
   parseKeysetPagination,
   setKeysetPaginationHeaders
-} from "./http";
-import { readValidateNumberFromImage } from "./validate-number-ocr";
+} from "./platform/http";
+import { readValidateNumberFromImage } from "./connectors/validate-number-ocr";
 import { registerExchangeRateRoutes } from "./routes/exchange-rates";
 import { registerClassificationRoutes } from "./routes/classification";
 import { registerInvoiceRoutes } from "./routes/invoices";
@@ -76,7 +76,7 @@ import {
 import {
   persistStagedSyncWrite,
   type SyncWriteRecord
-} from "./sync-write";
+} from "./sync/persistence";
 
 type SyncScope =
   | "all"

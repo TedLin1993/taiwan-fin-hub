@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
-import type { AppBindings, Env } from "../env";
-import { registerClassificationRoutes } from "./classification";
+import type { AppBindings, Env } from "../../src/platform/env";
+import { registerClassificationRoutes } from "../../src/routes/classification";
 
 function createDb(options: { existingLabel?: boolean } = {}) {
   const calls: Array<{ sql: string; values: unknown[] }> = [];

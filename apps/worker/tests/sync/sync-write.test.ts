@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { persistStagedSyncWrite, type SyncWriteRecord } from "./sync-write";
+import { persistStagedSyncWrite, type SyncWriteRecord } from "../../src/sync/persistence";
 
 class SqliteStatement {
   private values: unknown[] = [];
@@ -35,7 +35,7 @@ class SqliteD1 {
   constructor() {
     this.database.exec("PRAGMA foreign_keys = ON");
     const migrationsDirectory = fileURLToPath(
-      new URL("../../../packages/db/migrations/", import.meta.url)
+      new URL("../../../../packages/db/migrations/", import.meta.url)
     );
     for (const file of readdirSync(migrationsDirectory).filter((name) => name.endsWith(".sql")).sort()) {
       this.database.exec(readFileSync(`${migrationsDirectory}/${file}`, "utf8"));

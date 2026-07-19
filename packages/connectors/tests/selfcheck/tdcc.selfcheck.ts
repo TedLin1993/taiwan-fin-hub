@@ -1,8 +1,8 @@
-// ponytail: no test framework in this repo yet — run with `npx tsx packages/connectors/src/tdcc.selfcheck.ts`.
+// Run with: npx tsx packages/connectors/tests/selfcheck/tdcc.selfcheck.ts
 // Mocks the TDCC ePassbook API and exercises login -> OTP gate -> holdings/cash -> session reuse,
 // plus device-verification-by-error-code and stale-session recovery.
 import assert from "node:assert/strict";
-import { createTdccConnector, parseTdccConfig, TdccOtpExpiredError } from "./tdcc";
+import { createTdccConnector, parseTdccConfig, TdccOtpExpiredError } from "../../src/tdcc";
 
 const calls: string[] = [];
 const tspPageTokens: string[] = [];

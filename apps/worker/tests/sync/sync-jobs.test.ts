@@ -1,5 +1,5 @@
-import { acquireSyncJobLock, renewSyncJobLock } from "@taiwan-fin-hub/db";
 import { describe, expect, it } from "vitest";
+import { acquireSyncJobLock, renewSyncJobLock } from "@taiwan-fin-hub/db";
 
 function recordingDb(changes: number) {
   const calls: Array<{ sql: string; bindings: unknown[] }> = [];

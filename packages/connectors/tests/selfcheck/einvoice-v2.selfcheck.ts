@@ -1,12 +1,12 @@
-// Run with: npx tsx packages/connectors/src/einvoice-v2.selfcheck.ts
+// Run with: npx tsx packages/connectors/tests/selfcheck/einvoice-v2.selfcheck.ts
 // Uses only synthetic session data and a local fake fetch implementation.
 import assert from "node:assert/strict";
 import {
   decryptLoginData,
   encryptLoginData,
   EInvoiceV2Client
-} from "./tw-einvoice-v2";
-import { einvoiceConnector, parseInvoiceConfig } from "./index";
+} from "../../src/tw-einvoice-v2";
+import { einvoiceConnector, parseInvoiceConfig } from "../../src/index";
 
 const requests: Array<{ url: string; init: RequestInit }> = [];
 const syntheticSession = {

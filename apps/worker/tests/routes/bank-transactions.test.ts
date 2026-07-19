@@ -1,11 +1,11 @@
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
-import type { AppBindings, Env } from "../env";
+import type { AppBindings, Env } from "../../src/platform/env";
 import {
   isDefaultCalculationExcluded,
   registerBankTransactionRoutes,
   resolveCalculationExclusion
-} from "./bank-transactions";
+} from "../../src/routes/bank-transactions";
 
 function createDb(transactionExists = true) {
   const calls: Array<{ sql: string; values: unknown[] }> = [];

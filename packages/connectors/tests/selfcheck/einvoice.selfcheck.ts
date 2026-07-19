@@ -1,4 +1,4 @@
-// Run with: npx tsx packages/connectors/src/einvoice.selfcheck.ts
+// Run with: npx tsx packages/connectors/tests/selfcheck/einvoice.selfcheck.ts
 // Exercises the private official App endpoint contract without sending credentials.
 import assert from "node:assert/strict";
 import forge from "node-forge";
@@ -6,7 +6,7 @@ import {
   EInvoiceClient,
   EInvoiceProtocolUnavailableError,
   RSA_PUBLIC_KEY
-} from "./tw-einvoice-api";
+} from "../../src/tw-einvoice-api";
 
 const OUTDATED_PROTOCOL_VERSION = "6.800.2";
 const REQUIRED_PROTOCOL_VERSION = "7.9000.40";
