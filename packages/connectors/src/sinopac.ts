@@ -6,6 +6,8 @@ export const sinopacConfigSchema = z.object({
   account: z.string().min(1).optional(),
   password: z.string().min(1).optional(),
   sessionCookies: z.string().optional(),
+  candidateSessionCookies: z.string().optional(),
+  candidateSessionCreatedAt: z.string().optional(),
   sessionExpiresAt: z.string().optional(),
   browserSessionId: z.string().optional(),
   browserSessionExpiresAt: z.string().optional(),
