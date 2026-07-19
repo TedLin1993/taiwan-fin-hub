@@ -131,6 +131,11 @@ const sessionCookies = JSON.stringify([{
   domain: "m.sinopac.com"
 }]);
 
+function cookieValue(serialized: string, name: string) {
+  const cookies = JSON.parse(serialized) as Array<{ name?: string; value?: string }>;
+  return cookies.find((cookie) => cookie.name === name)?.value;
+}
+
 describe("sinopac App JSON parser", () => {
   it("parses Taiwan amounts and ROC dates", () => {
     expect(parseAmount("NT$ 1,234.50")).toBe(1234.5);
@@ -249,7 +254,7 @@ describe("sinopac App JSON parser", () => {
     });
   });
 
-  it("applies rotated mobile cookies to later requests and persists the refreshed session", async () => {
+  it("applies rotated mobile cookies within a run and stores them as a candidate", async () => {
     const rotatingCookies = JSON.stringify([
       ...JSON.parse(sessionCookies),
       { name: "sinopac_cookie", value: "stale-cookie", domain: "m.sinopac.com", path: "/" }
@@ -274,11 +279,97 @@ describe("sinopac App JSON parser", () => {
     expect(requestCookies[0]).toContain("sinopac_cookie=stale-cookie");
     expect(requestCookies[1]).toContain("sinopac_cookie=summary-cookie");
     expect(requestCookies[2]).toContain("sinopac_cookie=billing-cookie");
-    const refreshedCookies = JSON.parse(JSON.parse(result.cursor ?? "{}").sessionCookies) as Array<{
-      name: string;
-      value: string;
-    }>;
-    expect(refreshedCookies.find((cookie) => cookie.name === "sinopac_cookie")?.value).toBe("unbilled-cookie");
+    const cursor = JSON.parse(result.cursor ?? "{}") as {
+      sessionCookies: string;
+      candidateSessionCookies: string;
+      candidateSessionCreatedAt: string;
+    };
+    expect(cookieValue(cursor.sessionCookies, "sinopac_cookie")).toBe("stale-cookie");
+    expect(cookieValue(cursor.candidateSessionCookies, "sinopac_cookie")).toBe("unbilled-cookie");
+    expect(cursor.candidateSessionCreatedAt).toBeTruthy();
+  });
+
+  it("promotes a candidate only after it succeeds in a later sync", async () => {
+    const stableCookies = JSON.stringify([
+      ...JSON.parse(sessionCookies),
+      { name: "sinopac_cookie", value: "stable-cookie", domain: "m.sinopac.com", path: "/" }
+    ]);
+    const candidateCookies = JSON.stringify([
+      ...JSON.parse(sessionCookies),
+      { name: "sinopac_cookie", value: "candidate-cookie", domain: "m.sinopac.com", path: "/" }
+    ]);
+    const requestCookies: string[] = [];
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestCookies.push(new Headers(init?.headers).get("cookie") ?? "");
+      const call = requestCookies.length;
+      const payload = call === 1 ? summaryPayload : call === 2 ? billPayload : unbilledPayload;
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Set-Cookie": `sinopac_cookie=next-${call}; Path=/; HttpOnly; Secure` }
+      });
+    });
+
+    const result = await createSinopacConnector(undefined, fetchMock as typeof fetch).sync({
+      sessionCookies: stableCookies,
+      candidateSessionCookies: candidateCookies,
+      protocol: "sinopac-mobile-app-json-v1"
+    });
+
+    const cursor = JSON.parse(result.cursor ?? "{}") as {
+      sessionCookies: string;
+      candidateSessionCookies: string;
+    };
+    expect(requestCookies).toHaveLength(3);
+    expect(requestCookies[0]).toContain("sinopac_cookie=candidate-cookie");
+    expect(cookieValue(cursor.sessionCookies, "sinopac_cookie")).toBe("candidate-cookie");
+    expect(cookieValue(cursor.candidateSessionCookies, "sinopac_cookie")).toBe("next-3");
+  });
+
+  it("falls back to the known-good session when a candidate is rejected", async () => {
+    const stableCookies = JSON.stringify([
+      ...JSON.parse(sessionCookies),
+      { name: "sinopac_cookie", value: "stable-cookie", domain: "m.sinopac.com", path: "/" }
+    ]);
+    const candidateCookies = JSON.stringify([
+      ...JSON.parse(sessionCookies),
+      { name: "sinopac_cookie", value: "candidate-cookie", domain: "m.sinopac.com", path: "/" }
+    ]);
+    const requestCookies: string[] = [];
+    const requestUrls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const cookie = new Headers(init?.headers).get("cookie") ?? "";
+      requestCookies.push(cookie);
+      requestUrls.push(String(input));
+      if (cookie.includes("sinopac_cookie=candidate-cookie")) {
+        return new Response(JSON.stringify([{ Header: "TIMEOUT", Message: "您尚未登入網銀" }]));
+      }
+      const stableCall = requestCookies.length - 1;
+      const payload = stableCall === 1 ? summaryPayload : stableCall === 2 ? billPayload : unbilledPayload;
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Set-Cookie": `sinopac_cookie=fallback-${stableCall}; Path=/; HttpOnly; Secure` }
+      });
+    });
+
+    const result = await createSinopacConnector(undefined, fetchMock as typeof fetch).sync({
+      sessionCookies: stableCookies,
+      candidateSessionCookies: candidateCookies,
+      protocol: "sinopac-mobile-app-json-v1"
+    });
+
+    const cursor = JSON.parse(result.cursor ?? "{}") as {
+      sessionCookies: string;
+      candidateSessionCookies: string;
+    };
+    expect(requestCookies).toHaveLength(4);
+    expect(requestUrls.slice(0, 2)).toEqual([
+      "https://m.sinopac.com/ws/card/cardqry/ws_cardsum.ashx",
+      "https://m.sinopac.com/ws/card/cardqry/ws_cardsum.ashx"
+    ]);
+    expect(requestCookies[0]).toContain("sinopac_cookie=candidate-cookie");
+    expect(requestCookies[1]).toContain("sinopac_cookie=stable-cookie");
+    expect(cookieValue(cursor.sessionCookies, "sinopac_cookie")).toBe("stable-cookie");
+    expect(cookieValue(cursor.candidateSessionCookies, "sinopac_cookie")).toBe("fallback-3");
   });
 
   it("fetches the remaining statement months advertised by the default response", async () => {
@@ -318,6 +409,32 @@ describe("sinopac App JSON parser", () => {
       protocol: "sinopac-mobile-app-json-v1"
     })).rejects.toBeInstanceOf(SinopacVerificationRequiredError);
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("requests verification only after both candidate and stable sessions are rejected", async () => {
+    const requestUrls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      requestUrls.push(String(input));
+      return new Response(JSON.stringify([{
+        Header: "TIMEOUT",
+        Message: "您尚未登入網銀"
+      }]));
+    });
+
+    await expect(createSinopacConnector(undefined, fetchMock as typeof fetch).sync({
+      sessionCookies,
+      candidateSessionCookies: JSON.stringify([{
+        name: "ASP.NET_SessionId",
+        value: "candidate-session",
+        domain: "m.sinopac.com"
+      }]),
+      protocol: "sinopac-mobile-app-json-v1"
+    })).rejects.toBeInstanceOf(SinopacVerificationRequiredError);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestUrls).toEqual([
+      "https://m.sinopac.com/ws/card/cardqry/ws_cardsum.ashx",
+      "https://m.sinopac.com/ws/card/cardqry/ws_cardsum.ashx"
+    ]);
   });
 
   it("does not reuse a legacy MMA session after switching protocols", async () => {

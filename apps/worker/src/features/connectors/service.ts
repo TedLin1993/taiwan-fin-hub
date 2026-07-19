@@ -105,6 +105,8 @@ export async function updateConnectorSettings(
     ) {
       for (const key of [
         "sessionCookies",
+        "candidateSessionCookies",
+        "candidateSessionCreatedAt",
         "sessionExpiresAt",
         "browserSessionId",
         "browserSessionExpiresAt",

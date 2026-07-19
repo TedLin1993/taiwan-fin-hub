@@ -92,17 +92,56 @@ export function createSinopacConnector(browser?: Fetcher, fetchImpl: FetchImpl =
       }
 
       const lookbackMonths = config.lookbackMonths ?? 3;
-      const client = new SinopacAppClient(sessionCookies, fetchImpl);
-      const payloads = await client.fetchCreditCards(lookbackMonths);
-      const cards = parseSinopacCardData(payloads, lookbackMonths);
-      sessionCookies = client.serializedCookies();
+      const sessionAttempts = !verifiedThisRun
+        && config.candidateSessionCookies
+        && config.candidateSessionCookies !== sessionCookies
+        ? [
+            { source: "candidate" as const, cookies: config.candidateSessionCookies },
+            { source: "stable" as const, cookies: sessionCookies }
+          ]
+        : [{ source: "stable" as const, cookies: sessionCookies }];
+      let cards: Scraped | undefined;
+      let stableSessionCookies = sessionCookies;
+      let candidateSessionCookies: string | undefined;
+
+      for (const [index, attempt] of sessionAttempts.entries()) {
+        try {
+          const client = new SinopacAppClient(attempt.cookies, fetchImpl);
+          const canarySummary = attempt.source === "candidate"
+            ? await client.fetchSummary()
+            : undefined;
+          const payloads = await client.fetchCreditCards(lookbackMonths, canarySummary);
+          cards = parseSinopacCardData(payloads, lookbackMonths);
+          stableSessionCookies = attempt.cookies;
+          const rotatedCookies = client.serializedCookies();
+          candidateSessionCookies = rotatedCookies === attempt.cookies ? undefined : rotatedCookies;
+          if (attempt.source === "candidate") {
+            console.log("[sinopac] promoted candidate session after a successful cross-run canary");
+          } else if (index > 0) {
+            console.log("[sinopac] retained the known-good session after candidate rejection");
+          }
+          break;
+        } catch (error) {
+          const canFallback =
+            error instanceof SinopacVerificationRequiredError
+            && attempt.source === "candidate"
+            && index + 1 < sessionAttempts.length;
+          if (!canFallback) throw error;
+          console.warn("[sinopac] candidate session rejected; retrying the known-good session");
+        }
+      }
+      if (!cards) {
+        throw new SinopacVerificationRequiredError("永豐銀行 session 已失效，請重新完成圖形驗證。");
+      }
       const now = new Date();
 
       return {
         records: [],
         ...cards,
         cursor: JSON.stringify({
-          sessionCookies,
+          sessionCookies: stableSessionCookies,
+          candidateSessionCookies,
+          candidateSessionCreatedAt: candidateSessionCookies ? now.toISOString() : undefined,
           sessionExpiresAt: new Date(now.getTime() + SESSION_VALIDITY_MS).toISOString(),
           protocol: SESSION_PROTOCOL,
           syncedAt: now.toISOString()
@@ -126,8 +165,15 @@ class SinopacAppClient {
     return this.cookies.serialize();
   }
 
-  async fetchCreditCards(lookbackMonths: number): Promise<SinopacApiPayloads> {
-    const summary = await this.post(CARD_SUMMARY_PATH, "信用卡總覽");
+  fetchSummary() {
+    return this.post(CARD_SUMMARY_PATH, "信用卡總覽");
+  }
+
+  async fetchCreditCards(
+    lookbackMonths: number,
+    canarySummary?: unknown
+  ): Promise<SinopacApiPayloads> {
+    const summary = canarySummary ?? await this.fetchSummary();
     const initialBills = await this.post(`${CARD_BILLS_PATH}?TxDate=default&TxType=01`, "近期帳單");
     const billMonths = extractAdvertisedBillMonths(initialBills)
       .slice(1, Math.max(1, Math.min(3, lookbackMonths)));

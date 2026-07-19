@@ -457,6 +457,8 @@ export async function syncSinopac(
     }
     if (error instanceof SinopacVerificationRequiredError) {
       delete cleaned.sessionCookies;
+      delete cleaned.candidateSessionCookies;
+      delete cleaned.candidateSessionCreatedAt;
       delete cleaned.sessionExpiresAt;
       delete cleaned.protocol;
     }
@@ -504,6 +506,8 @@ export async function syncSinopac(
     const cursorState = JSON.parse(result.cursor) as Record<string, unknown>;
     const {
       sessionCookies: _sessionCookies,
+      candidateSessionCookies: _candidateSessionCookies,
+      candidateSessionCreatedAt: _candidateSessionCreatedAt,
       sessionExpiresAt: _sessionExpiresAt,
       ...safeCursorState
     } = cursorState;
@@ -512,6 +516,8 @@ export async function syncSinopac(
       browserSessionId: _browserSessionId,
       browserSessionExpiresAt: _browserSessionExpiresAt,
       captcha: _captcha,
+      candidateSessionCookies: _previousCandidateSessionCookies,
+      candidateSessionCreatedAt: _previousCandidateSessionCreatedAt,
       ...reusableConfig
     } = config;
     finalizeStatements.push(

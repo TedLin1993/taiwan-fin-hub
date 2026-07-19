@@ -14,9 +14,13 @@ function isApiError(value: unknown): value is ApiError {
 
 export function createApiClient(): ApiClient {
   async function request<T>(path: string, init: RequestInit = {}) {
+    const headers =
+      init.body === undefined
+        ? init.headers
+        : { "Content-Type": "application/json", ...init.headers };
     const response = await fetch(path, {
       ...init,
-      headers: { "Content-Type": "application/json", ...init.headers },
+      headers,
     });
     const text = await response.text();
     let data: T | ApiError;
