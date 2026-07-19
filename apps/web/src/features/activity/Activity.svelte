@@ -67,6 +67,7 @@
     normalizeFinancialDate,
     rateMap,
   } from "../../lib/format.svelte";
+  import { swipeBack } from "../../lib/swipe-back";
   let { api, navigate }: { api: ApiClient; navigate: (view: View) => void } =
     $props();
   const bank = createQuery(bankQuery(() => api));
@@ -844,14 +845,22 @@
       {@const amount = renderedAmount(detailItem)}
       {@const transaction = transactionForItem(detailItem)}
       {@const invoice = invoiceForItem(detailItem)}
-      <div
-        aria-labelledby="activity-detail-title"
-        aria-modal="true"
-        class="fixed inset-0 z-[60] bg-ink/40 md:flex md:justify-end"
-        role="dialog"
-      >
+      <div class="fixed inset-0 z-[60] bg-ink/40 md:flex md:justify-end">
+        <button
+          aria-label="關閉活動明細"
+          class="absolute inset-0 hidden md:block"
+          onclick={() => (detailKey = null)}
+        ></button>
         <div
-          class="flex h-full w-full flex-col overflow-hidden bg-white shadow-2xl md:max-w-[32rem]"
+          aria-labelledby="activity-detail-title"
+          aria-modal="true"
+          class="relative flex h-full w-full flex-col overflow-hidden bg-white shadow-2xl md:max-w-[32rem]"
+          role="dialog"
+          use:swipeBack={{
+            enabled:
+              document.documentElement.classList.contains("is-standalone"),
+            onBack: () => (detailKey = null),
+          }}
         >
           <header
             class="flex shrink-0 items-center justify-between border-b border-ink/10 px-4 py-3 md:px-6"

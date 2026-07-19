@@ -26,6 +26,7 @@
   import SettingsView from "./features/settings/Settings.svelte";
   import { createApiClient } from "./lib/api";
   import { moneyState } from "./lib/format.svelte";
+  import { swipeBack } from "./lib/swipe-back";
   import type {
     DetailView,
     MobileSettingsView,
@@ -184,6 +185,10 @@
     }
     scrollToTop();
   }
+  function navigateBack() {
+    if (isDetail(view)) navigate("assets");
+    else if (isMobileSetting(view)) navigate("more");
+  }
   function toggleMoneyVisibility() {
     moneyState.hidden = !moneyState.hidden;
     localStorage.setItem(
@@ -196,6 +201,10 @@
 <QueryClientProvider client={queryClient}>
   <div
     class="min-h-screen bg-paper text-ink xl:grid xl:grid-cols-[240px_minmax(0,1fr)]"
+    use:swipeBack={{
+      enabled: isStandalone() && (isDetail(view) || isMobileSetting(view)),
+      onBack: navigateBack,
+    }}
   >
     <aside
       class="hidden border-r border-white/10 bg-ink px-6 py-7 text-white xl:sticky xl:top-0 xl:flex xl:h-screen xl:flex-col"
