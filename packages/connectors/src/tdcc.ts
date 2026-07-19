@@ -237,11 +237,20 @@ async function runTdccLogin(config: TdccConfig, identity: TdccIdentity, previous
   ]);
 
   const tspInfos = bankBalancesPayload.tspAccountInfos ?? [];
-  console.log(`[tdcc] getBankBalances: ${tspInfos.length} bank(s) in tspAccountInfos`);
+  console.log(JSON.stringify({
+    event: "tdcc_bank_accounts_fetched",
+    banks: tspInfos.length,
+    accounts: tspInfos.reduce((count, info) => count + (info.tspAccount?.length ?? 0), 0)
+  }));
   for (const info of tspInfos) {
     const accounts = (info.tspAccount ?? []) as Array<Record<string, unknown>>;
     const hidden = accounts.filter((a) => a.isShow === false);
-    console.log(`[tdcc] bank ${info.bankId}: ${accounts.length} account(s), ${hidden.length} hidden (isShow=false) — ${JSON.stringify(accounts.map((a) => ({ accountNo: a.accountNo, currency: a.currency, isShow: a.isShow, accountType: a.accountType })))}`);
+    console.log(JSON.stringify({
+      event: "tdcc_bank_accounts_filtered",
+      bankId: info.bankId,
+      accounts: accounts.length,
+      hidden: hidden.length
+    }));
   }
   const bankEntries = tspInfos.flatMap((info) =>
     (info.tspAccount ?? []).filter((a) => a.isShow !== false).map((acct) => ({
@@ -253,12 +262,21 @@ async function runTdccLogin(config: TdccConfig, identity: TdccIdentity, previous
       availableBalance: acct.availableBalance
     }))
   );
-  console.log(`[tdcc] bankEntries after isShow filter: ${bankEntries.length} — ${JSON.stringify(bankEntries.map((e) => ({ bankId: e.bankId, accountNo: e.accountNo, currency: e.currency })))}`);
+  console.log(JSON.stringify({ event: "tdcc_visible_bank_accounts", accounts: bankEntries.length }));
 
   const txnPayloads = await Promise.all(
     bankEntries.map((e) =>
       client.getBankTransactions(e.bankId, e.accountNo, e.currency).catch((err: unknown) => {
-        console.log(`[tdcc] getBankTransactions failed for ${e.bankId}:${e.accountNo}:${e.currency} — ${err instanceof Error ? err.message : String(err)}`);
+        console.error(JSON.stringify({
+          event: "tdcc_bank_transactions_failed",
+          bankId: e.bankId,
+          account: maskAccountNumber(e.accountNo),
+          currency: e.currency,
+          errorCode: connectorErrorCode(err)
+        }));
+        if (err instanceof EPassbookError && err.code.startsWith("PAGINATION_")) {
+          throw err;
+        }
         return { transactions: [] as never[] };
       })
     )
@@ -288,8 +306,14 @@ async function runTdccLogin(config: TdccConfig, identity: TdccIdentity, previous
     }));
     const uniqueSourceIds = new Set(txns.map((t) => t.sourceId));
     if (uniqueSourceIds.size < txns.length) {
-      const dupes = txns.map((t) => t.sourceId).filter((id, idx, arr) => arr.indexOf(id) !== idx);
-      console.log(`[tdcc] ${accountId}: ${txns.length} txns but only ${uniqueSourceIds.size} unique sourceIds — duplicate stan values: ${JSON.stringify([...new Set(dupes)])}`);
+      console.warn(JSON.stringify({
+        event: "tdcc_duplicate_transaction_ids",
+        bankId: entry.bankId,
+        account: maskAccountNumber(entry.accountNo),
+        currency: entry.currency,
+        transactions: txns.length,
+        uniqueSourceIds: uniqueSourceIds.size
+      }));
     }
     return txns;
   });
@@ -328,6 +352,16 @@ async function runTdccLogin(config: TdccConfig, identity: TdccIdentity, previous
       tradeCursors: previous?.tradeCursors
     })
   };
+}
+
+function maskAccountNumber(value: string) {
+  const suffix = value.slice(-4);
+  return suffix ? `***${suffix}` : "***";
+}
+
+function connectorErrorCode(error: unknown) {
+  if (error instanceof EPassbookError) return error.code;
+  return error instanceof Error ? error.name : "UNKNOWN_ERROR";
 }
 
 async function runTdccTradeHistory(config: TdccConfig, identity: TdccIdentity, previous?: TdccCursorState) {

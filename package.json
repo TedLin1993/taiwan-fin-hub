@@ -13,7 +13,7 @@
     "format:check": "npm run format:check -w @taiwan-fin-hub/web",
     "typecheck": "npm run typecheck --workspaces",
     "test:unit": "npm run test:unit -w @taiwan-fin-hub/web",
-    "test:backend": "npm test -w @taiwan-fin-hub/worker && npm run test:selfcheck -w @taiwan-fin-hub/connectors",
+    "test:backend": "npm test -w @taiwan-fin-hub/worker && npm test -w @taiwan-fin-hub/db && npm run test:selfcheck -w @taiwan-fin-hub/connectors",
     "test:e2e": "npm run test:e2e -w @taiwan-fin-hub/web",
     "verify:web": "npm run typecheck -w @taiwan-fin-hub/web && npm run test:unit -w @taiwan-fin-hub/web && npm run test:e2e -w @taiwan-fin-hub/web && npm run build -w @taiwan-fin-hub/web",
     "dev": "npm run dev -w @taiwan-fin-hub/worker",

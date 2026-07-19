@@ -5,8 +5,19 @@ const BASE_URL = "https://epassbooksys.tdcc.com.tw/MPSBKV2/rest/";
 const APP_INFO = "tw.com.tdcc.epassbook:3.3.4";
 const API_VER = "20250220";
 const DEFAULT_LAST_UPDATE = "19000101000000";
+const BANK_TRANSACTION_PAGE_SIZE = 100;
+const MAX_BANK_TRANSACTION_PAGES = 1_000;
 const AES_IV = new TextEncoder().encode("0000000000000000");
 const encoder = new TextEncoder();
+
+type BankTransactionDetail = {
+  stan?: string;
+  txnDateTime?: string;
+  transferInAmount?: string;
+  transferOutAmount?: string;
+  summary?: string;
+  memo?: string;
+};
 
 export class EPassbookError extends Error {
   constructor(
@@ -123,7 +134,9 @@ export class EPassbookClient {
       },
       body: JSON.stringify({ requestHeader, requestBody: hasBody ? requestBody : {} })
     });
-    if (!response.ok) throw new EPassbookError(`HTTP_${response.status}`, await response.text());
+    if (!response.ok) {
+      throw new EPassbookError(`HTTP_${response.status}`, "TDCC ePassbook request failed.");
+    }
 
     const envelope = (await response.json()) as {
       responseHeader?: { returnCode?: string; returnMsg?: string; tokenID?: string };
@@ -236,29 +249,68 @@ export class EPassbookClient {
     };
   }
 
-  // ponytail: fetches one page (100 txns); add pagination if users need full history
   async getBankTransactions(bankNo: string, acctNo: string, currency: string): Promise<{
     transactions: Array<{ txnId: string; occurredAt: string; amount: string; memo?: string }>;
   }> {
-    const raw = await this.post<{
-      transactionDetails?: Array<{
-        stan?: string;
-        txnDateTime?: string;
-        transferInAmount?: string;
-        transferOutAmount?: string;
-        summary?: string;
-        memo?: string;
-      }>;
-      pageToken?: string;
-      totalCount?: number;
-    }>("tsp/TSP007", { bankId: bankNo, accountNo: acctNo, currency, limitsInPage: 100, pageToken: "" });
+    const details: BankTransactionDetail[] = [];
+    const seenPageTokens = new Set<string>();
+    let pageToken = "";
+    let expectedTotal: number | undefined;
 
-    const details = raw.transactionDetails ?? [];
-    const metaKeys = Object.keys(raw).filter((k) => k !== "transactionDetails" && k !== "_returnCode" && k !== "_returnMsg");
-    const meta = Object.fromEntries(metaKeys.map((k) => [k, (raw as Record<string, unknown>)[k]]));
-    console.log(`[tdcc] TSP007 ${bankNo}:${acctNo}:${currency}: ${details.length} txns, meta=${JSON.stringify(meta)}`);
-    if (details.length > 0) {
-      console.log(`[tdcc] TSP007 ${bankNo}:${acctNo}:${currency} all txns: ${JSON.stringify(details.map((d) => ({ stan: d.stan, summary: d.summary, memo: d.memo, transferInAmt: d.transferInAmount, transferOutAmt: d.transferOutAmount, txnDateTime: d.txnDateTime })))}`);
+    for (let page = 1; ; page += 1) {
+      if (page > MAX_BANK_TRANSACTION_PAGES) {
+        throw new EPassbookError(
+          "PAGINATION_LIMIT",
+          `TSP007 exceeded ${MAX_BANK_TRANSACTION_PAGES} pages.`
+        );
+      }
+      seenPageTokens.add(pageToken);
+
+      const raw = await this.post<{
+        transactionDetails?: BankTransactionDetail[];
+        pageToken?: string | null;
+        totalCount?: number | string;
+      }>("tsp/TSP007", {
+        bankId: bankNo,
+        accountNo: acctNo,
+        currency,
+        limitsInPage: BANK_TRANSACTION_PAGE_SIZE,
+        pageToken
+      });
+
+      const pageDetails = raw.transactionDetails ?? [];
+      details.push(...pageDetails);
+      const parsedTotal = typeof raw.totalCount === "number" || typeof raw.totalCount === "string"
+        ? Number(raw.totalCount)
+        : Number.NaN;
+      if (Number.isFinite(parsedTotal) && parsedTotal >= 0) expectedTotal = parsedTotal;
+
+      console.log(JSON.stringify({
+        event: "tdcc_bank_transactions_page",
+        bankId: bankNo,
+        account: maskAccountNumber(acctNo),
+        currency,
+        page,
+        records: pageDetails.length,
+        totalCount: expectedTotal ?? null
+      }));
+
+      if (expectedTotal !== undefined && details.length >= expectedTotal) break;
+
+      const nextPageToken = typeof raw.pageToken === "string" ? raw.pageToken : "";
+      if (!nextPageToken) {
+        if (expectedTotal !== undefined && details.length < expectedTotal) {
+          throw new EPassbookError(
+            "PAGINATION_INCOMPLETE",
+            `TSP007 returned ${details.length} of ${expectedTotal} transactions without a next page token.`
+          );
+        }
+        break;
+      }
+      if (seenPageTokens.has(nextPageToken)) {
+        throw new EPassbookError("PAGINATION_LOOP", "TSP007 returned a repeated page token.");
+      }
+      pageToken = nextPageToken;
     }
 
     // ponytail: some banks reuse the same stan for recurring/batch entries (e.g. interest).
@@ -314,4 +366,9 @@ export class EPassbookClient {
       { allowedReturnCodes: ["D0002"] }
     );
   }
+}
+
+function maskAccountNumber(value: string) {
+  const suffix = value.slice(-4);
+  return suffix ? `***${suffix}` : "***";
 }
