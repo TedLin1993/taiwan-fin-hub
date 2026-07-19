@@ -20,6 +20,7 @@ test.beforeEach(async ({ page }) => {
     else if (path === "/api/investments") body = [];
     else if (path === "/api/investment-transactions") body = [];
     else if (path === "/api/invoices") body = [];
+    else if (path === "/api/activity/invoice-mappings") body = [];
     else if (path === "/api/manual-assets") body = [];
     else if (path === "/api/exchange-rates") body = [];
     else if (path === "/api/history/net-worth") body = [];
@@ -244,44 +245,324 @@ test("excludes a bank transaction from activity calculations and restores it", a
   });
   await expect(expenseSlice).toBeVisible();
 
-  await page.getByRole("button", { name: "排除 台新卡費 的統計計算" }).click();
+  await page.getByRole("button", { name: "查看 台新卡費 活動詳情" }).click();
+  await expect(page.getByRole("heading", { name: "活動明細" })).toBeVisible();
+  await page
+    .getByRole("checkbox", { name: "排除 台新卡費 的統計計算" })
+    .click();
   await expect(
-    page.getByRole("button", { name: "恢復 台新卡費 的統計計算" }),
-  ).toBeVisible();
+    page.getByRole("checkbox", { name: "恢復 台新卡費 的統計計算" }),
+  ).toBeChecked();
   await expect(expenseSlice).toBeHidden();
+  await page.getByRole("button", { name: "返回活動列表" }).click();
   const excludedExpenseSlice = page.getByRole("button", {
     name: "其他 0.0% NT$0",
   });
   await expect(excludedExpenseSlice).toBeVisible();
   await excludedExpenseSlice.click();
+  await page.getByRole("button", { name: "查看 台新卡費 活動詳情" }).click();
   await expect(
-    page.getByRole("button", { name: "恢復 台新卡費 的統計計算" }),
-  ).toBeVisible();
+    page.getByRole("checkbox", { name: "恢復 台新卡費 的統計計算" }),
+  ).toBeChecked();
 
   await page.reload();
   await expect(excludedExpenseSlice).toBeVisible();
+  await page.getByRole("button", { name: "查看 台新卡費 活動詳情" }).click();
   await expect(
-    page.getByRole("button", { name: "恢復 台新卡費 的統計計算" }),
-  ).toBeVisible();
+    page.getByRole("checkbox", { name: "恢復 台新卡費 的統計計算" }),
+  ).toBeChecked();
 
-  await page.getByRole("button", { name: "恢復 台新卡費 的統計計算" }).click();
+  await page
+    .getByRole("checkbox", { name: "恢復 台新卡費 的統計計算" })
+    .click();
   await expect(
-    page.getByRole("button", { name: "排除 台新卡費 的統計計算" }),
-  ).toBeVisible();
+    page.getByRole("checkbox", { name: "排除 台新卡費 的統計計算" }),
+  ).not.toBeChecked();
   await expect(expenseSlice).toBeVisible();
 
+  await page.getByRole("button", { name: "返回活動列表" }).click();
   await page.setViewportSize({ width: 390, height: 844 });
-  const categorySelect = page.getByRole("combobox", {
-    name: "更新 台新卡費 分類",
+  await expect(
+    page.getByRole("combobox", { name: "更新 台新卡費 分類" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "查看 台新卡費 活動詳情" }).click();
+  const detailDialog = page.getByRole("dialog", { name: "活動明細" });
+  const detailBox = await detailDialog.boundingBox();
+  if (!detailBox) throw new Error("Mobile activity detail is not visible.");
+  expect(detailBox.width).toBe(390);
+  expect(detailBox.height).toBe(844);
+  await expect(
+    page.getByRole("combobox", { name: "更新 台新卡費 分類" }),
+  ).toBeVisible();
+});
+
+test("merges a matching invoice and counts an unmatched invoice as expense", async ({
+  page,
+}) => {
+  const month = new Date().toISOString().slice(0, 7);
+  await page.route("**/api/bank", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        accounts: [
+          {
+            id: "card-1",
+            connectorId: "sinopac",
+            sourceId: "card-source-1",
+            institutionName: "測試銀行",
+            accountName: "測試信用卡",
+            accountType: "credit",
+            currency: "TWD",
+          },
+        ],
+        transactions: [
+          {
+            id: "transaction-1",
+            connectorId: "sinopac",
+            accountId: "card-1",
+            sourceId: "transaction-source-1",
+            postedDate: `${month}-10`,
+            authorizedAt: `${month}-10T12:00:00.000Z`,
+            amount: 860,
+            currency: "TWD",
+            description: "信用卡消費",
+            counterparty: "好食餐飲",
+            status: "posted",
+            excludedFromCalculation: false,
+            classification: {
+              categoryId: "food",
+              label: "餐飲",
+              source: "fallback",
+            },
+          },
+        ],
+      }),
+    });
   });
-  const calculationButton = page.getByRole("button", {
-    name: "排除 台新卡費 的統計計算",
+  await page.route("**/api/invoices", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([
+        {
+          id: "invoice-matched",
+          connectorId: "einvoice",
+          sourceId: "invoice-source-1",
+          invoiceDate: `${month}-10`,
+          invoiceNumber: "AB12345678",
+          sellerName: "好食餐飲有限公司",
+          amount: 860,
+          items: [],
+        },
+        {
+          id: "invoice-unmatched",
+          connectorId: "einvoice",
+          sourceId: "invoice-source-2",
+          invoiceDate: `${month}-08`,
+          invoiceNumber: "CD12345678",
+          sellerName: "未支援銀行商店",
+          amount: 1490,
+          items: [],
+        },
+      ]),
+    });
   });
-  const [selectBox, buttonBox] = await Promise.all([
-    categorySelect.boundingBox(),
-    calculationButton.boundingBox(),
-  ]);
-  if (!selectBox || !buttonBox)
-    throw new Error("Mobile activity controls are not visible.");
-  expect(Math.abs(selectBox.y - buttonBox.y)).toBeLessThan(2);
+
+  await page.goto("/#/activity");
+
+  await expect(
+    page.getByRole("button", { name: "發票 63.4% NT$1,490" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "餐飲 36.6% NT$860" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("−NT$2,350", { exact: true }).first(),
+  ).toBeVisible();
+
+  const activityRows = page.locator("tbody tr");
+  await expect(activityRows).toHaveCount(2);
+  await expect(
+    activityRows.filter({ hasText: "好食餐飲有限公司" }),
+  ).toContainText("信用卡＋發票");
+  await expect(
+    activityRows.filter({ hasText: "未支援銀行商店" }),
+  ).toContainText("−NT$1,490");
+
+  await page.getByRole("tab", { name: "發票", exact: true }).click();
+  await expect(activityRows).toHaveCount(2);
+  await page.getByRole("tab", { name: "信用卡", exact: true }).click();
+  await expect(activityRows).toHaveCount(1);
+});
+
+test("manually maps, manages, and separates a same-day invoice transaction on mobile", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const month = new Date().toISOString().slice(0, 7);
+  let mappings: Array<{
+    invoiceId: string;
+    transactionId: string | null;
+    decision: "linked" | "separate";
+    updatedAt: string;
+  }> = [];
+
+  await page.route("**/api/activity/invoice-mappings**", async (route) => {
+    const request = route.request();
+    const invoiceId = new URL(request.url()).pathname.split("/").at(-1)!;
+    if (request.method() === "PUT") {
+      const body = request.postDataJSON() as { transactionId: string };
+      const preference = {
+        invoiceId,
+        transactionId: body.transactionId,
+        decision: "linked" as const,
+        updatedAt: new Date().toISOString(),
+      };
+      mappings = [preference];
+      await route.fulfill({ json: preference });
+      return;
+    }
+    if (request.method() === "DELETE") {
+      const preference = {
+        invoiceId,
+        transactionId: null,
+        decision: "separate" as const,
+        updatedAt: new Date().toISOString(),
+      };
+      mappings = [preference];
+      await route.fulfill({ json: preference });
+      return;
+    }
+    await route.fulfill({ json: mappings });
+  });
+  await page.route("**/api/bank", async (route) => {
+    await route.fulfill({
+      json: {
+        accounts: [
+          {
+            id: "card-1",
+            connectorId: "sinopac",
+            sourceId: "card-source-1",
+            institutionName: "玉山銀行",
+            accountName: "信用卡",
+            accountType: "credit",
+            currency: "TWD",
+          },
+        ],
+        transactions: [
+          {
+            id: "pxpay-tea",
+            connectorId: "sinopac",
+            accountId: "card-1",
+            sourceId: "transaction-source-1",
+            postedDate: `${month}-06`,
+            amount: 37,
+            currency: "TWD",
+            description: "全支付﹘樂法 台中漢口店",
+            counterparty: "全支付﹘樂法 台中漢口店",
+            status: "posted",
+            excludedFromCalculation: false,
+            classification: {
+              categoryId: "food",
+              label: "餐飲",
+              source: "fallback",
+            },
+          },
+          {
+            id: "dinner",
+            connectorId: "sinopac",
+            accountId: "card-1",
+            sourceId: "transaction-source-2",
+            postedDate: `${month}-06`,
+            amount: -265,
+            currency: "TWD",
+            description: "連支＊萬川雞飯．肉骨茶",
+            counterparty: "連支＊萬川雞飯．肉骨茶",
+            status: "posted",
+            excludedFromCalculation: false,
+            classification: {
+              categoryId: "food",
+              label: "餐飲",
+              source: "fallback",
+            },
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/api/invoices", async (route) => {
+    await route.fulfill({
+      json: [
+        {
+          id: "invoice-1",
+          connectorId: "einvoice",
+          sourceId: "invoice-source-1",
+          invoiceDate: `${month}-06T04:39:18.000Z`,
+          invoiceNumber: "DR95850239",
+          sellerName: "菲尖極道商行",
+          amount: 50,
+          items: [
+            {
+              id: "invoice-line-1",
+              sourceId: "invoice-line-source-1",
+              lineNumber: 1,
+              description: "瓶裝飲料",
+              quantity: 1,
+              unitPrice: 50,
+              amount: 50,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  await page.goto("/#/activity");
+  await page
+    .getByRole("button", { name: "查看 菲尖極道商行 活動詳情" })
+    .click();
+  await expect(page.getByText("瓶裝飲料", { exact: true })).toBeVisible();
+  await expect(page.getByText("尚未找到銀行／信用卡交易")).toBeVisible();
+  await page.getByRole("button", { name: "配對交易" }).click();
+  await expect(
+    page.getByRole("heading", { name: "選擇同日候選交易" }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", {
+      name: /^全支付﹘樂法 台中漢口店 玉山銀行/,
+    })
+    .click();
+  await page.getByRole("button", { name: "下一步" }).click();
+  await expect(
+    page.getByRole("heading", { name: "確認合併這兩筆？" }),
+  ).toBeVisible();
+  await expect(page.getByText("差額 NT$13", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "確認配對" }).click();
+
+  await expect(page.getByText("已完成配對，活動只顯示一筆")).toBeVisible();
+  await expect(
+    page.getByText("信用卡＋發票 · 2026/7/6", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "查看 菲尖極道商行 活動詳情" })
+    .click();
+  const detail = page.getByRole("dialog", { name: "活動明細" });
+  await expect(
+    detail
+      .getByText("銀行／信用卡原始名稱")
+      .locator("..")
+      .getByText("全支付﹘樂法 台中漢口店", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    detail
+      .getByText("發票商家名稱")
+      .locator("..")
+      .getByText("菲尖極道商行", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "管理配對" }).click();
+  await page.getByRole("button", { name: "解除並保持分開" }).click();
+  await expect(page.getByText("已解除配對，兩筆活動將保持分開")).toBeVisible();
+  await expect(page.getByText("菲尖極道商行").first()).toBeVisible();
+  await expect(page.getByText("全支付﹘樂法 台中漢口店").first()).toBeVisible();
 });

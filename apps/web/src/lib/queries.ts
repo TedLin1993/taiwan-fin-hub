@@ -11,6 +11,7 @@ import type {
   InvestmentRow,
   InvestmentTransactionRow,
   InvoiceRow,
+  InvoiceTransactionPreference,
   ManualAssetHistoryEntry,
   ManualAssetRow,
   NetWorthHistoryRow,
@@ -49,6 +50,15 @@ export const invoicesQuery = (getApi: ApiProvider) =>
   queryOptions({
     queryKey: queryKeys.invoices,
     queryFn: () => getApi().get<InvoiceRow[]>("/api/invoices"),
+  });
+
+export const invoiceTransactionMappingsQuery = (getApi: ApiProvider) =>
+  queryOptions({
+    queryKey: queryKeys.invoiceTransactionMappings,
+    queryFn: () =>
+      getApi().get<InvoiceTransactionPreference[]>(
+        "/api/activity/invoice-mappings",
+      ),
   });
 
 export const manualAssetsQuery = (getApi: ApiProvider) =>

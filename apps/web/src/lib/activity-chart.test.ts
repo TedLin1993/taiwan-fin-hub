@@ -22,7 +22,7 @@ function item(overrides: Partial<ActivityItem>): ActivityItem {
 }
 
 describe("activity category chart", () => {
-  it("converts bank cash flow to TWD and treats card activity as expense", () => {
+  it("converts cash flow to TWD and treats cards and invoices as expenses", () => {
     expect(
       activityCashAmountTwd(item({ amount: 10, currency: "USD" }), { USD: 32 }),
     ).toBe(320);
@@ -31,7 +31,10 @@ describe("activity category chart", () => {
     ).toBe(-500);
     expect(
       activityCashAmountTwd(item({ source: "invoice", amount: 500 }), {}),
-    ).toBe(0);
+    ).toBe(-500);
+    expect(activityCashFlow(item({ source: "invoice", amount: 500 }))).toBe(
+      "expense",
+    );
   });
 
   it("groups categories and sorts them by amount descending", () => {

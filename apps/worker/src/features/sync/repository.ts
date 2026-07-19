@@ -73,6 +73,77 @@ export function deleteSyncedBankDataStatements(
   ];
 }
 
+export function reconcileEsunLifecycleShadowStatements(db: D1Database) {
+  const shadowJoin = `canonical.connector_id = shadow.connector_id
+      AND canonical.account_id = shadow.account_id
+      AND canonical.source_id = replace(
+        replace(shadow.source_id, ':已入帳:', ':'),
+        ':未入帳:', ':'
+      )`;
+  const isLifecycleShadow = `shadow.connector_id = 'esun'
+      AND (
+        instr(shadow.source_id, ':已入帳:') > 0
+        OR instr(shadow.source_id, ':未入帳:') > 0
+      )`;
+
+  return [
+    db.prepare(
+      `INSERT INTO bank_transaction_preferences
+        (transaction_id, excluded_from_calculation, created_at, updated_at)
+       SELECT canonical.id, preference.excluded_from_calculation,
+              preference.created_at, preference.updated_at
+       FROM bank_transactions shadow
+       JOIN bank_transactions canonical ON ${shadowJoin}
+       JOIN bank_transaction_preferences preference
+         ON preference.transaction_id = shadow.id
+       WHERE ${isLifecycleShadow}
+       ON CONFLICT(transaction_id) DO NOTHING`,
+    ),
+    db.prepare(
+      `INSERT INTO classification_overrides
+        (id, target_type, target_id, category_id, created_at, updated_at)
+       SELECT 'override:bank_transaction:' || canonical.id,
+              'bank_transaction', canonical.id, override.category_id,
+              override.created_at, override.updated_at
+       FROM bank_transactions shadow
+       JOIN bank_transactions canonical ON ${shadowJoin}
+       JOIN classification_overrides override
+         ON override.target_type = 'bank_transaction'
+        AND override.target_id = shadow.id
+       WHERE ${isLifecycleShadow}
+       ON CONFLICT(target_type, target_id) DO NOTHING`,
+    ),
+    db.prepare(
+      `DELETE FROM bank_transaction_preferences
+       WHERE transaction_id IN (
+         SELECT shadow.id
+         FROM bank_transactions shadow
+         JOIN bank_transactions canonical ON ${shadowJoin}
+         WHERE ${isLifecycleShadow}
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM classification_overrides
+       WHERE target_type = 'bank_transaction'
+         AND target_id IN (
+           SELECT shadow.id
+           FROM bank_transactions shadow
+           JOIN bank_transactions canonical ON ${shadowJoin}
+           WHERE ${isLifecycleShadow}
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM bank_transactions
+       WHERE id IN (
+         SELECT shadow.id
+         FROM bank_transactions shadow
+         JOIN bank_transactions canonical ON ${shadowJoin}
+         WHERE ${isLifecycleShadow}
+       )`,
+    ),
+  ];
+}
+
 export function linkCanonicalBankAccountsStatement(db: D1Database) {
   return db.prepare(
     `UPDATE bank_accounts

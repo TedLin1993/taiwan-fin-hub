@@ -1,3 +1,4 @@
+import { activityRoutes } from "./features/activity/route";
 import { bankCalculationRoutes } from "./features/bank/calculation-route";
 import { bankRoutes } from "./features/bank/route";
 import { classificationRoutes } from "./features/classification/route";
@@ -29,6 +30,7 @@ api.route("/", manualAssetRoutes);
 api.route("/", exchangeRateRoutes);
 api.route("/", invoiceRoutes);
 api.route("/", classificationRoutes);
+api.route("/", activityRoutes);
 api.route("/", bankCalculationRoutes);
 api.route("/", dashboardRoutes);
 api.route("/", ocrRoutes);

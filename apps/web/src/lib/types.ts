@@ -50,8 +50,12 @@ export interface ActivityItem {
   currency: string;
   category: string;
   categoryId?: string;
+  classificationPattern?: string;
   transactionId?: string;
   excludedFromCalculation?: boolean;
+  invoiceId?: string;
+  invoiceAmount?: number;
+  invoiceSearchText?: string;
   status: string;
 }
 export type ConnectorId = CoreConnectorId;
@@ -77,6 +81,12 @@ export interface InvoiceRow {
   sellerName?: string;
   amount: number;
   items: InvoiceLineItemRow[];
+}
+export interface InvoiceTransactionPreference {
+  invoiceId: string;
+  transactionId: string | null;
+  decision: "linked" | "separate";
+  updatedAt: string;
 }
 export interface InvestmentRow {
   id: string;
