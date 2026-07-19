@@ -263,7 +263,7 @@ interface EsunCardOverviewData {
   }> | null;
 }
 
-interface EsunTimelineTransaction {
+export interface EsunTimelineTransaction {
   payCur?: string | null;
   payAmt?: string | null;
   storeName?: string | null;
@@ -277,7 +277,7 @@ interface EsunTimelineTransaction {
   acfg?: string | null;
 }
 
-interface EsunTimelineMonth {
+export interface EsunTimelineMonth {
   year?: string | null;
   month?: string | null;
   txnList?: EsunTimelineTransaction[] | null;
@@ -290,7 +290,7 @@ interface EsunTimelineData {
   isNoData?: boolean | null;
 }
 
-interface EsunTimelinePage {
+export interface EsunTimelinePage {
   timelineList: EsunTimelineMonth[];
   startDate?: string;
   endDate?: string;
@@ -415,10 +415,31 @@ function getCreditCards(detail: EsunCardDetailData): EsunCardRow[] {
   });
 }
 
-async function scrapeTransactions(client: EsunHttpClient): Promise<Array<Omit<BankTransaction, "id" | "connectorId">>> {
+async function scrapeTransactions(
+  client: EsunHttpClient,
+): Promise<Array<Omit<BankTransaction, "id" | "connectorId">>> {
   const pages = await fetchTimelinePages(client);
-  const transactions: Array<Omit<BankTransaction, "id" | "connectorId">> = [];
-  const sourceIdOccurrences = new Map<string, number>();
+  return normalizeEsunTimelineTransactions(pages);
+}
+
+type EsunTimelineCandidate = {
+  transaction: EsunTimelineTransaction;
+  timelinePage: EsunTimelinePage;
+  timelineMonth: EsunTimelineMonth;
+  accountId: string;
+  postedDate: string;
+  amount: number;
+  currency: string;
+  description: string;
+  sourceKey: string;
+  lifecycle: string;
+  order: number;
+};
+
+export function normalizeEsunTimelineTransactions(
+  pages: EsunTimelinePage[],
+): Array<Omit<BankTransaction, "id" | "connectorId">> {
+  const candidates: EsunTimelineCandidate[] = [];
 
   for (const timelinePage of pages) {
     for (const month of timelinePage.timelineList) {
@@ -426,7 +447,10 @@ async function scrapeTransactions(client: EsunHttpClient): Promise<Array<Omit<Ba
       if (!year) continue;
 
       for (const txn of month.txnList ?? []) {
-        const postedDate = normalizeEsunMonthDay(year, txn.consumerDt ?? txn.postingDt ?? "");
+        const postedDate = normalizeEsunMonthDay(
+          year,
+          txn.consumerDt ?? txn.postingDt ?? "",
+        );
         const amount = parseTwd(txn.payAmt ?? txn.consumerAmt ?? "0");
         const currency = txn.payCur?.trim() || txn.consumerCur?.trim() || "TWD";
         const description = txn.storeName?.trim() || "玉山信用卡交易";
@@ -437,33 +461,66 @@ async function scrapeTransactions(client: EsunHttpClient): Promise<Array<Omit<Ba
           description,
           amount,
           currency,
-          txn.acfg?.trim() ?? ""
         ].join(":");
-        const occurrence = (sourceIdOccurrences.get(sourceKey) ?? 0) + 1;
-        sourceIdOccurrences.set(sourceKey, occurrence);
-
-        transactions.push({
+        candidates.push({
+          transaction: txn,
+          timelinePage,
+          timelineMonth: month,
           accountId,
-          sourceId: `${sourceKey}:${occurrence}`,
           postedDate,
           amount,
           currency,
           description,
-          counterparty: description,
-          raw: {
-            ...txn,
-            timelineYear: month.year,
-            timelineMonth: month.month,
-            timelineStartDate: timelinePage.startDate,
-            timelineEndDate: timelinePage.endDate,
-            duplicateOccurrence: occurrence
-          }
+          sourceKey,
+          lifecycle: txn.acfg?.trim() ?? "",
+          order: candidates.length,
         });
       }
     }
   }
 
-  return transactions;
+  const candidatesBySourceKey = new Map<string, EsunTimelineCandidate[]>();
+  for (const candidate of candidates) {
+    const group = candidatesBySourceKey.get(candidate.sourceKey) ?? [];
+    group.push(candidate);
+    candidatesBySourceKey.set(candidate.sourceKey, group);
+  }
+
+  const selected = Array.from(candidatesBySourceKey.values()).flatMap(
+    (group) => {
+      const posted = group.filter(({ lifecycle }) => lifecycle === "已入帳");
+      const pending = group.filter(({ lifecycle }) => lifecycle === "未入帳");
+      const other = group.filter(
+        ({ lifecycle }) => lifecycle !== "已入帳" && lifecycle !== "未入帳",
+      );
+      if (posted.length === 0 || pending.length === 0) return group;
+      return [...posted, ...pending.slice(posted.length), ...other];
+    },
+  );
+  selected.sort((left, right) => left.order - right.order);
+
+  const sourceIdOccurrences = new Map<string, number>();
+  return selected.map((candidate) => {
+    const occurrence = (sourceIdOccurrences.get(candidate.sourceKey) ?? 0) + 1;
+    sourceIdOccurrences.set(candidate.sourceKey, occurrence);
+    return {
+      accountId: candidate.accountId,
+      sourceId: `${candidate.sourceKey}:${occurrence}`,
+      postedDate: candidate.postedDate,
+      amount: candidate.amount,
+      currency: candidate.currency,
+      description: candidate.description,
+      counterparty: candidate.description,
+      raw: {
+        ...candidate.transaction,
+        timelineYear: candidate.timelineMonth.year,
+        timelineMonth: candidate.timelineMonth.month,
+        timelineStartDate: candidate.timelinePage.startDate,
+        timelineEndDate: candidate.timelinePage.endDate,
+        duplicateOccurrence: occurrence,
+      },
+    };
+  });
 }
 
 async function fetchTimelinePages(client: EsunHttpClient): Promise<EsunTimelinePage[]> {

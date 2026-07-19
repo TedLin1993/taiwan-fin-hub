@@ -41,6 +41,7 @@ import {
   connectorStateStatement,
   deleteSyncedBankDataStatements,
   linkCanonicalBankAccountsStatement,
+  reconcileEsunLifecycleShadowStatements,
   updateConnectorEncryptedConfig,
 } from "./repository";
 import {
@@ -293,8 +294,11 @@ export async function syncEsun(
     records,
     afterPromoteStatements:
       bankAccounts.length > 0
-        ? [linkCanonicalBankAccountsStatement(env.DB)]
-        : [],
+        ? [
+            linkCanonicalBankAccountsStatement(env.DB),
+            ...reconcileEsunLifecycleShadowStatements(env.DB),
+          ]
+        : reconcileEsunLifecycleShadowStatements(env.DB),
     finalizeStatements,
   });
 

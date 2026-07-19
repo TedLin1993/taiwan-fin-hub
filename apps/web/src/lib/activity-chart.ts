@@ -21,9 +21,14 @@ export const ACTIVITY_CATEGORY_COLORS = [
 ];
 
 export function activityCashFlow(item: ActivityItem): ActivityFlow | null {
-  if (item.amount == null || (item.source !== "bank" && item.source !== "card"))
+  if (
+    item.amount == null ||
+    (item.source !== "bank" &&
+      item.source !== "card" &&
+      item.source !== "invoice")
+  )
     return null;
-  if (item.source === "card") return "expense";
+  if (item.source === "card" || item.source === "invoice") return "expense";
   if (item.amount > 0) return "income";
   if (item.amount < 0) return "expense";
   return null;
@@ -36,12 +41,16 @@ export function activityCashAmountTwd(
   if (
     item.amount == null ||
     item.excludedFromCalculation ||
-    (item.source !== "bank" && item.source !== "card")
+    (item.source !== "bank" &&
+      item.source !== "card" &&
+      item.source !== "invoice")
   )
     return 0;
   const rate = item.currency === "TWD" ? 1 : (rates[item.currency] ?? 0);
   const converted = item.amount * rate;
-  return item.source === "card" ? -Math.abs(converted) : converted;
+  return item.source === "card" || item.source === "invoice"
+    ? -Math.abs(converted)
+    : converted;
 }
 
 export function buildActivityCategorySlices(

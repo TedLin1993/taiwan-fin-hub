@@ -11,6 +11,13 @@
     CreditCard,
     FileText,
     TrendingUp,
+    ArrowDown,
+    Check,
+    Link2,
+    Unlink2,
+    ArrowLeft,
+    ChevronRight,
+    X,
   } from "@lucide/svelte";
   import Card from "../../components/ui/Card.svelte";
   import CardHeader from "../../components/ui/CardHeader.svelte";
@@ -30,15 +37,28 @@
     bankQuery,
     classificationCategoriesQuery,
     exchangeRatesQuery,
+    invoiceTransactionMappingsQuery,
     investmentTransactionsQuery,
     invoicesQuery,
   } from "../../lib/queries";
-  import type { ActivityItem, BankData, View } from "../../lib/types";
+  import type {
+    ActivityItem,
+    BankData,
+    BankTransactionRow,
+    InvoiceRow,
+    InvoiceTransactionPreference,
+    View,
+  } from "../../lib/types";
   import {
     buildActivityCategorySlices,
     activityCashAmountTwd,
     activityCashFlow,
   } from "../../lib/activity-chart";
+  import {
+    deduplicateBankTransactions,
+    invoiceTransactionCandidates,
+    matchInvoicesToTransactions,
+  } from "../../lib/activity-matching";
   import {
     formatCompactTwd,
     formatCurrency,
@@ -51,6 +71,9 @@
     $props();
   const bank = createQuery(bankQuery(() => api));
   const invoices = createQuery(invoicesQuery(() => api));
+  const invoiceMappings = createQuery(
+    invoiceTransactionMappingsQuery(() => api),
+  );
   const trades = createQuery(investmentTransactionsQuery(() => api));
   const rates = createQuery(exchangeRatesQuery(() => api));
   const categoryRows = createQuery(classificationCategoriesQuery(() => api));
@@ -69,6 +92,13 @@
     pattern: string;
     operator: "contains" | "equals";
   } | null>(null);
+  let mappingDialog = $state<{
+    invoice: InvoiceRow;
+    step: "candidates" | "confirm" | "actions";
+    transactionId?: string;
+  } | null>(null);
+  let mappingNotice = $state("");
+  let detailKey = $state<string | null>(null);
   const fallbackCategories = [
     { id: "salary", label: "薪資" },
     { id: "transfer", label: "轉帳" },
@@ -99,43 +129,79 @@
       ($bank.data?.accounts ?? []).map((account) => [account.id, account]),
     ),
   );
+  const activityBankTransactions = $derived(
+    deduplicateBankTransactions(
+      ($bank.data?.transactions ?? []).map((transaction) => ({
+        ...transaction,
+        accountType:
+          transaction.accountType ??
+          bankAccounts.get(transaction.accountId)?.accountType,
+      })),
+    ),
+  );
+  const invoiceMatches = $derived(
+    matchInvoicesToTransactions(
+      activityBankTransactions,
+      $invoices.data ?? [],
+      $invoiceMappings.data ?? [],
+    ),
+  );
   const rawItems = $derived<ActivityItem[]>(
     [
-      ...($bank.data?.transactions ?? []).map((t) => {
+      ...activityBankTransactions.map((t) => {
         const account = bankAccounts.get(t.accountId);
+        const matchedInvoice = invoiceMatches.transactionToInvoice.get(t.id);
         const isCard =
           account?.accountType === "credit" || t.accountType === "credit";
+        const accountLabel =
+          t.institutionName ??
+          account?.institutionName ??
+          t.accountName ??
+          account?.accountName ??
+          "";
         return {
           id: t.id,
           source: isCard ? ("card" as const) : ("bank" as const),
           date: t.postedDate ?? t.authorizedAt ?? "",
-          title: t.description ?? t.counterparty ?? "銀行交易",
-          subtitle:
-            t.institutionName ??
-            account?.institutionName ??
-            t.accountName ??
-            account?.accountName ??
-            "",
+          title:
+            matchedInvoice?.sellerName ??
+            t.description ??
+            t.counterparty ??
+            "銀行交易",
+          subtitle: [accountLabel, matchedInvoice?.invoiceNumber]
+            .filter(Boolean)
+            .join(" · "),
           amount: t.amount,
           currency: t.currency,
           category: t.classification?.label ?? "其他",
           categoryId: t.classification?.categoryId ?? "other",
+          classificationPattern: t.counterparty ?? t.description,
           transactionId: t.id,
+          invoiceId: matchedInvoice?.id,
+          invoiceAmount: matchedInvoice?.amount,
+          invoiceSearchText: matchedInvoice
+            ? `${matchedInvoice.sellerName ?? ""} ${matchedInvoice.invoiceNumber ?? ""} ${matchedInvoice.items.map((item) => item.description).join(" ")}`
+            : undefined,
           excludedFromCalculation: t.excludedFromCalculation,
           status: t.status,
         };
       }),
-      ...($invoices.data ?? []).map((i) => ({
-        id: i.id,
-        source: "invoice" as const,
-        date: i.invoiceDate,
-        title: i.sellerName ?? "電子發票",
-        subtitle: i.invoiceNumber ?? "",
-        amount: i.amount,
-        currency: "TWD",
-        category: "發票",
-        status: "已開立",
-      })),
+      ...($invoices.data ?? [])
+        .filter((i) => !invoiceMatches.invoiceToTransactionId.has(i.id))
+        .map((i) => ({
+          id: i.id,
+          source: "invoice" as const,
+          date: i.invoiceDate,
+          title: i.sellerName ?? "電子發票",
+          subtitle: i.invoiceNumber ?? "",
+          amount: i.amount,
+          currency: "TWD",
+          category: "發票",
+          invoiceId: i.id,
+          invoiceAmount: i.amount,
+          invoiceSearchText: i.items.map((item) => item.description).join(" "),
+          status: "已開立",
+        })),
       ...($trades.data ?? []).map((t) => ({
         id: t.id,
         source: "investment" as const,
@@ -154,6 +220,9 @@
       })),
     ].sort((a, b) => b.date.localeCompare(a.date)),
   );
+  const detailItem = $derived(
+    rawItems.find((item) => activityKey(item) === detailKey),
+  );
   const months = $derived(
     [
       ...new Set(
@@ -166,18 +235,20 @@
       .sort((a, b) => b.localeCompare(a))
       .slice(0, 12),
   );
-  const monthlyCashItems = $derived(
+  const monthlyCalculatedItems = $derived(
     rawItems.filter(
       (item) =>
         item.date.startsWith(selectedMonth) &&
-        (item.source === "bank" || item.source === "card"),
+        (item.source === "bank" ||
+          item.source === "card" ||
+          item.source === "invoice"),
     ),
   );
   const incomeSlices = $derived(
-    buildActivityCategorySlices(monthlyCashItems, "income", rateValues),
+    buildActivityCategorySlices(monthlyCalculatedItems, "income", rateValues),
   );
   const expenseSlices = $derived(
-    buildActivityCategorySlices(monthlyCashItems, "expense", rateValues),
+    buildActivityCategorySlices(monthlyCalculatedItems, "expense", rateValues),
   );
   const incomeTotal = $derived(
     incomeSlices.reduce((sum, slice) => sum + slice.amount, 0),
@@ -204,7 +275,9 @@
       const items = rawItems.filter(
         (item) =>
           item.date.startsWith(month) &&
-          (item.source === "bank" || item.source === "card"),
+          (item.source === "bank" ||
+            item.source === "card" ||
+            item.source === "invoice"),
       );
       return {
         month,
@@ -230,11 +303,15 @@
     rawItems.filter((item) => {
       const matchesFlow =
         !selectedCategory || activityCashFlow(item) === selectedCategory.flow;
+      const matchesSource =
+        source === "all" ||
+        item.source === source ||
+        (source === "invoice" && Boolean(item.invoiceId));
       return (
-        (source === "all" || item.source === source) &&
+        matchesSource &&
         item.date.startsWith(selectedMonth) &&
         (!search.trim() ||
-          `${item.title} ${item.subtitle} ${item.category}`
+          `${item.title} ${item.subtitle} ${item.category} ${item.invoiceSearchText ?? ""}`
             .toLowerCase()
             .includes(search.toLowerCase())) &&
         (!selectedCategory ||
@@ -242,6 +319,19 @@
       );
     }),
   );
+  const mappingCandidates = $derived.by(() => {
+    if (!mappingDialog) return [];
+    const unavailableTransactionIds = new Set(
+      Array.from(invoiceMatches.transactionToInvoice.entries())
+        .filter(([, invoice]) => invoice.id !== mappingDialog!.invoice.id)
+        .map(([transactionId]) => transactionId),
+    );
+    return invoiceTransactionCandidates(
+      activityBankTransactions,
+      mappingDialog.invoice,
+      unavailableTransactionIds,
+    );
+  });
   const categoryMutation = createMutation({
     mutationFn: async (payload: {
       transactionId: string;
@@ -299,13 +389,38 @@
       qc.invalidateQueries({ queryKey: queryKeys.bank });
     },
   });
+  const mappingMutation = createMutation({
+    mutationFn: (payload: { invoiceId: string; transactionId: string }) =>
+      api.put<InvoiceTransactionPreference>(
+        `/api/activity/invoice-mappings/${encodeURIComponent(payload.invoiceId)}`,
+        { transactionId: payload.transactionId },
+      ),
+    onSuccess: (preference) => {
+      updateMappingPreference(preference);
+      mappingDialog = null;
+      detailKey = null;
+      showMappingNotice("已完成配對，活動只顯示一筆");
+    },
+  });
+  const separationMutation = createMutation({
+    mutationFn: (invoiceId: string) =>
+      api.delete<InvoiceTransactionPreference>(
+        `/api/activity/invoice-mappings/${encodeURIComponent(invoiceId)}`,
+      ),
+    onSuccess: (preference) => {
+      updateMappingPreference(preference);
+      mappingDialog = null;
+      detailKey = null;
+      showMappingNotice("已解除配對，兩筆活動將保持分開");
+    },
+  });
   function openCategory(item: ActivityItem, categoryId: string) {
     if (item.transactionId && categoryId !== item.categoryId)
       pending = {
         item,
         categoryId,
         addRule: false,
-        pattern: item.title,
+        pattern: item.classificationPattern ?? item.title,
         operator: "contains",
       };
   }
@@ -319,13 +434,27 @@
     selectedMonth = month;
     selectedCategory = null;
   }
-  function sourceLabel(source: ActivityItem["source"]) {
-    return {
+  function sourceLabel(item: ActivityItem) {
+    const label = {
       bank: "銀行",
       card: "信用卡",
       investment: "投資",
       invoice: "發票",
-    }[source];
+    }[item.source];
+    return item.source !== "invoice" && item.invoiceId
+      ? `${label}＋發票`
+      : label;
+  }
+  function activityKey(item: ActivityItem) {
+    return `${item.source}-${item.id}`;
+  }
+  function openDetail(item: ActivityItem) {
+    detailKey = activityKey(item);
+  }
+  function transactionForItem(item: ActivityItem) {
+    return activityBankTransactions.find(
+      (transaction) => transaction.id === item.transactionId,
+    );
   }
   function toggleCalculation(item: ActivityItem) {
     if (!item.transactionId) return;
@@ -334,12 +463,75 @@
       excludedFromCalculation: !item.excludedFromCalculation,
     });
   }
+  function updateMappingPreference(preference: InvoiceTransactionPreference) {
+    qc.setQueryData<InvoiceTransactionPreference[]>(
+      queryKeys.invoiceTransactionMappings,
+      (current = []) => [
+        preference,
+        ...current.filter((row) => row.invoiceId !== preference.invoiceId),
+      ],
+    );
+    qc.invalidateQueries({ queryKey: queryKeys.invoiceTransactionMappings });
+  }
+  function showMappingNotice(message: string) {
+    mappingNotice = message;
+    window.setTimeout(() => {
+      if (mappingNotice === message) mappingNotice = "";
+    }, 3500);
+  }
+  function invoiceForItem(item: ActivityItem) {
+    return ($invoices.data ?? []).find(
+      (invoice) => invoice.id === item.invoiceId,
+    );
+  }
+  function openMapping(item: ActivityItem) {
+    const invoice = invoiceForItem(item);
+    if (!invoice) return;
+    mappingDialog = {
+      invoice,
+      step: item.transactionId ? "actions" : "candidates",
+      transactionId: item.transactionId,
+    };
+  }
+  function chooseMappingTransaction(transactionId: string) {
+    if (!mappingDialog) return;
+    mappingDialog.transactionId = transactionId;
+  }
+  function selectedMappingTransaction(): BankTransactionRow | undefined {
+    if (!mappingDialog?.transactionId) return undefined;
+    return activityBankTransactions.find(
+      (transaction) => transaction.id === mappingDialog?.transactionId,
+    );
+  }
+  function mappingMerchant(transaction: BankTransactionRow) {
+    return transaction.counterparty ?? transaction.description ?? "銀行交易";
+  }
+  function mappingAccount(transaction: BankTransactionRow) {
+    return (
+      transaction.institutionName ??
+      transaction.accountName ??
+      bankAccounts.get(transaction.accountId)?.institutionName ??
+      "銀行／信用卡"
+    );
+  }
+  function mappingDifference(
+    invoice: InvoiceRow,
+    transaction: BankTransactionRow,
+  ) {
+    return Math.abs(invoice.amount - Math.abs(transaction.amount));
+  }
+  function itemMappingDifference(item: ActivityItem) {
+    if (item.invoiceAmount == null || item.amount == null) return 0;
+    return Math.abs(item.invoiceAmount - Math.abs(item.amount));
+  }
   function renderedAmount(item: ActivityItem) {
-    return item.source === "card" ? -Math.abs(item.amount ?? 0) : item.amount;
+    return item.source === "card" || item.source === "invoice"
+      ? -Math.abs(item.amount ?? 0)
+      : item.amount;
   }
   function countMatches() {
     if (!pending) return 0;
-    return ($bank.data?.transactions ?? []).filter((t) =>
+    return activityBankTransactions.filter((t) =>
       `${t.description ?? ""} ${t.counterparty ?? ""}`
         .toLowerCase()
         .includes(pending!.pattern.toLowerCase()),
@@ -347,7 +539,7 @@
   }
 </script>
 
-{#if $bank.isPending || $invoices.isPending || $trades.isPending}<EmptyState
+{#if $bank.isPending || $invoices.isPending || $invoiceMappings.isPending || $trades.isPending}<EmptyState
     title="載入活動中"
     body="正在整理銀行、投資與發票資料。"
   />{:else}
@@ -375,7 +567,7 @@
             −{formatCurrency(expenseTotal)}
           </p>
           <p class="mt-1 text-xs text-ink/45">
-            不計入發票與已排除活動
+            含未配對發票，不計入已排除活動
           </p></CardContent
         ></Card
       >
@@ -408,7 +600,7 @@
         <div class="min-w-0">
           <h2 class="text-lg font-semibold">每月分類比例</h2>
           <p class="mt-1 text-xs text-ink/45">
-            收入與支出分開計算，發票與已排除活動不列入
+            未配對發票列為支出，已配對發票不重複計算
           </p>
         </div>
         <Select
@@ -547,8 +739,10 @@
               沒有符合條件的活動。
             </p>{:else}{#each filtered.slice(0, 100) as item (item.source + "-" + item.id)}{@const amount =
                 renderedAmount(item)}
-              <div
-                class={`flex min-w-0 items-center gap-3 px-4 py-3 ${item.excludedFromCalculation ? "bg-ink/[0.025]" : ""}`}
+              <button
+                aria-label={`查看 ${item.title} 活動詳情`}
+                class={`flex w-full min-w-0 items-center gap-3 px-4 py-3 text-left transition hover:bg-paper ${item.excludedFromCalculation ? "bg-ink/[0.025]" : ""}`}
+                onclick={() => openDetail(item)}
               >
                 <span
                   class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-steel/10 text-steel"
@@ -563,119 +757,77 @@
                 <div class="min-w-0 flex-1">
                   <p class="truncate text-sm font-semibold">{item.title}</p>
                   <p class="mt-0.5 truncate text-xs text-ink/45">
-                    {sourceLabel(item.source)} · {formatDate(item.date)}
+                    {sourceLabel(item)} · {formatDate(item.date)}
                   </p>
-                  {#if item.transactionId}<div
-                      class="mt-1 flex min-w-0 items-center gap-1.5"
-                    >
-                      <Select
-                        aria-label={`更新 ${item.title} 分類`}
-                        class="h-8 w-24 shrink-0 px-2 py-1 text-xs font-medium text-steel"
-                        value={item.categoryId}
-                        onchange={(e: Event) =>
-                          openCategory(
-                            item,
-                            (e.currentTarget as HTMLSelectElement).value,
-                          )}
-                        >{#each categoryOptions as category (category.id)}<option
-                            value={category.id}>{category.label}</option
-                          >{/each}</Select
-                      >
-                      <Button
-                        aria-label={`${item.excludedFromCalculation ? "恢復" : "排除"} ${item.title} 的統計計算`}
-                        aria-pressed={item.excludedFromCalculation}
-                        class="h-8 shrink-0 px-2 text-[11px]"
-                        disabled={$calculationMutation.isPending &&
-                          $calculationMutation.variables?.transactionId ===
-                            item.transactionId}
-                        size="sm"
-                        variant={item.excludedFromCalculation
-                          ? "secondary"
-                          : "outline"}
-                        onclick={() => toggleCalculation(item)}
-                        >{item.excludedFromCalculation
-                          ? "恢復計算"
-                          : "排除計算"}</Button
-                      >
-                    </div>{/if}
+                  <Badge variant="secondary" class="mt-1.5"
+                    >{item.category}</Badge
+                  >
                 </div>
-                <p
-                  class={`max-w-[42%] shrink-0 truncate text-sm font-semibold tabular-nums ${item.excludedFromCalculation ? "text-ink/35 line-through" : (amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}
-                >
-                  {amount == null
-                    ? "—"
-                    : `${amount >= 0 && item.source !== "invoice" ? "+" : ""}${formatCurrency(amount, item.currency)}`}
-                </p>
-              </div>{/each}{/if}
+                <span class="flex shrink-0 items-center gap-1">
+                  <span
+                    class={`max-w-[38vw] truncate text-sm font-semibold tabular-nums ${item.excludedFromCalculation ? "text-ink/35 line-through" : (amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}
+                  >
+                    {amount == null
+                      ? "—"
+                      : `${amount >= 0 && item.source !== "invoice" ? "+" : ""}${formatCurrency(amount, item.currency)}`}
+                  </span>
+                  <ChevronRight class="size-4 text-ink/30" />
+                </span>
+              </button>{/each}{/if}
         </div>
         <div class="hidden overflow-x-auto md:block">
-          <table class="w-full min-w-[920px] text-left text-sm">
+          <table class="w-full min-w-[760px] text-left text-sm">
             <thead class="bg-paper text-xs font-semibold text-ink/45"
               ><tr
                 ><th class="px-5 py-3">日期</th><th class="px-4 py-3">來源</th
                 ><th class="px-4 py-3">說明／商家</th><th class="px-4 py-3"
                   >分類</th
-                ><th class="px-4 py-3 text-right">金額</th><th class="px-4 py-3"
-                  >計算</th
-                ><th class="px-5 py-3">狀態</th></tr
+                ><th class="px-5 py-3 text-right">金額</th></tr
               ></thead
             ><tbody class="divide-y divide-ink/8"
               >{#if filtered.length === 0}<tr
-                  ><td class="px-5 py-8 text-center text-ink/50" colspan="7"
+                  ><td class="px-5 py-8 text-center text-ink/50" colspan="5"
                     >沒有符合條件的活動。</td
                   ></tr
                 >{:else}{#each filtered.slice(0, 100) as item (item.source + "-" + item.id)}{@const amount =
                     renderedAmount(item)}<tr
-                    class={item.excludedFromCalculation ? "bg-ink/[0.025]" : ""}
+                    aria-label={`查看 ${item.title} 活動詳情`}
+                    class={`cursor-pointer transition hover:bg-paper focus-visible:outline-2 focus-visible:outline-steel ${item.excludedFromCalculation ? "bg-ink/[0.025]" : ""}`}
+                    onclick={() => openDetail(item)}
+                    onkeydown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openDetail(item);
+                      }
+                    }}
+                    role="button"
+                    tabindex="0"
                     ><td class="whitespace-nowrap px-5 py-3 text-ink/55"
                       >{formatDate(item.date)}</td
-                    ><td class="px-4 py-3">{sourceLabel(item.source)}</td><td
+                    ><td class="px-4 py-3">{sourceLabel(item)}</td><td
                       class="max-w-xs px-4 py-3"
                       ><p class="truncate font-semibold">{item.title}</p>
                       <p class="truncate text-xs text-ink/40">
                         {item.subtitle}
-                      </p></td
+                      </p>
+                      {#if item.transactionId && item.invoiceId && itemMappingDifference(item) > 0}<Badge
+                          variant="secondary"
+                          class="mt-1 bg-amber-50 text-amber-800"
+                          >點數折抵 {formatCurrency(
+                            itemMappingDifference(item),
+                          )}</Badge
+                        >{/if}</td
                     ><td class="px-4 py-3"
-                      >{#if item.transactionId}<Select
-                          aria-label={`更新 ${item.title} 分類`}
-                          class="h-9 w-auto px-2 text-sm font-medium text-steel"
-                          value={item.categoryId}
-                          onchange={(e: Event) =>
-                            openCategory(
-                              item,
-                              (e.currentTarget as HTMLSelectElement).value,
-                            )}
-                          >{#each categoryOptions as category (category.id)}<option
-                              value={category.id}>{category.label}</option
-                            >{/each}</Select
-                        >{:else}{item.category}{/if}</td
+                      ><Badge variant="secondary">{item.category}</Badge></td
                     ><td
-                      class={`whitespace-nowrap px-4 py-3 text-right font-semibold tabular-nums ${item.excludedFromCalculation ? "text-ink/35 line-through" : (amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}
-                      >{amount == null
-                        ? "—"
-                        : formatCurrency(amount, item.currency)}</td
-                    ><td class="whitespace-nowrap px-4 py-3"
-                      >{#if item.transactionId}<Button
-                          aria-label={`${item.excludedFromCalculation ? "恢復" : "排除"} ${item.title} 的統計計算`}
-                          aria-pressed={item.excludedFromCalculation}
-                          disabled={$calculationMutation.isPending &&
-                            $calculationMutation.variables?.transactionId ===
-                              item.transactionId}
-                          size="sm"
-                          variant={item.excludedFromCalculation
-                            ? "secondary"
-                            : "outline"}
-                          onclick={() => toggleCalculation(item)}
-                          >{item.excludedFromCalculation
-                            ? "恢復計算"
-                            : "排除計算"}</Button
-                        >{:else}<span class="text-ink/35">—</span>{/if}</td
-                    ><td class="whitespace-nowrap px-5 py-3 text-ink/55"
-                      >{item.status === "pending"
-                        ? "待入帳"
-                        : item.status === "posted"
-                          ? "已入帳"
-                          : item.status}</td
+                      class={`whitespace-nowrap px-5 py-3 text-right font-semibold tabular-nums ${item.excludedFromCalculation ? "text-ink/35 line-through" : (amount ?? 0) < 0 ? "text-coral" : item.source !== "invoice" ? "text-moss" : ""}`}
+                      ><span class="inline-flex items-center gap-2"
+                        >{amount == null
+                          ? "—"
+                          : formatCurrency(amount, item.currency)}<ChevronRight
+                          class="size-4 text-ink/30"
+                        /></span
+                      ></td
                     ></tr
                   >{/each}{/if}</tbody
             >
@@ -688,6 +840,234 @@
         >查看完整發票明細 →</Button
       >
     </div>
+    {#if detailItem}
+      {@const amount = renderedAmount(detailItem)}
+      {@const transaction = transactionForItem(detailItem)}
+      {@const invoice = invoiceForItem(detailItem)}
+      <div
+        aria-labelledby="activity-detail-title"
+        aria-modal="true"
+        class="fixed inset-0 z-[60] bg-ink/40 md:flex md:justify-end"
+        role="dialog"
+      >
+        <div
+          class="flex h-full w-full flex-col overflow-hidden bg-white shadow-2xl md:max-w-[32rem]"
+        >
+          <header
+            class="flex shrink-0 items-center justify-between border-b border-ink/10 px-4 py-3 md:px-6"
+          >
+            <div class="flex min-w-0 items-center gap-2">
+              <button
+                aria-label="返回活動列表"
+                class="flex size-11 shrink-0 items-center justify-center rounded-full text-ink/60 hover:bg-paper"
+                onclick={() => (detailKey = null)}
+                ><ArrowLeft class="size-5 md:hidden" /><X
+                  class="hidden size-5 md:block"
+                /></button
+              >
+              <h2
+                class="truncate text-lg font-semibold"
+                id="activity-detail-title"
+              >
+                活動明細
+              </h2>
+            </div>
+            <span class="text-xs font-medium text-ink/45"
+              >{sourceLabel(detailItem)}</span
+            >
+          </header>
+
+          <div class="min-h-0 flex-1 overflow-y-auto px-5 py-5 md:px-7 md:py-6">
+            <section class="border-b border-ink/10 pb-5">
+              <div class="flex items-start justify-between gap-4">
+                <div class="min-w-0">
+                  <h3 class="break-words text-xl font-semibold leading-snug">
+                    {detailItem.title}
+                  </h3>
+                  <p class="mt-1 text-sm text-ink/50">
+                    {formatDate(detailItem.date)}{#if transaction}
+                      · {mappingAccount(transaction)}
+                    {/if}
+                  </p>
+                </div>
+                <p
+                  class={`shrink-0 pt-1 text-lg font-bold tabular-nums ${detailItem.excludedFromCalculation ? "text-ink/35 line-through" : (amount ?? 0) < 0 ? "text-coral" : detailItem.source !== "invoice" ? "text-moss" : ""}`}
+                >
+                  {amount == null
+                    ? "—"
+                    : `${amount >= 0 && detailItem.source !== "invoice" ? "+" : ""}${formatCurrency(amount, detailItem.currency)}`}
+                </p>
+              </div>
+              <Badge variant="secondary" class="mt-3"
+                >{detailItem.category}</Badge
+              >
+              {#if detailItem.excludedFromCalculation}<Badge
+                  variant="secondary"
+                  class="ml-2 mt-3">已排除計算</Badge
+                >{/if}
+              {#if transaction && invoice && itemMappingDifference(detailItem) > 0}<Badge
+                  variant="secondary"
+                  class="ml-2 mt-3 bg-amber-50 text-amber-800"
+                  >點數折抵 {formatCurrency(
+                    itemMappingDifference(detailItem),
+                  )}</Badge
+                >{/if}
+            </section>
+
+            <section class="border-b border-ink/10 py-5">
+              <h3 class="text-base font-semibold">來源名稱</h3>
+              <div class="mt-3 grid gap-3">
+                {#if transaction}<div class="rounded-xl bg-steel/10 p-4">
+                    <p class="text-xs font-semibold text-steel">
+                      銀行／信用卡原始名稱
+                    </p>
+                    <p class="mt-1 break-words font-semibold">
+                      {mappingMerchant(transaction)}
+                    </p>
+                    {#if transaction.description && transaction.description !== mappingMerchant(transaction)}<p
+                        class="mt-1 break-words text-xs text-ink/50"
+                      >
+                        {transaction.description}
+                      </p>{/if}
+                    <p class="mt-1 text-xs text-ink/50">
+                      {mappingAccount(transaction)} · 實付 {formatCurrency(
+                        Math.abs(transaction.amount),
+                        transaction.currency,
+                      )}
+                    </p>
+                  </div>{/if}
+                {#if invoice}<div class="rounded-xl bg-coral/10 p-4">
+                    <p class="text-xs font-semibold text-coral">發票商家名稱</p>
+                    <p class="mt-1 break-words font-semibold">
+                      {invoice.sellerName ?? "電子發票"}
+                    </p>
+                    <p class="mt-1 text-xs text-ink/50">
+                      發票 {invoice.invoiceNumber ?? "無發票號碼"} · 總額
+                      {formatCurrency(invoice.amount)}
+                    </p>
+                  </div>{/if}
+                {#if !transaction && invoice}<div
+                    class="rounded-xl bg-amber-50 p-4 text-amber-900"
+                  >
+                    <p class="font-semibold">尚未找到銀行／信用卡交易</p>
+                    <p class="mt-1 text-xs text-ink/55">
+                      仍會列入當月支出；你可以在下方手動配對。
+                    </p>
+                  </div>{/if}
+                {#if !transaction && !invoice}<div
+                    class="rounded-xl bg-paper p-4"
+                  >
+                    <p class="text-xs font-semibold text-ink/50">來源說明</p>
+                    <p class="mt-1 break-words font-semibold">
+                      {detailItem.subtitle || detailItem.title}
+                    </p>
+                  </div>{/if}
+              </div>
+            </section>
+
+            {#if invoice}<section class="border-b border-ink/10 py-5">
+                <h3 class="text-base font-semibold">發票細項</h3>
+                {#if invoice.items.length === 0}<p
+                    class="mt-3 rounded-xl bg-paper p-4 text-sm text-ink/50"
+                  >
+                    此發票沒有品項明細。
+                  </p>{:else}<div class="mt-2 divide-y divide-ink/10">
+                    {#each invoice.items as line (line.id)}<div
+                        class="flex items-start justify-between gap-4 py-3"
+                      >
+                        <div class="min-w-0">
+                          <p class="break-words font-medium">
+                            {line.description}
+                          </p>
+                          <p class="mt-1 text-xs text-ink/50">
+                            {line.quantity != null
+                              ? `${formatNumber(line.quantity)} 件`
+                              : "數量未提供"}{line.unitPrice != null
+                              ? ` × ${formatCurrency(line.unitPrice)}`
+                              : ""}
+                          </p>
+                        </div>
+                        <p class="shrink-0 font-semibold tabular-nums">
+                          {formatCurrency(line.amount)}
+                        </p>
+                      </div>{/each}
+                  </div>{/if}
+              </section>{/if}
+
+            <section class="py-5">
+              <h3 class="text-base font-semibold">活動設定</h3>
+              <div class="mt-2 divide-y divide-ink/10">
+                <div class="flex items-center justify-between gap-4 py-4">
+                  <div>
+                    <p class="font-semibold">分類</p>
+                    {#if !detailItem.transactionId}<p
+                        class="mt-1 text-xs text-ink/50"
+                      >
+                        {invoice
+                          ? "配對銀行／信用卡交易後即可調整"
+                          : "此來源目前不支援調整"}
+                      </p>{/if}
+                  </div>
+                  {#if detailItem.transactionId}<Select
+                      aria-label={`更新 ${detailItem.title} 分類`}
+                      class="h-11 w-40 shrink-0 font-medium text-steel"
+                      value={detailItem.categoryId}
+                      onchange={(event: Event) =>
+                        openCategory(
+                          detailItem,
+                          (event.currentTarget as HTMLSelectElement).value,
+                        )}
+                      >{#each categoryOptions as category (category.id)}<option
+                          value={category.id}>{category.label}</option
+                        >{/each}</Select
+                    >{:else}<Badge variant="secondary"
+                      >{detailItem.category}</Badge
+                    >{/if}
+                </div>
+
+                {#if detailItem.transactionId}<label
+                    class="flex cursor-pointer items-center justify-between gap-4 py-4"
+                  >
+                    <span>
+                      <span class="block font-semibold">排除統計計算</span>
+                      <span class="mt-1 block text-xs text-ink/50"
+                        >保留活動，但不計入收支</span
+                      >
+                    </span>
+                    <Checkbox
+                      aria-label={`${detailItem.excludedFromCalculation ? "恢復" : "排除"} ${detailItem.title} 的統計計算`}
+                      checked={detailItem.excludedFromCalculation}
+                      disabled={$calculationMutation.isPending &&
+                        $calculationMutation.variables?.transactionId ===
+                          detailItem.transactionId}
+                      onchange={() => toggleCalculation(detailItem)}
+                    />
+                  </label>{/if}
+
+                {#if invoice}<div
+                    class="flex items-center justify-between gap-4 py-4"
+                  >
+                    <div class="min-w-0">
+                      <p class="font-semibold">發票配對</p>
+                      <p
+                        class={`mt-1 text-xs ${transaction ? "text-moss" : "text-coral"}`}
+                      >
+                        {transaction ? "已配對，可變更或解除" : "尚未配對"}
+                      </p>
+                    </div>
+                    <Button
+                      class="h-11 shrink-0 whitespace-nowrap"
+                      variant={transaction ? "outline" : "default"}
+                      onclick={() => openMapping(detailItem)}
+                      >{transaction ? "管理配對" : "配對交易"}</Button
+                    >
+                  </div>{/if}
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    {/if}
     {#if pending}<div
         aria-modal="true"
         class="fixed inset-0 z-[70] flex items-end bg-ink/45 md:items-center md:justify-center md:p-6"
@@ -749,6 +1129,233 @@
               更新失敗。
             </p>{/if}
         </div>
+      </div>{/if}
+    {#if mappingDialog}<div
+        aria-modal="true"
+        class="fixed inset-0 z-[75] flex items-end bg-ink/45 md:items-center md:justify-center md:p-6"
+        role="dialog"
+      >
+        <div
+          class="max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 shadow-2xl md:max-w-xl md:rounded-2xl md:p-6"
+        >
+          <div
+            class="mx-auto mb-4 h-1.5 w-14 rounded-full bg-ink/20 md:hidden"
+          ></div>
+          <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0">
+              <h2 class="text-xl font-semibold">
+                {mappingDialog.step === "actions"
+                  ? "管理配對"
+                  : mappingDialog.step === "confirm"
+                    ? "確認合併這兩筆？"
+                    : "選擇同日候選交易"}
+              </h2>
+              {#if mappingDialog.step === "candidates"}<p
+                  class="mt-1 truncate text-sm text-ink/50"
+                >
+                  發票：{mappingDialog.invoice.sellerName ?? "電子發票"} ·
+                  {formatCurrency(mappingDialog.invoice.amount)}
+                </p>{:else if mappingDialog.step === "confirm"}<p
+                  class="mt-1 text-sm text-ink/50"
+                >
+                  合併後活動只顯示一筆，支出採銀行／信用卡實付金額。
+                </p>{/if}
+            </div>
+            <button
+              aria-label="關閉配對視窗"
+              class="flex size-11 shrink-0 items-center justify-center rounded-full text-ink/50 hover:bg-paper"
+              onclick={() => (mappingDialog = null)}
+              ><X class="size-5" /></button
+            >
+          </div>
+
+          {#if mappingDialog.step === "actions"}
+            {@const transaction = selectedMappingTransaction()}
+            {#if transaction}<div
+                class="mt-5 rounded-xl border border-steel/30 bg-steel/5 p-4"
+              >
+                <div class="flex items-start justify-between gap-4">
+                  <div class="min-w-0">
+                    <p class="truncate font-semibold">
+                      {mappingDialog.invoice.sellerName ?? "電子發票"}
+                    </p>
+                    <p class="mt-1 truncate text-xs text-ink/50">
+                      信用卡＋發票 · {mappingDialog.invoice.invoiceNumber ??
+                        "無發票號碼"}
+                    </p>
+                  </div>
+                  <p class="shrink-0 font-semibold text-coral">
+                    {formatCurrency(-Math.abs(transaction.amount))}
+                  </p>
+                </div>
+                {#if mappingDifference(mappingDialog.invoice, transaction) > 0}<Badge
+                    variant="secondary"
+                    class="mt-3 bg-amber-50 text-amber-800"
+                    >點數折抵 {formatCurrency(
+                      mappingDifference(mappingDialog.invoice, transaction),
+                    )}</Badge
+                  >{/if}
+              </div>{/if}
+            <div class="mt-5 grid gap-3">
+              <Button
+                class="h-12 justify-start gap-3"
+                variant="outline"
+                onclick={() => (mappingDialog!.step = "candidates")}
+                ><Link2 class="size-4 text-steel" />變更配對</Button
+              >
+              <Button
+                class="h-12 justify-start gap-3 text-coral"
+                disabled={$separationMutation.isPending}
+                variant="outline"
+                onclick={() =>
+                  $separationMutation.mutate(mappingDialog!.invoice.id)}
+                ><Unlink2 class="size-4" />{$separationMutation.isPending
+                  ? "解除中…"
+                  : "解除並保持分開"}</Button
+              >
+            </div>
+          {:else if mappingDialog.step === "candidates"}
+            <div class="mt-5 grid max-h-[52vh] gap-3 overflow-y-auto pr-1">
+              {#if mappingCandidates.length === 0}<div
+                  class="rounded-xl border border-dashed border-ink/15 bg-paper p-6 text-center"
+                >
+                  <p class="font-semibold">同一天沒有可配對的支出</p>
+                  <p class="mt-1 text-xs text-ink/50">
+                    只有同一天的 TWD 銀行或信用卡支出會列在這裡。
+                  </p>
+                </div>{:else}{#each mappingCandidates as transaction (transaction.id)}{@const difference =
+                    mappingDifference(
+                      mappingDialog.invoice,
+                      transaction,
+                    )}<button
+                    aria-pressed={mappingDialog.transactionId ===
+                      transaction.id}
+                    class={`min-h-24 rounded-xl border p-4 text-left transition ${mappingDialog.transactionId === transaction.id ? "border-steel bg-steel/10 ring-2 ring-steel/15" : "border-ink/10 hover:border-steel/40 hover:bg-paper"}`}
+                    onclick={() => chooseMappingTransaction(transaction.id)}
+                  >
+                    <span class="flex items-start justify-between gap-3">
+                      <span class="min-w-0">
+                        <span class="block truncate font-semibold"
+                          >{mappingMerchant(transaction)}</span
+                        >
+                        <span class="mt-1 block truncate text-xs text-ink/50"
+                          >{mappingAccount(transaction)} · {formatDate(
+                            transaction.postedDate ??
+                              transaction.authorizedAt ??
+                              "",
+                          )}</span
+                        >
+                      </span>
+                      <span class="shrink-0 font-semibold text-coral"
+                        >{formatCurrency(-Math.abs(transaction.amount))}</span
+                      >
+                    </span>
+                    <span class="mt-3 flex flex-wrap items-center gap-2">
+                      <Badge variant="secondary" class="bg-moss/10 text-moss"
+                        >同一天</Badge
+                      >
+                      {#if difference > 0}<Badge
+                          variant="secondary"
+                          class="bg-amber-50 text-amber-800"
+                          >差額 {formatCurrency(difference)}</Badge
+                        >{/if}
+                    </span>
+                  </button>{/each}{/if}
+            </div>
+            <p class="mt-4 text-xs text-ink/50">
+              依同一天與金額接近排序；商家名稱可能因支付工具而不同，最後由你決定。
+            </p>
+            <div class="mt-5 grid grid-cols-[7rem_1fr] gap-3">
+              <Button
+                class="h-12"
+                variant="secondary"
+                onclick={() => (mappingDialog = null)}>取消</Button
+              ><Button
+                class="h-12"
+                disabled={!mappingDialog.transactionId}
+                onclick={() => (mappingDialog!.step = "confirm")}>下一步</Button
+              >
+            </div>
+          {:else}
+            {@const transaction = selectedMappingTransaction()}
+            {#if transaction}{@const difference = mappingDifference(
+                mappingDialog.invoice,
+                transaction,
+              )}
+              <div class="mt-5 grid gap-3">
+                <div class="rounded-xl bg-coral/10 p-4">
+                  <p class="text-xs font-semibold text-coral">發票</p>
+                  <div class="mt-2 flex items-center justify-between gap-4">
+                    <p class="truncate font-semibold">
+                      {mappingDialog.invoice.sellerName ?? "電子發票"}
+                    </p>
+                    <p class="shrink-0 font-semibold">
+                      {formatCurrency(mappingDialog.invoice.amount)}
+                    </p>
+                  </div>
+                </div>
+                <ArrowDown class="mx-auto size-5 text-steel" />
+                <div class="rounded-xl bg-steel/10 p-4">
+                  <p class="text-xs font-semibold text-steel">銀行／信用卡</p>
+                  <div class="mt-2 flex items-center justify-between gap-4">
+                    <p class="truncate font-semibold">
+                      {mappingMerchant(transaction)}
+                    </p>
+                    <p class="shrink-0 font-semibold">
+                      {formatCurrency(Math.abs(transaction.amount))}
+                    </p>
+                  </div>
+                </div>
+                {#if difference > 0}<div
+                    class="rounded-xl bg-amber-50 p-4 text-amber-900"
+                  >
+                    <p class="font-semibold">
+                      差額 {formatCurrency(difference)}
+                    </p>
+                    <p class="mt-1 text-xs text-ink/55">
+                      可能來自 LINE Pay 點數或其他折抵
+                    </p>
+                  </div>{/if}
+                <p class="text-xs text-ink/50">
+                  當月支出將計入 {formatCurrency(
+                    Math.abs(transaction.amount),
+                  )}，發票資料保留在合併紀錄中。
+                </p>
+              </div>
+              <div class="mt-5 grid grid-cols-[7rem_1fr] gap-3">
+                <Button
+                  class="h-12"
+                  variant="secondary"
+                  onclick={() => (mappingDialog!.step = "candidates")}
+                  >返回</Button
+                ><Button
+                  class="h-12"
+                  disabled={$mappingMutation.isPending}
+                  onclick={() =>
+                    $mappingMutation.mutate({
+                      invoiceId: mappingDialog!.invoice.id,
+                      transactionId: transaction.id,
+                    })}
+                  >{$mappingMutation.isPending ? "配對中…" : "確認配對"}</Button
+                >
+              </div>
+            {:else}<p class="mt-5 text-sm text-coral">
+                找不到選取的交易，請返回重新選擇。
+              </p>{/if}
+          {/if}
+
+          {#if $mappingMutation.isError || $separationMutation.isError}<p
+              class="mt-4 text-sm font-medium text-coral"
+            >
+              無法更新配對，資料可能已變更，請重新整理後再試。
+            </p>{/if}
+        </div>
+      </div>{/if}
+    {#if mappingNotice}<div
+        aria-live="polite"
+        class="fixed left-1/2 top-20 z-[85] flex w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-3 rounded-xl bg-ink px-4 py-3 text-sm font-semibold text-white shadow-xl"
+      >
+        <Check class="size-5 shrink-0 text-lime-300" />{mappingNotice}
       </div>{/if}
   </div>
 {/if}

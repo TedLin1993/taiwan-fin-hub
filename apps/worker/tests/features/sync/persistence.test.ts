@@ -6,6 +6,7 @@ import {
   persistStagedSyncWrite,
   type SyncWriteRecord,
 } from "../../../src/features/sync/persistence";
+import { reconcileEsunLifecycleShadowStatements } from "../../../src/features/sync/repository";
 
 class SqliteStatement {
   private values: unknown[] = [];
@@ -121,6 +122,54 @@ function bankAccountRecord(index: number): SyncWriteRecord {
 }
 
 describe("staged sync persistence", () => {
+  it("migrates preferences and removes E.SUN lifecycle shadow transactions", async () => {
+    const db = createDb();
+    db.database.exec(`
+      INSERT INTO bank_accounts
+        (id, connector_id, source_id, account_type, currency, raw_payload, created_at, updated_at)
+      VALUES
+        ('esun:credit:esun:1204', 'esun', 'credit:esun:1204', 'credit', 'TWD', '{}', '2026-07-01', '2026-07-01');
+
+      INSERT INTO bank_transactions
+        (id, connector_id, account_id, source_id, posted_date, amount, currency, description, raw_payload, created_at, updated_at)
+      VALUES
+        ('shadow-posted', 'esun', 'esun:credit:esun:1204', '2026-07-05:credit:esun:1204:全聯:252:TWD:已入帳:1', '2026-07-05', 252, 'TWD', '全聯', '{}', '2026-07-05', '2026-07-05'),
+        ('shadow-pending', 'esun', 'esun:credit:esun:1204', '2026-07-05:credit:esun:1204:全聯:252:TWD:未入帳:1', '2026-07-05', 252, 'TWD', '全聯', '{}', '2026-07-05', '2026-07-05'),
+        ('canonical', 'esun', 'esun:credit:esun:1204', '2026-07-05:credit:esun:1204:全聯:252:TWD:1', '2026-07-05', 252, 'TWD', '全聯', '{}', '2026-07-05', '2026-07-05');
+
+      INSERT INTO bank_transaction_preferences
+        (transaction_id, excluded_from_calculation, created_at, updated_at)
+      VALUES ('shadow-posted', 1, '2026-07-05', '2026-07-05');
+
+      INSERT INTO classification_overrides
+        (id, target_type, target_id, category_id, created_at, updated_at)
+      VALUES ('old-override', 'bank_transaction', 'shadow-posted', 'shopping', '2026-07-05', '2026-07-05');
+    `);
+
+    await db.batch(
+      reconcileEsunLifecycleShadowStatements(db as unknown as D1Database),
+    );
+
+    expect(
+      db.database
+        .prepare("SELECT id FROM bank_transactions ORDER BY id")
+        .all()
+        .map((row) => row.id),
+    ).toEqual(["canonical"]);
+    expect(
+      db.database
+        .prepare(
+          "SELECT transaction_id, excluded_from_calculation FROM bank_transaction_preferences",
+        )
+        .get(),
+    ).toEqual({ transaction_id: "canonical", excluded_from_calculation: 1 });
+    expect(
+      db.database
+        .prepare("SELECT target_id, category_id FROM classification_overrides")
+        .get(),
+    ).toEqual({ target_id: "canonical", category_id: "shopping" });
+  });
+
   it("stages records in bounded JSON chunks and advances the cursor only after promotion", async () => {
     const db = createDb();
     const records = Array.from({ length: 205 }, (_, index) =>
