@@ -22,6 +22,7 @@ const mappingSchema = z.object({
 
 export const activityRoutes = honoFactory.createApp();
 registerActivityRoutes(activityRoutes);
+activityRoutes.onError((error) => mappingError(error));
 
 function registerActivityRoutes(api: Hono<AppBindings>) {
   api.get("/activity/invoice-mappings", async (c) =>
@@ -35,30 +36,19 @@ function registerActivityRoutes(api: Hono<AppBindings>) {
       mappingSchema,
       validationHook("INVALID_REQUEST", "Invoice mapping is invalid."),
     ),
-    async (c) => {
-      try {
-        return c.json(
-          await linkInvoiceToTransaction(
-            c.env.DB,
-            c.req.param("invoiceId"),
-            c.req.valid("json").transactionId,
-          ),
-        );
-      } catch (error) {
-        return mappingError(error);
-      }
-    },
+    async (c) =>
+      c.json(
+        await linkInvoiceToTransaction(
+          c.env.DB,
+          c.req.param("invoiceId"),
+          c.req.valid("json").transactionId,
+        ),
+      ),
   );
 
-  api.delete("/activity/invoice-mappings/:invoiceId", async (c) => {
-    try {
-      return c.json(
-        await keepInvoiceSeparate(c.env.DB, c.req.param("invoiceId")),
-      );
-    } catch (error) {
-      return mappingError(error);
-    }
-  });
+  api.delete("/activity/invoice-mappings/:invoiceId", async (c) =>
+    c.json(await keepInvoiceSeparate(c.env.DB, c.req.param("invoiceId"))),
+  );
 }
 
 function mappingError(error: unknown) {
