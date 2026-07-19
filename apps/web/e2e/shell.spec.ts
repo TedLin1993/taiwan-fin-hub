@@ -183,6 +183,12 @@ test("opens a primary view from its hash route", async ({ page }) => {
 test("excludes a bank transaction from activity calculations and restores it", async ({
   page,
 }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "standalone", {
+      configurable: true,
+      value: true,
+    });
+  });
   let excludedFromCalculation = false;
   const month = new Date().toISOString().slice(0, 7);
 
@@ -240,6 +246,7 @@ test("excludes a bank transaction from activity calculations and restores it", a
   );
 
   await page.goto("/#/activity");
+  await expect(page.locator("html")).toHaveClass(/is-standalone/);
   const expenseSlice = page.getByRole("button", {
     name: "其他 100.0% NT$8,318",
   });
@@ -247,6 +254,13 @@ test("excludes a bank transaction from activity calculations and restores it", a
 
   await page.getByRole("button", { name: "查看 台新卡費 活動詳情" }).click();
   await expect(page.getByRole("heading", { name: "活動明細" })).toBeVisible();
+  const desktopDetailDialog = page.getByRole("dialog", { name: "活動明細" });
+  await page
+    .getByRole("button", { name: "關閉活動明細" })
+    .click({ position: { x: 20, y: 200 } });
+  await expect(desktopDetailDialog).toBeHidden();
+
+  await page.getByRole("button", { name: "查看 台新卡費 活動詳情" }).click();
   await page
     .getByRole("checkbox", { name: "排除 台新卡費 的統計計算" })
     .click();
@@ -294,6 +308,74 @@ test("excludes a bank transaction from activity calculations and restores it", a
   await expect(
     page.getByRole("combobox", { name: "更新 台新卡費 分類" }),
   ).toBeVisible();
+
+  await detailDialog.evaluate((element) => {
+    const start = new Touch({
+      identifier: 1,
+      target: element,
+      clientX: 8,
+      clientY: 300,
+    });
+    const end = new Touch({
+      identifier: 1,
+      target: element,
+      clientX: 38,
+      clientY: 420,
+    });
+    element.dispatchEvent(
+      new TouchEvent("touchstart", {
+        bubbles: true,
+        cancelable: true,
+        changedTouches: [start],
+        targetTouches: [start],
+        touches: [start],
+      }),
+    );
+    element.dispatchEvent(
+      new TouchEvent("touchend", {
+        bubbles: true,
+        cancelable: true,
+        changedTouches: [end],
+        targetTouches: [],
+        touches: [],
+      }),
+    );
+  });
+  await expect(detailDialog).toBeVisible();
+
+  await detailDialog.evaluate((element) => {
+    const start = new Touch({
+      identifier: 2,
+      target: element,
+      clientX: 8,
+      clientY: 300,
+    });
+    const end = new Touch({
+      identifier: 2,
+      target: element,
+      clientX: 108,
+      clientY: 312,
+    });
+    element.dispatchEvent(
+      new TouchEvent("touchstart", {
+        bubbles: true,
+        cancelable: true,
+        changedTouches: [start],
+        targetTouches: [start],
+        touches: [start],
+      }),
+    );
+    element.dispatchEvent(
+      new TouchEvent("touchend", {
+        bubbles: true,
+        cancelable: true,
+        changedTouches: [end],
+        targetTouches: [],
+        touches: [],
+      }),
+    );
+  });
+  await expect(detailDialog).toBeHidden();
 });
 
 test("merges a matching invoice and counts an unmatched invoice as expense", async ({
