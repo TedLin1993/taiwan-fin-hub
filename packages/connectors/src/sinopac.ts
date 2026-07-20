@@ -9,6 +9,7 @@ export const sinopacConfigSchema = z.object({
   candidateSessionCookies: z.string().optional(),
   candidateSessionCreatedAt: z.string().optional(),
   sessionExpiresAt: z.string().optional(),
+  sessionKeepAliveFailures: z.number().int().min(0).max(2).optional(),
   browserSessionId: z.string().optional(),
   browserSessionExpiresAt: z.string().optional(),
   captcha: z.string().regex(/^\d{6}$/).optional(),
