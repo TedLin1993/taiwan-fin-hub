@@ -351,7 +351,7 @@
         <p class="font-semibold">{unhealthy.length} 個來源需要更新</p>
         <button
           class="mt-3 text-sm font-semibold"
-          onclick={() => navigate("settings")}>立即處理 →</button
+          onclick={() => navigate("data-sources")}>立即處理 →</button
         >
       </section>
     {/if}
