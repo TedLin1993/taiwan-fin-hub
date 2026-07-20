@@ -5,6 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 assets = { directory = "../web/dist", binding = "ASSETS" }
 browser = { binding = "BROWSER" }
+ai = { binding = "AI", remote = true }
 
 [[d1_databases]]
 binding = "DB"

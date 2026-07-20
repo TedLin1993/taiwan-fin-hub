@@ -15,10 +15,12 @@ import { createCathaybkConnector } from "../../connectors/cathaybk";
 import { createEsunConnector } from "../../connectors/esun";
 import {
   createSinopacConnector,
+  loginSinopacWithOcr,
   prepareSinopacCaptcha,
   SinopacBrowserCapacityError,
   SinopacVerificationRequiredError,
 } from "../../connectors/sinopac";
+import { recognizeValidateNumber } from "../ocr/service";
 import type { ConnectorId } from "@taiwan-fin-hub/core";
 import {
   acquireSyncJobLock,
@@ -74,9 +76,6 @@ export const TDCC_SCOPE_BANK = "bank";
 export const TDCC_SCOPE_TRADES = "trades";
 export const SYNC_LOCK_LEASE_MS = 30 * 60 * 1000;
 const SYNC_LOCK_HEARTBEAT_MS = 5 * 60 * 1000;
-const SINOPAC_SESSION_REFRESH_MARGIN_MS = 12 * 60 * 1000;
-const SINOPAC_KEEP_ALIVE_FAILURE_LIMIT = 2;
-const SINOPAC_KEEP_ALIVE_LOCK_LEASE_MS = 2 * 60 * 1000;
 
 export type SyncOutcome = {
   success: true;
@@ -106,158 +105,6 @@ export type EinvoiceSyncOverrides = {
 export type SinopacSyncOverrides = {
   captcha?: string;
 };
-
-export type SinopacSessionMaintenanceResult =
-  | "disabled"
-  | "not-configured"
-  | "not-needed"
-  | "busy"
-  | "refreshed"
-  | "retry-pending"
-  | "needs-user-action";
-
-export async function maintainSinopacSession(
-  env: Env,
-  now = new Date(),
-): Promise<SinopacSessionMaintenanceResult> {
-  const connectorId = "sinopac";
-  const scope = SYNC_SCOPE_ALL;
-  const job = await env.DB.prepare(
-    "SELECT enabled, next_run_at, last_status FROM sync_jobs WHERE connector_id = ? AND scope = ?",
-  )
-    .bind(connectorId, scope)
-    .first<{
-      enabled: number;
-      next_run_at: string;
-      last_status: SyncStatus | null;
-    }>();
-  if (!job?.enabled || job.last_status === "needs_user_action")
-    return "disabled";
-
-  // A full sync that is already due will refresh the session itself.
-  if (new Date(job.next_run_at) <= now) return "not-needed";
-
-  const currentSettings = await getConnectorSettings(env.DB, connectorId);
-  if (!currentSettings) return "not-configured";
-  const currentConfig = await decryptJson<Record<string, unknown>>(
-    currentSettings.encrypted_config,
-    configEncryptionKey(env),
-  );
-  if (!sinopacSessionNeedsRefresh(currentConfig, now)) return "not-needed";
-
-  const runId = crypto.randomUUID();
-  const lockRowId = canonicalSyncLockRowId(connectorId);
-  const locked = await acquireSyncJobLock(env.DB, {
-    lockRowId,
-    scope,
-    trigger: "scheduled",
-    runId,
-    leaseMs: SINOPAC_KEEP_ALIVE_LOCK_LEASE_MS,
-  });
-  if (!locked) return "busy";
-
-  try {
-    // A manual sync may have refreshed the session before this lock was acquired.
-    const settings = await getConnectorSettings(env.DB, connectorId);
-    if (!settings) return "not-configured";
-    const stored = await decryptJson<Record<string, unknown>>(
-      settings.encrypted_config,
-      configEncryptionKey(env),
-    );
-    if (!sinopacSessionNeedsRefresh(stored, now)) return "not-needed";
-
-    const publicStored = settings.public_config
-      ? JSON.parse(settings.public_config)
-      : {};
-    const config = parseSinopacConfig({ ...stored, ...publicStored });
-    try {
-      const refreshed = await createSinopacConnector(
-        env.BROWSER,
-      ).refreshSession(config);
-      const {
-        candidateSessionCookies: _oldCandidateSessionCookies,
-        candidateSessionCreatedAt: _oldCandidateSessionCreatedAt,
-        sessionKeepAliveFailures: _oldSessionKeepAliveFailures,
-        ...reusableConfig
-      } = config;
-      await updateConnectorEncryptedConfig(
-        env.DB,
-        connectorId,
-        await encryptJson(
-          { ...reusableConfig, ...refreshed },
-          configEncryptionKey(env),
-        ),
-      );
-      console.log("[sinopac] refreshed the scheduled-sync session");
-      return "refreshed";
-    } catch (error) {
-      if (!(error instanceof SinopacVerificationRequiredError)) throw error;
-      const failures = Math.min(
-        Number(config.sessionKeepAliveFailures ?? 0) + 1,
-        SINOPAC_KEEP_ALIVE_FAILURE_LIMIT,
-      );
-      if (failures < SINOPAC_KEEP_ALIVE_FAILURE_LIMIT) {
-        await updateConnectorEncryptedConfig(
-          env.DB,
-          connectorId,
-          await encryptJson(
-            { ...stored, sessionKeepAliveFailures: failures },
-            configEncryptionKey(env),
-          ),
-        );
-        console.warn(
-          "[sinopac] keep-alive verification failed once; retrying on the next cron tick",
-        );
-        return "retry-pending";
-      }
-
-      const cleaned = { ...stored };
-      delete cleaned.sessionCookies;
-      delete cleaned.candidateSessionCookies;
-      delete cleaned.candidateSessionCreatedAt;
-      delete cleaned.sessionExpiresAt;
-      delete cleaned.sessionKeepAliveFailures;
-      delete cleaned.protocol;
-      await env.DB.batch([
-        connectorEncryptedConfigStatement(
-          env.DB,
-          connectorId,
-          await encryptJson(cleaned, configEncryptionKey(env)),
-          now.toISOString(),
-        ),
-        env.DB.prepare(
-          `UPDATE sync_jobs
-           SET last_status = 'needs_user_action', last_error = ?, updated_at = ?
-           WHERE connector_id = ? AND scope = ?`,
-        ).bind(error.message, now.toISOString(), connectorId, scope),
-      ]);
-      console.warn(
-        "[sinopac] scheduled-sync session expired during keep-alive",
-      );
-      return "needs-user-action";
-    }
-  } finally {
-    await releaseSyncJobLock(env.DB, lockRowId, runId);
-  }
-}
-
-export function sinopacSessionNeedsRefresh(
-  config: Record<string, unknown>,
-  now = new Date(),
-) {
-  if (
-    typeof config.sessionCookies !== "string" ||
-    !config.sessionCookies ||
-    config.protocol !== "sinopac-mobile-app-json-v1"
-  )
-    return false;
-  if (typeof config.sessionExpiresAt !== "string") return true;
-  const expiresAt = new Date(config.sessionExpiresAt).getTime();
-  return (
-    !Number.isFinite(expiresAt) ||
-    expiresAt <= now.getTime() + SINOPAC_SESSION_REFRESH_MARGIN_MS
-  );
-}
 
 export type TdccSyncOverrides = {
   otp?: string;
@@ -596,11 +443,35 @@ export async function syncSinopac(
   let result: Awaited<
     ReturnType<ReturnType<typeof createSinopacConnector>["sync"]>
   >;
+  let activeConfig = config;
   try {
-    result = await createSinopacConnector(env.BROWSER).sync(
-      config,
-      settings.sync_cursor ?? undefined,
-    );
+    const connector = createSinopacConnector(env.BROWSER);
+    try {
+      result = await connector.sync(
+        activeConfig,
+        settings.sync_cursor ?? undefined,
+      );
+    } catch (error) {
+      if (!(error instanceof SinopacVerificationRequiredError)) throw error;
+      const session = await loginSinopacWithOcr(
+        env.BROWSER,
+        activeConfig,
+        async (imageBytes) =>
+          (await recognizeValidateNumber(env.AI, imageBytes, "image/jpeg"))
+            .number,
+      );
+      const {
+        browserSessionId: _browserSessionId,
+        browserSessionExpiresAt: _browserSessionExpiresAt,
+        captcha: _captcha,
+        ...reusableConfig
+      } = activeConfig;
+      activeConfig = { ...reusableConfig, ...session };
+      result = await connector.sync(
+        activeConfig,
+        settings.sync_cursor ?? undefined,
+      );
+    }
   } catch (error) {
     const cleaned = { ...stored };
     const hadPendingVerification = Boolean(
@@ -661,23 +532,14 @@ export async function syncSinopac(
   let persistedCursor: string | undefined;
   if (result.cursor) {
     const cursorState = JSON.parse(result.cursor) as Record<string, unknown>;
-    const {
-      sessionCookies: _sessionCookies,
-      candidateSessionCookies: _candidateSessionCookies,
-      candidateSessionCreatedAt: _candidateSessionCreatedAt,
-      sessionExpiresAt: _sessionExpiresAt,
-      ...safeCursorState
-    } = cursorState;
+    const { sessionCookies: _sessionCookies, ...safeCursorState } = cursorState;
     persistedCursor = JSON.stringify(safeCursorState);
     const {
       browserSessionId: _browserSessionId,
       browserSessionExpiresAt: _browserSessionExpiresAt,
       captcha: _captcha,
-      candidateSessionCookies: _previousCandidateSessionCookies,
-      candidateSessionCreatedAt: _previousCandidateSessionCreatedAt,
-      sessionKeepAliveFailures: _previousSessionKeepAliveFailures,
       ...reusableConfig
-    } = config;
+    } = activeConfig;
     finalizeStatements.push(
       connectorStateStatement(
         env.DB,
