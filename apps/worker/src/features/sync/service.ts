@@ -15,10 +15,12 @@ import { createCathaybkConnector } from "../../connectors/cathaybk";
 import { createEsunConnector } from "../../connectors/esun";
 import {
   createSinopacConnector,
+  loginSinopacWithOcr,
   prepareSinopacCaptcha,
   SinopacBrowserCapacityError,
   SinopacVerificationRequiredError,
 } from "../../connectors/sinopac";
+import { recognizeValidateNumber } from "../ocr/service";
 import type { ConnectorId } from "@taiwan-fin-hub/core";
 import {
   acquireSyncJobLock,
@@ -441,11 +443,35 @@ export async function syncSinopac(
   let result: Awaited<
     ReturnType<ReturnType<typeof createSinopacConnector>["sync"]>
   >;
+  let activeConfig = config;
   try {
-    result = await createSinopacConnector(env.BROWSER).sync(
-      config,
-      settings.sync_cursor ?? undefined,
-    );
+    const connector = createSinopacConnector(env.BROWSER);
+    try {
+      result = await connector.sync(
+        activeConfig,
+        settings.sync_cursor ?? undefined,
+      );
+    } catch (error) {
+      if (!(error instanceof SinopacVerificationRequiredError)) throw error;
+      const session = await loginSinopacWithOcr(
+        env.BROWSER,
+        activeConfig,
+        async (imageBytes) =>
+          (await recognizeValidateNumber(env.AI, imageBytes, "image/jpeg"))
+            .number,
+      );
+      const {
+        browserSessionId: _browserSessionId,
+        browserSessionExpiresAt: _browserSessionExpiresAt,
+        captcha: _captcha,
+        ...reusableConfig
+      } = activeConfig;
+      activeConfig = { ...reusableConfig, ...session };
+      result = await connector.sync(
+        activeConfig,
+        settings.sync_cursor ?? undefined,
+      );
+    }
   } catch (error) {
     const cleaned = { ...stored };
     const hadPendingVerification = Boolean(
@@ -506,17 +532,14 @@ export async function syncSinopac(
   let persistedCursor: string | undefined;
   if (result.cursor) {
     const cursorState = JSON.parse(result.cursor) as Record<string, unknown>;
-    const {
-      sessionCookies: _sessionCookies,
-      ...safeCursorState
-    } = cursorState;
+    const { sessionCookies: _sessionCookies, ...safeCursorState } = cursorState;
     persistedCursor = JSON.stringify(safeCursorState);
     const {
       browserSessionId: _browserSessionId,
       browserSessionExpiresAt: _browserSessionExpiresAt,
       captcha: _captcha,
       ...reusableConfig
-    } = config;
+    } = activeConfig;
     finalizeStatements.push(
       connectorStateStatement(
         env.DB,

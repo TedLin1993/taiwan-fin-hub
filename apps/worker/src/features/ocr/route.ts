@@ -7,6 +7,7 @@ import {
   ValidateNumberEmptyImageError,
   ValidateNumberImageTooLargeError,
   ValidateNumberOcrError,
+  ValidateNumberOcrUnavailableError,
 } from "./service";
 
 export const ocrRoutes = honoFactory.createApp();
@@ -27,7 +28,11 @@ function registerOcrRoutes(api: Hono<AppBindings>) {
     }
     try {
       return c.json(
-        await recognizeValidateNumber(await c.req.arrayBuffer(), contentType),
+        await recognizeValidateNumber(
+          c.env.AI,
+          await c.req.arrayBuffer(),
+          contentType,
+        ),
       );
     } catch (error) {
       if (error instanceof ValidateNumberEmptyImageError) {
@@ -44,6 +49,13 @@ function registerOcrRoutes(api: Hono<AppBindings>) {
           "OCR_FAILED",
           "Could not read a 6 digit validation number.",
           422,
+        );
+      }
+      if (error instanceof ValidateNumberOcrUnavailableError) {
+        return jsonError(
+          "OCR_UNAVAILABLE",
+          "Gemma 4 captcha recognition is temporarily unavailable.",
+          502,
         );
       }
       throw error;

@@ -4,6 +4,7 @@ export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
   BROWSER: Fetcher;
+  AI: Ai;
   CONFIG_ENCRYPTION_KEY?: string;
   TEAM_DOMAIN?: string;
   POLICY_AUD?: string;

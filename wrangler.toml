@@ -8,6 +8,7 @@ preview_urls = false
 
 assets = { directory = "apps/web/dist", binding = "ASSETS" }
 browser = { binding = "BROWSER" }
+ai = { binding = "AI" }
 
 [triggers]
 crons = ["*/10 * * * *"]

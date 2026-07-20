@@ -12,14 +12,14 @@
 | 集保 e 存摺  | 交割帳戶餘額與明細（[支援銀行列表](https://epassbook.tdcc.com.tw/zh/g1.aspx)） | —                                | 股票、ETF、基金持倉與投資交易 | —                  | 首次或新裝置登入可能需要 Email／簡訊 OTP                |
 | 玉山銀行     | 存款帳戶、餘額與交易                                                           | 信用卡帳單與刷卡交易             | —                             | —                  | 透過 Browser Rendering 登入；session 失效時需要重新登入 |
 | 國泰世華銀行 | 存款帳戶、餘額與交易                                                           | 信用卡帳單與刷卡交易             | —                             | —                  | 每次同步透過 Browser Rendering 登入；額外驗證需人工處理 |
-| 永豐行動銀行 | —                                                                              | 信用卡總覽、近期帳單與未出帳消費 | —                             | —                  | 首次登入或 session 失效時需要輸入圖形驗證碼             |
+| 永豐行動銀行 | —                                                                              | 信用卡總覽、近期帳單與未出帳消費 | —                             | —                  | Gemma 4 自動辨識圖形驗證碼；連續三次失敗才需人工輸入    |
 
 ## 已知限制
 
 - 本專案並非銀行或政府機關提供的官方服務。連接器依賴各資料來源的網頁、App API 或回應格式；對方改版後可能需要更新連接器才能恢復同步。
-- 銀行可能臨時要求圖形驗證碼、OTP、裝置驗證或處理重複登入，也可能主動讓既有 session 失效。玉山、國泰世華與永豐遇到這些情況時，仍需回到設定頁重新登入或完成驗證。
+- 銀行可能臨時要求圖形驗證碼、OTP、裝置驗證或處理重複登入，也可能主動讓既有 session 失效。永豐會先以 Gemma 4 自動辨識，連續三次失敗後仍需回到設定頁人工輸入；其他銀行遇到互動式驗證時也需人工處理。
 - 集保 e 存摺在首次登入、新裝置或信任狀態失效時，可能要求 Email 與簡訊 OTP；系統不會繞過任何互動式安全驗證。
-- 排程同步只能沿用仍有效的登入狀態。需要人工驗證時，該次同步會停止並標示為「需要處理」，完成驗證後才能繼續。
+- 排程同步會優先沿用仍有效的登入狀態；永豐 session 失效時會自動重新登入。需要人工驗證時，該次同步會停止並標示為「需要處理」，完成驗證後才能繼續。
 - 資料更新時間與完整性取決於外部服務，畫面內容不應視為銀行、券商或財政部的即時正式對帳資料。
 
 ## 目前介面
@@ -51,6 +51,7 @@
 | 資料庫     | Cloudflare D1                           | 儲存加密後的連接器設定、金融資料、分類規則與同步狀態 |
 | 登入保護   | Cloudflare Access                       | 驗證使用者身分，Worker 端驗證 Access JWT             |
 | 銀行連接器 | Cloudflare Browser Rendering、Puppeteer | 處理需要瀏覽器的銀行登入與資料擷取                   |
+| 驗證碼辨識 | Cloudflare Workers AI、Gemma 4          | 辨識永豐登入頁的六位數字圖形驗證碼                   |
 | 排程同步   | Workers Cron Triggers、D1 sync jobs     | 執行週期同步、鎖定同步工作並記錄需要人工處理的狀態   |
 | 專案結構   | npm workspaces                          | 管理 Web、Worker、共用型別、資料庫與連接器套件       |
 
@@ -130,6 +131,8 @@ cp apps/worker/wrangler.local.toml.example apps/worker/wrangler.local.toml
 npm install
 npm run dev
 ```
+
+本機永豐自動驗證會透過 `AI` remote binding 呼叫 Workers AI，需先完成 Wrangler 登入，並會計入 Cloudflare Workers AI 用量。
 
 若需從本機部署至既有的 D1，請複製 `wrangler.toml` 為被忽略的 `wrangler.private.toml`、加入 `database_id`，並以 `wrangler --config wrangler.private.toml` 執行遠端遷移或部署。
 
