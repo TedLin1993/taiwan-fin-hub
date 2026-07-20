@@ -1,5 +1,6 @@
 import { parseConnectorConfig } from "@taiwan-fin-hub/connectors";
 import type { ConnectorId } from "@taiwan-fin-hub/core";
+import { clearConnectorCursor } from "@taiwan-fin-hub/db";
 import { configEncryptionKey } from "../../platform/config";
 import { decryptJson, encryptJson } from "../../platform/crypto";
 import type { Env } from "../../platform/env";
@@ -21,6 +22,7 @@ export async function getConnectorSettingsView(
 ) {
   const settings = await findConnectorSettings(env.DB, connectorId);
   let sessionAvailable = false;
+  let credentialsComplete = Boolean(settings);
   if (connectorId === "sinopac" && settings) {
     const stored = await decryptJson<Record<string, unknown>>(
       settings.encrypted_config,
@@ -31,6 +33,18 @@ export async function getConnectorSettingsView(
       stored.sessionCookies.length > 0 &&
       stored.protocol === "sinopac-mobile-app-json-v1";
   }
+  if (connectorId === "tdcc" && settings) {
+    const stored = await decryptJson<Record<string, unknown>>(
+      settings.encrypted_config,
+      configEncryptionKey(env),
+    );
+    credentialsComplete =
+      typeof stored.userId === "string" &&
+      stored.userId.length > 0 &&
+      typeof stored.password === "string" &&
+      stored.password.length > 0;
+    sessionAvailable = credentialsComplete && Boolean(settings.sync_cursor);
+  }
   return {
     connectorId,
     configured: Boolean(settings),
@@ -38,6 +52,7 @@ export async function getConnectorSettingsView(
     publicConfig: settings?.public_config
       ? JSON.parse(settings.public_config)
       : null,
+    credentialsComplete,
     sessionAvailable,
   };
 }
@@ -64,6 +79,7 @@ export async function updateConnectorSettings(
 
   let parsedConfig: unknown;
   let mergedPublic: Record<string, unknown>;
+  let shouldClearTdccSession = false;
   try {
     const storedConfig = existing
       ? await decryptJson<Record<string, unknown>>(
@@ -116,6 +132,10 @@ export async function updateConnectorSettings(
       ])
         delete mergedConfig[key];
     }
+    shouldClearTdccSession =
+      connectorId === "tdcc" &&
+      Boolean(existing) &&
+      tdccCredentialsChanged(storedConfig, rawConfig);
     parsedConfig = parseConnectorConfig(connectorId, mergedConfig);
     mergedPublic = { ...storedPublic, ...publicConfig };
   } catch {
@@ -132,6 +152,9 @@ export async function updateConnectorSettings(
         : null,
     now,
   });
+  if (shouldClearTdccSession) {
+    await clearConnectorCursor(env.DB, connectorId, now);
+  }
   return { connectorId, configured: true, updatedAt: now };
 }
 
@@ -153,6 +176,19 @@ function sinopacCredentialsChanged(
   incoming: Record<string, unknown>,
 ) {
   return ["userId", "account", "password"].some(
+    (key) =>
+      key in incoming &&
+      incoming[key] !== undefined &&
+      incoming[key] !== "" &&
+      incoming[key] !== stored[key],
+  );
+}
+
+function tdccCredentialsChanged(
+  stored: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+) {
+  return ["userId", "password"].some(
     (key) =>
       key in incoming &&
       incoming[key] !== undefined &&

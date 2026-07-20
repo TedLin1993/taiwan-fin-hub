@@ -1,4 +1,8 @@
-import { EInvoiceProtocolUnavailableError } from "@taiwan-fin-hub/connectors";
+import {
+  EInvoiceProtocolUnavailableError,
+  TdccConnectionError,
+  TdccVerificationRequiredError,
+} from "@taiwan-fin-hub/connectors";
 import { zValidator } from "@hono/zod-validator";
 import { type Context, type Hono } from "hono";
 import { z } from "zod";
@@ -208,6 +212,18 @@ async function syncRouteResponse(
   } catch (error) {
     if (error instanceof SyncAlreadyRunningError) {
       return jsonError("SYNC_ALREADY_RUNNING", error.message, 409);
+    }
+    if (error instanceof TdccVerificationRequiredError) {
+      return jsonError(
+        error.channel === "sms"
+          ? "TDCC_SMS_OTP_REQUIRED"
+          : "TDCC_EMAIL_OTP_REQUIRED",
+        error.message,
+        400,
+      );
+    }
+    if (error instanceof TdccConnectionError) {
+      return jsonError("TDCC_CONNECTION_FAILED", error.message, 400);
     }
     if (error instanceof NeedsUserActionError) {
       return jsonError("USER_ACTION_REQUIRED", error.message, 400);

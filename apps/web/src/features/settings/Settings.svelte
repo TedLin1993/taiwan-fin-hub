@@ -67,7 +67,7 @@
       { key: "fetchDetails", label: "同步品項明細", type: "checkbox" },
     ],
     tdcc: [
-      { key: "identity", label: "身分證字號", type: "text" },
+      { key: "userId", label: "身分證字號", type: "text" },
       { key: "password", label: "集保 App 密碼", type: "password" },
     ],
     esun: [

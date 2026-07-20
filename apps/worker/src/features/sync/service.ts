@@ -9,6 +9,7 @@ import {
   syncTdccTradeHistory,
   tdccConnector,
   TdccOtpExpiredError,
+  TdccVerificationRequiredError,
 } from "@taiwan-fin-hub/connectors";
 import { createCathaybkConnector } from "../../connectors/cathaybk";
 import { createEsunConnector } from "../../connectors/esun";
@@ -125,8 +126,13 @@ export async function maintainSinopacSession(
     "SELECT enabled, next_run_at, last_status FROM sync_jobs WHERE connector_id = ? AND scope = ?",
   )
     .bind(connectorId, scope)
-    .first<{ enabled: number; next_run_at: string; last_status: SyncStatus | null }>();
-  if (!job?.enabled || job.last_status === "needs_user_action") return "disabled";
+    .first<{
+      enabled: number;
+      next_run_at: string;
+      last_status: SyncStatus | null;
+    }>();
+  if (!job?.enabled || job.last_status === "needs_user_action")
+    return "disabled";
 
   // A full sync that is already due will refresh the session itself.
   if (new Date(job.next_run_at) <= now) return "not-needed";
@@ -165,7 +171,9 @@ export async function maintainSinopacSession(
       : {};
     const config = parseSinopacConfig({ ...stored, ...publicStored });
     try {
-      const refreshed = await createSinopacConnector(env.BROWSER).refreshSession(config);
+      const refreshed = await createSinopacConnector(
+        env.BROWSER,
+      ).refreshSession(config);
       const {
         candidateSessionCookies: _oldCandidateSessionCookies,
         candidateSessionCreatedAt: _oldCandidateSessionCreatedAt,
@@ -197,7 +205,9 @@ export async function maintainSinopacSession(
             configEncryptionKey(env),
           ),
         );
-        console.warn("[sinopac] keep-alive verification failed once; retrying on the next cron tick");
+        console.warn(
+          "[sinopac] keep-alive verification failed once; retrying on the next cron tick",
+        );
         return "retry-pending";
       }
 
@@ -221,7 +231,9 @@ export async function maintainSinopacSession(
            WHERE connector_id = ? AND scope = ?`,
         ).bind(error.message, now.toISOString(), connectorId, scope),
       ]);
-      console.warn("[sinopac] scheduled-sync session expired during keep-alive");
+      console.warn(
+        "[sinopac] scheduled-sync session expired during keep-alive",
+      );
       return "needs-user-action";
     }
   } finally {
@@ -234,14 +246,17 @@ export function sinopacSessionNeedsRefresh(
   now = new Date(),
 ) {
   if (
-    typeof config.sessionCookies !== "string"
-    || !config.sessionCookies
-    || config.protocol !== "sinopac-mobile-app-json-v1"
-  ) return false;
+    typeof config.sessionCookies !== "string" ||
+    !config.sessionCookies ||
+    config.protocol !== "sinopac-mobile-app-json-v1"
+  )
+    return false;
   if (typeof config.sessionExpiresAt !== "string") return true;
   const expiresAt = new Date(config.sessionExpiresAt).getTime();
-  return !Number.isFinite(expiresAt)
-    || expiresAt <= now.getTime() + SINOPAC_SESSION_REFRESH_MARGIN_MS;
+  return (
+    !Number.isFinite(expiresAt) ||
+    expiresAt <= now.getTime() + SINOPAC_SESSION_REFRESH_MARGIN_MS
+  );
 }
 
 export type TdccSyncOverrides = {
@@ -762,7 +777,11 @@ async function syncTdccPositionsAndBank(
     configEncryptionKey(env),
   );
   const mergedConfig = { ...(config as Record<string, unknown>), ...overrides };
-  const parsedConfig = parseTdccConfig(mergedConfig);
+  const parsedConfig = parseTdccConfig({
+    ...mergedConfig,
+    requestOtp: trigger === "manual",
+  });
+  requireTdccCredentials(parsedConfig);
   const syncScope = options.scope;
   console.log(
     `[sync] ${connectorId}/${syncScope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ? "set" : "none"})`,
@@ -872,7 +891,11 @@ async function syncTdccTrades(
     configEncryptionKey(env),
   );
   const mergedConfig = { ...(config as Record<string, unknown>), ...overrides };
-  const parsedConfig = parseTdccConfig(mergedConfig);
+  const parsedConfig = parseTdccConfig({
+    ...mergedConfig,
+    requestOtp: trigger === "manual",
+  });
+  requireTdccCredentials(parsedConfig);
   console.log(
     `[sync] ${connectorId}/${scope}: starting trigger=${trigger} (cursor=${settings.sync_cursor ? "set" : "none"})`,
   );
@@ -931,6 +954,17 @@ function tdccOutcomeScope(scopes: Set<string>): SyncScope {
   if (allScopes.every((scope) => scopes.has(scope))) return SYNC_SCOPE_ALL;
   return (allScopes.filter((scope) => scopes.has(scope)).join("+") ||
     SYNC_SCOPE_ALL) as SyncScope;
+}
+
+function requireTdccCredentials(config: {
+  userId?: string;
+  password?: string;
+}) {
+  if (!config.userId || !config.password) {
+    throw new NeedsUserActionError(
+      "請重新輸入身分證字號與集保 App 密碼，再開始連線。",
+    );
+  }
 }
 
 async function requireConnectorSettings(
@@ -1047,6 +1081,7 @@ export function isUserActionError(error: unknown) {
   if (
     error instanceof NeedsUserActionError ||
     error instanceof TdccOtpExpiredError ||
+    error instanceof TdccVerificationRequiredError ||
     error instanceof EInvoiceProtocolUnavailableError ||
     error instanceof SinopacVerificationRequiredError
   )

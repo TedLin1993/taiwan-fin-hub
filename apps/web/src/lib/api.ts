@@ -12,6 +12,17 @@ function isApiError(value: unknown): value is ApiError {
   return typeof value === "object" && value !== null && "error" in value;
 }
 
+export class ApiRequestError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
 export function createApiClient(): ApiClient {
   async function request<T>(path: string, init: RequestInit = {}) {
     const headers =
@@ -33,8 +44,12 @@ export function createApiClient(): ApiClient {
           : `伺服器暫時無法完成請求（HTTP ${response.status}）。`,
       );
     }
-    if (!response.ok)
-      throw new Error(isApiError(data) ? data.error.message : "請求失敗。");
+    if (!response.ok) {
+      const error = isApiError(data)
+        ? data.error
+        : { code: "REQUEST_FAILED", message: "請求失敗。" };
+      throw new ApiRequestError(error.code, error.message, response.status);
+    }
     return data as T;
   }
   return {
