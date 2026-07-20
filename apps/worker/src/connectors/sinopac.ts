@@ -17,7 +17,6 @@ const CARD_UNBILLED_PATH = "/ws/card/cardqry/ws_nonbilling.ashx";
 const SESSION_PROTOCOL = "sinopac-mobile-app-json-v1";
 const CAPTCHA_BROWSER_KEEP_ALIVE_MS = 150_000;
 const CAPTCHA_VALIDITY_MS = 120_000;
-const SESSION_VALIDITY_MS = 20 * 60 * 1000;
 const ANDROID_USER_AGENT =
   "Mozilla/5.0 (Linux; Android 14; Pixel 7 Build/UP1A.231105.003) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
@@ -92,129 +91,40 @@ export function createSinopacConnector(browser?: Fetcher, fetchImpl: FetchImpl =
       }
 
       const lookbackMonths = config.lookbackMonths ?? 3;
-      const sessionAttempts = !verifiedThisRun
-        && config.candidateSessionCookies
-        && config.candidateSessionCookies !== sessionCookies
-        ? [
-            { source: "candidate" as const, cookies: config.candidateSessionCookies },
-            { source: "stable" as const, cookies: sessionCookies }
-          ]
-        : [{ source: "stable" as const, cookies: sessionCookies }];
-      let cards: Scraped | undefined;
-      let stableSessionCookies = sessionCookies;
-      let candidateSessionCookies: string | undefined;
-
-      for (const [index, attempt] of sessionAttempts.entries()) {
-        try {
-          const client = new SinopacAppClient(attempt.cookies, fetchImpl);
-          const canarySummary = attempt.source === "candidate"
-            ? await client.fetchSummary()
-            : undefined;
-          const payloads = await client.fetchCreditCards(lookbackMonths, canarySummary);
-          cards = parseSinopacCardData(payloads, lookbackMonths);
-          stableSessionCookies = attempt.cookies;
-          const rotatedCookies = client.serializedCookies();
-          candidateSessionCookies = rotatedCookies === attempt.cookies ? undefined : rotatedCookies;
-          if (attempt.source === "candidate") {
-            console.log("[sinopac] promoted candidate session after a successful cross-run canary");
-          } else if (index > 0) {
-            console.log("[sinopac] retained the known-good session after candidate rejection");
-          }
-          break;
-        } catch (error) {
-          const canFallback =
-            error instanceof SinopacVerificationRequiredError
-            && attempt.source === "candidate"
-            && index + 1 < sessionAttempts.length;
-          if (!canFallback) throw error;
-          console.warn("[sinopac] candidate session rejected; retrying the known-good session");
-        }
-      }
-      if (!cards) {
-        throw new SinopacVerificationRequiredError("永豐銀行 session 已失效，請重新完成圖形驗證。");
-      }
+      const client = new SinopacAppClient(sessionCookies, fetchImpl);
+      const payloads = await client.fetchCreditCards(lookbackMonths);
+      const cards = parseSinopacCardData(payloads, lookbackMonths);
       const now = new Date();
 
       return {
         records: [],
         ...cards,
         cursor: JSON.stringify({
-          sessionCookies: stableSessionCookies,
-          candidateSessionCookies,
-          candidateSessionCreatedAt: candidateSessionCookies ? now.toISOString() : undefined,
-          sessionExpiresAt: new Date(now.getTime() + SESSION_VALIDITY_MS).toISOString(),
-          sessionKeepAliveFailures: 0,
+          sessionCookies,
           protocol: SESSION_PROTOCOL,
           syncedAt: now.toISOString()
         })
       };
-    },
-
-    async refreshSession(config: SinopacConfig) {
-      if (!config.sessionCookies || config.protocol !== SESSION_PROTOCOL) {
-        throw new SinopacVerificationRequiredError("永豐同步需要先完成一次圖形驗證。");
-      }
-
-      const attempts = config.candidateSessionCookies
-        && config.candidateSessionCookies !== config.sessionCookies
-        ? [
-            { source: "candidate" as const, cookies: config.candidateSessionCookies },
-            { source: "stable" as const, cookies: config.sessionCookies }
-          ]
-        : [{ source: "stable" as const, cookies: config.sessionCookies }];
-
-      for (const [index, attempt] of attempts.entries()) {
-        try {
-          const client = new SinopacAppClient(attempt.cookies, fetchImpl);
-          await client.fetchSummary();
-          const now = new Date();
-          const rotatedCookies = client.serializedCookies();
-          return {
-            sessionCookies: attempt.cookies,
-            candidateSessionCookies: rotatedCookies === attempt.cookies ? undefined : rotatedCookies,
-            candidateSessionCreatedAt: rotatedCookies === attempt.cookies ? undefined : now.toISOString(),
-            sessionExpiresAt: new Date(now.getTime() + SESSION_VALIDITY_MS).toISOString(),
-            sessionKeepAliveFailures: 0,
-            protocol: SESSION_PROTOCOL
-          };
-        } catch (error) {
-          const canFallback =
-            error instanceof SinopacVerificationRequiredError
-            && attempt.source === "candidate"
-            && index + 1 < attempts.length;
-          if (!canFallback) throw error;
-          console.warn("[sinopac] keep-alive candidate rejected; retrying the known-good session");
-        }
-      }
-
-      throw new SinopacVerificationRequiredError("永豐銀行 session 已失效，請重新完成圖形驗證。");
     }
   };
 }
 
 class SinopacAppClient {
-  private readonly cookies: SinopacCookieJar;
+  private readonly cookieHeader: string;
 
   constructor(
     serializedCookies: string,
     private readonly fetchImpl: FetchImpl
   ) {
-    this.cookies = new SinopacCookieJar(serializedCookies);
-  }
-
-  serializedCookies() {
-    return this.cookies.serialize();
+    this.cookieHeader = cookieHeaderFromSerialized(serializedCookies);
   }
 
   fetchSummary() {
     return this.post(CARD_SUMMARY_PATH, "信用卡總覽");
   }
 
-  async fetchCreditCards(
-    lookbackMonths: number,
-    canarySummary?: unknown
-  ): Promise<SinopacApiPayloads> {
-    const summary = canarySummary ?? await this.fetchSummary();
+  async fetchCreditCards(lookbackMonths: number): Promise<SinopacApiPayloads> {
+    const summary = await this.fetchSummary();
     const initialBills = await this.post(`${CARD_BILLS_PATH}?TxDate=default&TxType=01`, "近期帳單");
     const billMonths = extractAdvertisedBillMonths(initialBills)
       .slice(1, Math.max(1, Math.min(3, lookbackMonths)));
@@ -232,14 +142,13 @@ class SinopacAppClient {
       headers: {
         Accept: "application/json, text/plain, */*",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        Cookie: this.cookies.header(),
+        Cookie: this.cookieHeader,
         Referer: `${MOBILE_HOST}/m/m_home.aspx`,
         "User-Agent": ANDROID_USER_AGENT,
         "X-Requested-With": "XMLHttpRequest"
       },
       body: ""
     });
-    this.cookies.updateFromResponse(response.headers);
     const text = await response.text();
     if (!response.ok) {
       throw new Error(`永豐${label} API 回應 HTTP ${response.status}。`);
@@ -435,110 +344,38 @@ function captchaHasVisibleDigits(bytes: Uint8Array | string) {
   }
 }
 
-class SinopacCookieJar {
-  private readonly cookies = new Map<string, JsonRecord>();
-
-  constructor(serialized: string) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(serialized);
-    } catch {
-      throw new SinopacVerificationRequiredError("永豐銀行 session 格式無效，請重新完成圖形驗證。");
-    }
-    if (!Array.isArray(parsed)) {
-      throw new SinopacVerificationRequiredError("永豐銀行 session 格式無效，請重新完成圖形驗證。");
-    }
-    for (const cookie of parsed) {
-      if (!isRecord(cookie) || !isSinopacCookie(cookie)) continue;
+function cookieHeaderFromSerialized(serialized: string) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch {
+    throw new SinopacVerificationRequiredError("永豐銀行 session 格式無效，請重新完成圖形驗證。");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new SinopacVerificationRequiredError("永豐銀行 session 格式無效，請重新完成圖形驗證。");
+  }
+  const nowSeconds = Date.now() / 1000;
+  const header = parsed
+    .filter((cookie): cookie is JsonRecord => isRecord(cookie))
+    .filter((cookie) => {
+      const domain = stringValue(cookie.domain).replace(/^\./, "").toLowerCase();
+      if (domain && domain !== "sinopac.com" && !domain.endsWith(".sinopac.com")) return false;
+      const expires = typeof cookie.expires === "number" && Number.isFinite(cookie.expires)
+        ? cookie.expires
+        : undefined;
+      return expires == null || expires <= 0 || expires > nowSeconds;
+    })
+    .map((cookie) => {
       const name = stringValue(cookie.name);
       const value = stringValue(cookie.value);
-      if (name && value) this.cookies.set(cookieKey(cookie), cookie);
-    }
-    if (this.cookies.size === 0) {
-      throw new SinopacVerificationRequiredError("永豐銀行 session 沒有可用 Cookie，請重新完成圖形驗證。");
-    }
+      return name && value ? `${name}=${value}` : "";
+    })
+    .filter(Boolean)
+    .join("; ");
+  if (!header) {
+    throw new SinopacVerificationRequiredError("永豐銀行 session 沒有可用 Cookie，請重新完成圖形驗證。");
   }
-
-  header() {
-    const nowSeconds = Date.now() / 1000;
-    return Array.from(this.cookies.values())
-      .filter((cookie) => {
-        const expires = numberValue(cookie.expires);
-        return expires == null || expires <= 0 || expires > nowSeconds;
-      })
-      .sort((left, right) => stringValue(right.path).length - stringValue(left.path).length)
-      .map((cookie) => `${stringValue(cookie.name)}=${stringValue(cookie.value)}`)
-      .join("; ");
-  }
-
-  updateFromResponse(headers: Headers) {
-    for (const value of readSetCookieHeaders(headers)) {
-      const cookie = parseSetCookie(value);
-      if (!cookie) continue;
-      const key = cookieKey(cookie);
-      const expires = numberValue(cookie.expires);
-      if (!stringValue(cookie.value) || (expires != null && expires > 0 && expires <= Date.now() / 1000)) {
-        this.cookies.delete(key);
-      } else {
-        this.cookies.set(key, cookie);
-      }
-    }
-  }
-
-  serialize() {
-    return JSON.stringify(Array.from(this.cookies.values()));
-  }
-}
-
-function isSinopacCookie(cookie: JsonRecord) {
-  const domain = stringValue(cookie.domain).replace(/^\./, "").toLowerCase();
-  return !domain || domain === "sinopac.com" || domain.endsWith(".sinopac.com");
-}
-
-function cookieKey(cookie: JsonRecord) {
-  const domain = stringValue(cookie.domain).replace(/^\./, "").toLowerCase() || "m.sinopac.com";
-  const path = stringValue(cookie.path) || "/";
-  return `${domain}\t${path}\t${stringValue(cookie.name)}`;
-}
-
-function readSetCookieHeaders(headers: Headers) {
-  const getSetCookie = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
-  const values = typeof getSetCookie === "function" ? getSetCookie.call(headers) : [];
-  if (values.length > 0) return values;
-  const combined = headers.get("set-cookie");
-  return combined ? combined.split(/,(?=\s*[^=;,\s]+=)/g) : [];
-}
-
-function parseSetCookie(value: string): JsonRecord | undefined {
-  const parts = value.split(";").map((part) => part.trim());
-  const first = parts.shift();
-  if (!first) return undefined;
-  const separator = first.indexOf("=");
-  if (separator <= 0) return undefined;
-  const cookie: JsonRecord = {
-    name: first.slice(0, separator).trim(),
-    value: first.slice(separator + 1),
-    domain: "m.sinopac.com",
-    path: "/"
-  };
-  let maxAge: number | undefined;
-  for (const attribute of parts) {
-    const attributeSeparator = attribute.indexOf("=");
-    const rawName = (attributeSeparator < 0 ? attribute : attribute.slice(0, attributeSeparator)).trim().toLowerCase();
-    const rawValue = attributeSeparator < 0 ? "" : attribute.slice(attributeSeparator + 1).trim();
-    if (rawName === "domain" && rawValue) cookie.domain = rawValue.replace(/^\./, "").toLowerCase();
-    else if (rawName === "path" && rawValue) cookie.path = rawValue;
-    else if (rawName === "secure") cookie.secure = true;
-    else if (rawName === "httponly") cookie.httpOnly = true;
-    else if (rawName === "samesite" && rawValue) cookie.sameSite = rawValue;
-    else if (rawName === "max-age") maxAge = Number.parseInt(rawValue, 10);
-    else if (rawName === "expires") {
-      const expiresAt = Date.parse(rawValue);
-      if (Number.isFinite(expiresAt)) cookie.expires = expiresAt / 1000;
-    }
-  }
-  if (maxAge != null && Number.isFinite(maxAge)) cookie.expires = Date.now() / 1000 + maxAge;
-  return cookie;
+  return header;
 }
 
 function assertSinopacApiSuccess(payload: unknown, label: string) {
@@ -1076,8 +913,4 @@ function isRecord(value: unknown): value is JsonRecord {
 
 function stringValue(value: unknown) {
   return typeof value === "string" ? value : value == null ? "" : String(value);
-}
-
-function numberValue(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
