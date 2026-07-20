@@ -325,6 +325,64 @@ describe("sinopac App JSON parser", () => {
     expect(cookieValue(cursor.candidateSessionCookies, "sinopac_cookie")).toBe("next-3");
   });
 
+  it("refreshes a scheduled session with one lightweight canary request", async () => {
+    const stableCookies = JSON.stringify([
+      ...JSON.parse(sessionCookies),
+      { name: "sinopac_cookie", value: "stable-cookie", domain: "m.sinopac.com", path: "/" }
+    ]);
+    const requestCookies: string[] = [];
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestCookies.push(new Headers(init?.headers).get("cookie") ?? "");
+      return new Response(JSON.stringify(summaryPayload), {
+        headers: { "Set-Cookie": "sinopac_cookie=refreshed-cookie; Path=/; HttpOnly; Secure" }
+      });
+    });
+
+    const refreshed = await createSinopacConnector(undefined, fetchMock as typeof fetch).refreshSession({
+      sessionCookies: stableCookies,
+      sessionKeepAliveFailures: 1,
+      protocol: "sinopac-mobile-app-json-v1"
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(requestCookies[0]).toContain("sinopac_cookie=stable-cookie");
+    expect(cookieValue(refreshed.sessionCookies, "sinopac_cookie")).toBe("stable-cookie");
+    expect(cookieValue(refreshed.candidateSessionCookies!, "sinopac_cookie")).toBe("refreshed-cookie");
+    expect(refreshed.sessionKeepAliveFailures).toBe(0);
+    expect(new Date(refreshed.sessionExpiresAt).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("falls back to the stable session while refreshing a rejected candidate", async () => {
+    const stableCookies = JSON.stringify([
+      ...JSON.parse(sessionCookies),
+      { name: "sinopac_cookie", value: "stable-cookie", domain: "m.sinopac.com", path: "/" }
+    ]);
+    const candidateCookies = JSON.stringify([
+      ...JSON.parse(sessionCookies),
+      { name: "sinopac_cookie", value: "candidate-cookie", domain: "m.sinopac.com", path: "/" }
+    ]);
+    const requestCookies: string[] = [];
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const cookie = new Headers(init?.headers).get("cookie") ?? "";
+      requestCookies.push(cookie);
+      if (cookie.includes("candidate-cookie")) {
+        return new Response(JSON.stringify([{ Header: "TIMEOUT", Message: "您尚未登入網銀" }]));
+      }
+      return new Response(JSON.stringify(summaryPayload));
+    });
+
+    const refreshed = await createSinopacConnector(undefined, fetchMock as typeof fetch).refreshSession({
+      sessionCookies: stableCookies,
+      candidateSessionCookies: candidateCookies,
+      protocol: "sinopac-mobile-app-json-v1"
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestCookies[0]).toContain("candidate-cookie");
+    expect(requestCookies[1]).toContain("stable-cookie");
+    expect(cookieValue(refreshed.sessionCookies, "sinopac_cookie")).toBe("stable-cookie");
+  });
+
   it("falls back to the known-good session when a candidate is rejected", async () => {
     const stableCookies = JSON.stringify([
       ...JSON.parse(sessionCookies),

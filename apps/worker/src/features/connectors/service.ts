@@ -108,6 +108,7 @@ export async function updateConnectorSettings(
         "candidateSessionCookies",
         "candidateSessionCreatedAt",
         "sessionExpiresAt",
+        "sessionKeepAliveFailures",
         "browserSessionId",
         "browserSessionExpiresAt",
         "captcha",

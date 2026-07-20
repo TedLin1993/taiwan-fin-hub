@@ -143,10 +143,51 @@ export function createSinopacConnector(browser?: Fetcher, fetchImpl: FetchImpl =
           candidateSessionCookies,
           candidateSessionCreatedAt: candidateSessionCookies ? now.toISOString() : undefined,
           sessionExpiresAt: new Date(now.getTime() + SESSION_VALIDITY_MS).toISOString(),
+          sessionKeepAliveFailures: 0,
           protocol: SESSION_PROTOCOL,
           syncedAt: now.toISOString()
         })
       };
+    },
+
+    async refreshSession(config: SinopacConfig) {
+      if (!config.sessionCookies || config.protocol !== SESSION_PROTOCOL) {
+        throw new SinopacVerificationRequiredError("永豐同步需要先完成一次圖形驗證。");
+      }
+
+      const attempts = config.candidateSessionCookies
+        && config.candidateSessionCookies !== config.sessionCookies
+        ? [
+            { source: "candidate" as const, cookies: config.candidateSessionCookies },
+            { source: "stable" as const, cookies: config.sessionCookies }
+          ]
+        : [{ source: "stable" as const, cookies: config.sessionCookies }];
+
+      for (const [index, attempt] of attempts.entries()) {
+        try {
+          const client = new SinopacAppClient(attempt.cookies, fetchImpl);
+          await client.fetchSummary();
+          const now = new Date();
+          const rotatedCookies = client.serializedCookies();
+          return {
+            sessionCookies: attempt.cookies,
+            candidateSessionCookies: rotatedCookies === attempt.cookies ? undefined : rotatedCookies,
+            candidateSessionCreatedAt: rotatedCookies === attempt.cookies ? undefined : now.toISOString(),
+            sessionExpiresAt: new Date(now.getTime() + SESSION_VALIDITY_MS).toISOString(),
+            sessionKeepAliveFailures: 0,
+            protocol: SESSION_PROTOCOL
+          };
+        } catch (error) {
+          const canFallback =
+            error instanceof SinopacVerificationRequiredError
+            && attempt.source === "candidate"
+            && index + 1 < attempts.length;
+          if (!canFallback) throw error;
+          console.warn("[sinopac] keep-alive candidate rejected; retrying the known-good session");
+        }
+      }
+
+      throw new SinopacVerificationRequiredError("永豐銀行 session 已失效，請重新完成圖形驗證。");
     }
   };
 }
