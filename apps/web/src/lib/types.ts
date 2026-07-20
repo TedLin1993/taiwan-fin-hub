@@ -186,6 +186,7 @@ export interface ConnectorSettings {
   configured: boolean;
   updatedAt?: string;
   publicConfig?: Record<string, unknown> | null;
+  credentialsComplete?: boolean;
   sessionAvailable?: boolean;
 }
 export interface SyncJobRow {

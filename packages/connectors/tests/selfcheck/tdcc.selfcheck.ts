@@ -2,7 +2,7 @@
 // Mocks the TDCC ePassbook API and exercises login -> OTP gate -> holdings/cash -> session reuse,
 // plus device-verification-by-error-code and stale-session recovery.
 import assert from "node:assert/strict";
-import { createTdccConnector, parseTdccConfig, TdccOtpExpiredError } from "../../src/tdcc";
+import { createTdccConnector, parseTdccConfig, TdccOtpExpiredError, TdccVerificationRequiredError } from "../../src/tdcc";
 
 const calls: string[] = [];
 const tspPageTokens: string[] = [];
@@ -113,7 +113,21 @@ async function main() {
   const connector = createTdccConnector();
   const config = parseTdccConfig({ userId: "A123456789", password: "secret" });
 
-  await assert.rejects(connector.sync(config, undefined), /OTP/, "first sync without OTP should be rejected");
+  await assert.rejects(
+    connector.sync(config, undefined),
+    (error: unknown) => error instanceof TdccVerificationRequiredError && error.channel === "email" && error.deliveryTriggered,
+    "first sync should request and wait for the email OTP"
+  );
+  assert.ok(calls.includes("AU013"), "manual sync should trigger the email OTP endpoint");
+
+  calls.length = 0;
+  const scheduledConfig = parseTdccConfig({ userId: "A123456789", password: "secret", requestOtp: false });
+  await assert.rejects(
+    connector.sync(scheduledConfig, undefined),
+    (error: unknown) => error instanceof TdccVerificationRequiredError && !error.deliveryTriggered,
+    "scheduled sync should require user action without sending OTP"
+  );
+  assert.ok(!calls.includes("AU013"), "scheduled sync must not trigger an unexpected email");
 
   const configWithOtp = parseTdccConfig({ userId: "A123456789", password: "secret", otp: "123456" });
   const result = await connector.sync(configWithOtp, undefined);
@@ -179,7 +193,11 @@ async function main() {
   // Device verification can also arrive as an error code thrown from the login call
   // itself, instead of a flag on a successful response.
   mode = "error_code_otp";
-  await assert.rejects(connector.sync(config, undefined), /OTP/, "error-code device verification should also gate on OTP");
+  await assert.rejects(
+    connector.sync(config, undefined),
+    TdccVerificationRequiredError,
+    "error-code device verification should also gate on OTP"
+  );
   const errorCodeResult = await connector.sync(configWithOtp, undefined);
   assert.equal(errorCodeResult.records.length, 3, "error-code OTP path should still fetch holdings once verified");
 

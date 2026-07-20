@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createApiClient } from "./api";
+import { ApiRequestError, createApiClient } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -46,5 +46,34 @@ describe("API client", () => {
         headers: { "Content-Type": "application/json" },
       }),
     );
+  });
+
+  it("preserves structured API error codes", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            success: false,
+            error: {
+              code: "TDCC_EMAIL_OTP_REQUIRED",
+              message: "驗證碼已寄出。",
+            },
+          }),
+          { status: 400 },
+        ),
+      ),
+    );
+
+    const error = await createApiClient()
+      .post("/api/connectors/tdcc/sync")
+      .catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(ApiRequestError);
+    expect(error).toMatchObject({
+      code: "TDCC_EMAIL_OTP_REQUIRED",
+      message: "驗證碼已寄出。",
+      status: 400,
+    });
   });
 });

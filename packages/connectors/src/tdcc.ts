@@ -68,6 +68,7 @@ export const tdccConfigSchema = z.object({
   devModel: z.string().min(1).optional(),
   otp: z.string().min(1).optional(),
   otpChannel: z.enum(["email", "sms"]).optional(),
+  requestOtp: z.boolean().default(true),
   tradeHistoryMaxPages: z.number().int().min(1).max(100).default(20)
 });
 
@@ -173,6 +174,29 @@ const SESSION_EXPIRED_CODES = new Set(["D0006", "D0007", "A0001", "A0002", "T800
 const OTP_EXPIRED_CODES = new Set(["V0017"]);
 
 export class TdccOtpExpiredError extends Error {}
+
+export class TdccConnectionError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(`TDCC 登入或同步失敗（${code}）：${message}`);
+    this.name = "TdccConnectionError";
+  }
+}
+
+export class TdccVerificationRequiredError extends Error {
+  constructor(
+    public readonly channel: "email" | "sms",
+    public readonly deliveryTriggered: boolean
+  ) {
+    super(
+      deliveryTriggered
+        ? channel === "email"
+          ? "TDCC 驗證碼已寄至電子信箱，請輸入驗證碼以完成連線。"
+          : "TDCC 驗證碼已寄至手機簡訊，請輸入驗證碼以完成連線。"
+        : "TDCC 登入狀態已失效，請回到設定頁重新驗證。"
+    );
+    this.name = "TdccVerificationRequiredError";
+  }
+}
 
 type TdccIdentity = { deviceId: string; devType: string; devModel: string; session?: EPassbookSession };
 
@@ -446,26 +470,22 @@ async function loginWithDeviceVerification(client: EPassbookClient, config: Tdcc
   if (!needsOtp) return;
 
   if (!config.otp) {
-    await client.requestEmailOtp(config.userId!);
-    throw new Error(
-      "TDCC requires OTP verification for this device. Check your email and retry sync with config.otp set."
-    );
+    if (config.requestOtp) await client.requestEmailOtp(config.userId!);
+    throw new TdccVerificationRequiredError("email", config.requestOtp);
   }
 
   const otpResult = await client.verifyOtp(config.userId!, config.otp, config.otpChannel ?? "email");
   if (otpResult.isMobileValid === "N" && config.otpChannel !== "sms") {
-    await client.requestMobileOtp(config.userId!);
-    throw new Error(
-      'TDCC also requires SMS verification. Check your phone and retry sync with config.otp set to the SMS code and config.otpChannel: "sms".'
-    );
+    if (config.requestOtp) await client.requestMobileOtp(config.userId!);
+    throw new TdccVerificationRequiredError("sms", config.requestOtp);
   }
 }
 
 function wrapTdccError(error: unknown): never {
   if (error instanceof EPassbookError) {
-    const message = `TDCC ePassbook login/sync failed: ${error.message}`;
+    const message = `TDCC 登入或同步失敗（${error.code}）：${error.message}`;
     if (OTP_EXPIRED_CODES.has(error.code)) throw new TdccOtpExpiredError(message);
-    throw new Error(message);
+    throw new TdccConnectionError(error.code, error.message);
   }
   throw error;
 }

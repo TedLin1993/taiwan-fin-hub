@@ -76,6 +76,21 @@ export async function updateConnectorCursor(
     .run();
 }
 
+export async function clearConnectorCursor(
+  db: D1Database,
+  connectorId: string,
+  now: string
+) {
+  await db
+    .prepare(
+      `UPDATE connector_settings
+      SET sync_cursor = NULL, updated_at = ?
+      WHERE connector_id = ?`
+    )
+    .bind(now, connectorId)
+    .run();
+}
+
 export {
   acquireSyncJobLock,
   completeSyncJob,

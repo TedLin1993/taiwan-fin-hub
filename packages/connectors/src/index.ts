@@ -7,7 +7,7 @@ export { EInvoiceProtocolUnavailableError } from "./tw-einvoice-api";
 export { EInvoiceV2Client, decryptLoginData, encryptLoginData, signInvoiceJwt } from "./tw-einvoice-v2";
 export type { EInvoiceV2Options, EInvoiceV2Session } from "./tw-einvoice-v2";
 
-export { tdccConnector, createTdccConnector, tdccConfigSchema, parseTdccConfig, syncTdccTradeHistory, TdccOtpExpiredError } from "./tdcc";
+export { tdccConnector, createTdccConnector, tdccConfigSchema, parseTdccConfig, syncTdccTradeHistory, TdccConnectionError, TdccOtpExpiredError, TdccVerificationRequiredError } from "./tdcc";
 export type { TdccConfig, TdccHolding, TdccCashBalance, TdccCashMovement, TdccClient } from "./tdcc";
 import { tdccConfigSchema } from "./tdcc";
 
