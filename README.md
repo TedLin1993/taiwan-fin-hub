@@ -50,8 +50,8 @@
 | API        | Cloudflare Workers、Hono                | 提供 API、執行同步流程與靜態網站                     |
 | 資料庫     | Cloudflare D1                           | 儲存加密後的連接器設定、金融資料、分類規則與同步狀態 |
 | 登入保護   | Cloudflare Access                       | 驗證使用者身分，Worker 端驗證 Access JWT             |
-| 銀行連接器 | Cloudflare Browser Rendering、Puppeteer | 處理需要瀏覽器的銀行登入與資料擷取                   |
-| 驗證碼辨識 | Cloudflare Workers AI、Gemma 4          | 辨識永豐登入頁的六位數字圖形驗證碼                   |
+| 銀行連接器 | Cloudflare Browser Run、Puppeteer       | 處理需要瀏覽器的銀行登入與資料擷取                   |
+| 驗證碼辨識 | Cloudflare Workers AI                   | 辨識銀行登入流程中的驗證碼（CAPTCHA）                |
 | 排程同步   | Workers Cron Triggers、D1 sync jobs     | 執行週期同步、鎖定同步工作並記錄需要人工處理的狀態   |
 | 專案結構   | npm workspaces                          | 管理 Web、Worker、共用型別、資料庫與連接器套件       |
 
@@ -61,13 +61,11 @@
 
 **需要：** [Cloudflare 帳號](https://dash.cloudflare.com/signup)、[GitHub 帳號](https://github.com/signup)
 
-### 步驟一：啟用 Cloudflare Access
+> 玉山與國泰連接器會使用 [Cloudflare Browser Run](https://developers.cloudflare.com/browser-run/)。Workers Free Plan 每日包含 10 分鐘瀏覽器使用量；大量或頻繁同步可能超過免費額度。
 
-前往 https://one.dash.cloudflare.com/ 開啟 Cloudflare Access，Free Plan 即可。本應用以此作為登入與存取保護。
+### 步驟一：一鍵部署
 
-### 步驟二：一鍵部署
-
-點擊下方按鈕，程式碼會自動複製到你的 GitHub 並部署至 Cloudflare Workers：
+點擊下方按鈕。Cloudflare 會在你的 GitHub 帳號建立一份新的 repository、自動建立 D1 Database，並部署至 Cloudflare Workers：
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/TedLin1993/taiwan-fin-hub)
 
@@ -79,32 +77,32 @@
 
 <img src="images/deploy-github-authorize.png" width="400">
 
-接著填寫部署設定，在表單下方輸入以下 secret：
+接著填寫部署設定。此時只需要設定 `CONFIG_ENCRYPTION_KEY`，`TEAM_DOMAIN` 與 `POLICY_AUD` 留待步驟二設定：
 
 <img src="images/deploy-setup.png" width="450">
 
-| Secret                  | 說明                                                                                              |
-| ----------------------- | ------------------------------------------------------------------------------------------------- |
-| `CONFIG_ENCRYPTION_KEY` | 加密連接器帳密的金鑰，至少 32 字元，**設定後不可更換**。可用此指令產生：`openssl rand -base64 32` |
+| Secret                  | 說明                                                                                                       |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `CONFIG_ENCRYPTION_KEY` | 加密連接器帳密的金鑰。可使用 `openssl rand -hex 32` 產生；請妥善保存，遺失或更換後需重新設定所有連接器。 |
 
-其他兩個設定值待會才會設定
-
-點擊 **Deploy**，等待約 1 分鐘，看到綠色勾勾即表示部署成功：
+點擊 **Deploy**，看到綠色勾勾即表示部署成功：
 
 <img src="images/deploy-success.png" width="700">
 
-### 步驟三：啟用登入保護
+### 步驟二：啟用登入保護
 
-1. 前往 [Cloudflare Dashboard](https://dash.cloudflare.com/) → Workers & Pages，確認 `taiwan-fin-hub` 已出現
-2. 點進去後切到 **Domains** 頁籤，將 Worker URL 旁的存取模式從 **Public** 改為 **Restricted**
-   （若此步驟失敗，請確認 Cloudflare Access 已啟用）
+1. 前往 [Cloudflare Dashboard](https://dash.cloudflare.com/) → **Workers & Pages**，選擇剛建立的 `taiwan-fin-hub`
+2. 開啟 **Domains** 頁籤，將 Worker URL 旁的存取模式從 **Public** 改為 **Restricted**
+3. 若介面沒有 **Domains** 頁籤，請改至 **Settings → Domains & Routes**，在 `workers.dev` 網址旁啟用 Cloudflare Access
 
-   <img src="images/deploy-domains-restricted.png" width="700">
+<img src="images/deploy-domains-restricted.png" width="700">
 
-3. 切換後會彈出「This Worker URL requires Access sign-in」對話框，記下以下兩個值：
-   - **Audience (aud)**：一串 hex 字串，對應 `POLICY_AUD`
-   - **JWKs URL**：格式為 `https://xxxxxxxx.cloudflareaccess.com/cdn-cgi/access/certs`，其中 `https://xxxxxxxx.cloudflareaccess.com` 即 `TEAM_DOMAIN`
-4. 前往 **Settings → Variables and secrets**，對以下兩個 Secret 點選 **Rotate** 填入對應值：
+切換成 **Restricted** 後，Cloudflare 會顯示以下兩個值：
+
+- **Audience (aud)**：一串 hex 字串，對應 `POLICY_AUD`
+- **JWKs URL**：格式為 `https://xxxxxxxx.cloudflareaccess.com/cdn-cgi/access/certs`，其中前面的網域即為 `TEAM_DOMAIN`
+
+接著前往 **Settings → Variables and secrets**，設定以下 Secret：
 
 <img src="images/deploy-secrets.png" width="700">
 
@@ -112,17 +110,48 @@
 | ------------- | ------------------------------------------------------------- |
 | `TEAM_DOMAIN` | JWKs URL 的網域，例如 `https://yourteam.cloudflareaccess.com` |
 | `POLICY_AUD`  | Audience (aud) 的 hex 值                                      |
-| `POLICY_AUDS` | 選填，多個 Audience (aud) 的 hex 值，以逗號或空白分隔         |
 
----
+> 完成此步驟後即可開始使用系統。
 
-## 使用
+> 進階用法：若同一個 Worker 需要接受多個 Access Application，可另外設定 `POLICY_AUDS`，以逗號或空白分隔多個 Audience。
 
-1. 開啟部署完成的網址，確認需要登入才能進入（若能直接存取，請回到步驟三確認 Restricted 設定）
+### 步驟三：確認部署
+
+1. 開啟 Worker 的 `workers.dev` 網址，確認會先要求 Cloudflare Access 登入
 2. 登入後前往「連接器」頁面設定資料來源
 3. 點擊同步以取得最新資料
 
-### 本機開發
+### 步驟四（進階）：調整登入方式與有效期限
+
+Cloudflare Access 可能使用 Email OTP，登入狀態預設會在 24 小時後過期。以下為進階設定，非必要。
+
+#### 使用 Cloudflare 帳號登入
+
+1. 前往 **Zero Trust → Integrations → Identity providers**
+2. 確認列表中是否已有 **Cloudflare**
+3. 若沒有，點選 **Add new identity provider → Cloudflare**
+4. 啟用 **Restrict to account members**，避免非此 Cloudflare 帳號成員登入
+5. 儲存設定
+
+新建立的 Zero Trust organization 通常已預設啟用 Cloudflare identity provider，不需要另外新增。
+
+接著前往 **Zero Trust → Access controls → Applications**，選擇 `taiwan-fin-hub`：
+
+1. 進入 **Authentication**
+2. 將登入方式設為 **Cloudflare**
+3. 若只使用此登入方式，可啟用 **Apply instant authentication**，直接進入 Cloudflare 登入流程，不再顯示登入方式選擇頁
+
+#### 將登入期限延長至一個月
+
+1. 在 `taiwan-fin-hub` Access Application 的設定中，將 **Session Duration** 設為 **1 month**
+2. 前往 **Zero Trust → Access controls → Access settings**
+3. 將 **Global session duration** 也設為 **1 month**
+
+若 Access Policy 另外設定了 Session Duration，也請將該 Policy 的期限調整為一個月，否則會以較短的 Policy 設定為準。
+
+---
+
+## 本機開發
 
 本機 Wrangler 設定不納入版本控制。第一次啟動前請建立私人設定檔，並填入自己的 D1 Database ID：
 
@@ -142,19 +171,27 @@ npm run dev
 
 ## 更新
 
-目前 Deploy to Cloudflare 尚不支援 Fork，無法在 GitHub 上直接同步新版的程式碼，請擇一使用以下兩種方式：
+Deploy to Cloudflare 會將本專案複製成你 GitHub 帳號下的新 repository，而不是建立 Fork，因此不會自動保留 upstream 關係。
 
-**方法一：透過 Git 更新（推薦）**
+### 方法一：透過 Git 更新（推薦）
+
+第一次更新前，先在自己部署後的 repository 加入 upstream：
 
 ```bash
-git remote add upstream git@github.com:TedLin1993/taiwan-fin-hub.git
-git fetch upstream
-git merge upstream/main
+git remote add upstream https://github.com/TedLin1993/taiwan-fin-hub.git
 ```
 
-推送後 Cloudflare 會自動部署新版本。
+之後每次更新執行：
 
-**方法二：重新部署**
+```bash
+git switch main
+git pull upstream main
+git push origin main
+```
+
+推送至 `main` 後，Cloudflare Workers Builds 會自動部署新版本。若你曾自行修改程式，更新時可能需要手動解決 merge conflict。
+
+### 方法二：重新部署
 
 點擊下方按鈕重新走一次部署流程：
 
@@ -195,7 +232,7 @@ POLICY_AUDS=production-aud-hex,private-aud-hex
 2. 使用 **AES-GCM** 加密，每次產生隨機 96-bit IV
 3. 資料庫只儲存密文（版本號、演算法、IV、ciphertext 均 Base64 編碼），明文從不落地
 
-> **注意**：`CONFIG_ENCRYPTION_KEY` 設定後不可更換，否則既有的加密資料將無法解密。
+> **注意**：目前未提供金鑰輪替機制。更換 `CONFIG_ENCRYPTION_KEY` 後，既有的加密資料將無法解密，需要重新設定所有連接器。
 
 ---
 
