@@ -44,15 +44,16 @@
 
 ## 技術架構
 
-| 層級       | 技術                                             | 用途                                                 |
-| ---------- | ------------------------------------------------ | ---------------------------------------------------- |
-| Web        | Svelte 5、TypeScript、Tailwind CSS 4             | 響應式介面、資料查詢與視覺化                         |
-| API        | Cloudflare Workers、Hono                         | 提供 API、執行同步流程與靜態網站                     |
-| 資料庫     | Cloudflare D1                                    | 儲存加密後的連接器設定、金融資料、分類規則與同步狀態 |
-| 登入保護   | Cloudflare Access                                | 驗證使用者身分，Worker 端驗證 Access JWT             |
-| 銀行連接器 | Cloudflare Browser Run（原 Browser Rendering）、Puppeteer | 處理需要瀏覽器的銀行登入與資料擷取                   |
-| 排程同步   | Workers Cron Triggers、D1 sync jobs              | 執行週期同步、鎖定同步工作並記錄需要人工處理的狀態   |
-| 專案結構   | npm workspaces                                   | 管理 Web、Worker、共用型別、資料庫與連接器套件       |
+| 層級       | 技術                                    | 用途                                                 |
+| ---------- | --------------------------------------- | ---------------------------------------------------- |
+| Web        | Svelte 5、TypeScript、Tailwind CSS 4    | 響應式介面、資料查詢與視覺化                         |
+| API        | Cloudflare Workers、Hono                | 提供 API、執行同步流程與靜態網站                     |
+| 資料庫     | Cloudflare D1                           | 儲存加密後的連接器設定、金融資料、分類規則與同步狀態 |
+| 登入保護   | Cloudflare Access                       | 驗證使用者身分，Worker 端驗證 Access JWT             |
+| 銀行連接器 | Cloudflare Browser Run、Puppeteer       | 處理需要瀏覽器的銀行登入與資料擷取                   |
+| 驗證碼辨識 | Cloudflare Workers AI                   | 辨識銀行登入流程中的驗證碼（CAPTCHA）                |
+| 排程同步   | Workers Cron Triggers、D1 sync jobs     | 執行週期同步、鎖定同步工作並記錄需要人工處理的狀態   |
+| 專案結構   | npm workspaces                          | 管理 Web、Worker、共用型別、資料庫與連接器套件       |
 
 ---
 
@@ -80,8 +81,8 @@
 
 <img src="images/deploy-setup.png" width="450">
 
-| Secret                  | 說明                                                                                                         |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Secret                  | 說明                                                                                                       |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `CONFIG_ENCRYPTION_KEY` | 加密連接器帳密的金鑰。可使用 `openssl rand -hex 32` 產生；請妥善保存，遺失或更換後需重新設定所有連接器。 |
 
 點擊 **Deploy**，看到綠色勾勾即表示部署成功：
@@ -91,13 +92,17 @@
 ### 步驟二：啟用登入保護
 
 1. 前往 [Cloudflare Dashboard](https://dash.cloudflare.com/) → **Workers & Pages**，選擇剛建立的 `taiwan-fin-hub`
-2. 開啟 **Domains**；若仍是舊版介面，請前往 **Settings → Domains & Routes**
-3. 在 `workers.dev` 網址旁點選 **Enable Cloudflare Access**
-4. 點選 **Manage Cloudflare Access**，確認允許登入的 Email 或 Access Policy 設定正確
-5. 記下 Cloudflare 顯示的兩個值：
-   - **Audience (aud)**：一串 hex 字串，對應 `POLICY_AUD`
-   - **JWKs URL**：格式為 `https://xxxxxxxx.cloudflareaccess.com/cdn-cgi/access/certs`，其中 `https://xxxxxxxx.cloudflareaccess.com` 即 `TEAM_DOMAIN`
-6. 回到 Worker 的 **Settings → Variables and secrets**，設定以下 Secret：
+2. 開啟 **Domains** 頁籤，將 Worker URL 旁的存取模式從 **Public** 改為 **Restricted**
+3. 若介面沒有 **Domains** 頁籤，請改至 **Settings → Domains & Routes**，在 `workers.dev` 網址旁啟用 Cloudflare Access
+
+<img src="images/deploy-domains-restricted.png" width="700">
+
+切換成 **Restricted** 後，Cloudflare 會顯示以下兩個值：
+
+- **Audience (aud)**：一串 hex 字串，對應 `POLICY_AUD`
+- **JWKs URL**：格式為 `https://xxxxxxxx.cloudflareaccess.com/cdn-cgi/access/certs`，其中前面的網域即為 `TEAM_DOMAIN`
+
+接著前往 **Settings → Variables and secrets**，設定以下 Secret：
 
 <img src="images/deploy-secrets.png" width="700">
 
@@ -106,6 +111,8 @@
 | `TEAM_DOMAIN` | JWKs URL 的網域，例如 `https://yourteam.cloudflareaccess.com` |
 | `POLICY_AUD`  | Audience (aud) 的 hex 值                                      |
 
+> 完成此步驟後即可開始使用系統。
+
 > 進階用法：若同一個 Worker 需要接受多個 Access Application，可另外設定 `POLICY_AUDS`，以逗號或空白分隔多個 Audience。
 
 ### 步驟三：確認部署
@@ -113,6 +120,34 @@
 1. 開啟 Worker 的 `workers.dev` 網址，確認會先要求 Cloudflare Access 登入
 2. 登入後前往「連接器」頁面設定資料來源
 3. 點擊同步以取得最新資料
+
+### 步驟四（進階）：調整登入方式與有效期限
+
+Cloudflare Access 可能使用 Email OTP，登入狀態預設會在 24 小時後過期。以下為進階設定，非必要。
+
+#### 使用 Cloudflare 帳號登入
+
+1. 前往 **Zero Trust → Integrations → Identity providers**
+2. 確認列表中是否已有 **Cloudflare**
+3. 若沒有，點選 **Add new identity provider → Cloudflare**
+4. 啟用 **Restrict to account members**，避免非此 Cloudflare 帳號成員登入
+5. 儲存設定
+
+新建立的 Zero Trust organization 通常已預設啟用 Cloudflare identity provider，不需要另外新增。
+
+接著前往 **Zero Trust → Access controls → Applications**，選擇 `taiwan-fin-hub`：
+
+1. 進入 **Authentication**
+2. 將登入方式設為 **Cloudflare**
+3. 若只使用此登入方式，可啟用 **Apply instant authentication**，直接進入 Cloudflare 登入流程，不再顯示登入方式選擇頁
+
+#### 將登入期限延長至一個月
+
+1. 在 `taiwan-fin-hub` Access Application 的設定中，將 **Session Duration** 設為 **1 month**
+2. 前往 **Zero Trust → Access controls → Access settings**
+3. 將 **Global session duration** 也設為 **1 month**
+
+若 Access Policy 另外設定了 Session Duration，也請將該 Policy 的期限調整為一個月，否則會以較短的 Policy 設定為準。
 
 ---
 
@@ -162,7 +197,7 @@ git push origin main
 
 1. **Project Name** 填新名稱，例如 `taiwan-fin-hub-v2`
 2. **Select D1 Database** 選擇原有資料庫（`taiwan-fin-hub` 或你自訂的名稱）
-3. **CONFIG_ENCRYPTION_KEY** 填入原本的值；若改用新值，既有連接器設定將無法解密
+3. **CONFIG_ENCRYPTION_KEY** 若有保留原本的值請填入相同值；填新值則需重新設定所有連接器
 4. 其餘步驟同首次部署。新版本會有新的 Worker URL，但資料庫沿用原有的，資料不會遺失
 
 ---
