@@ -6,7 +6,10 @@ import {
   persistStagedSyncWrite,
   type SyncWriteRecord,
 } from "../../../src/features/sync/persistence";
-import { reconcileEsunLifecycleShadowStatements } from "../../../src/features/sync/repository";
+import {
+  reconcileEsunLifecycleShadowStatements,
+  reconcileSinopacLegacyTransactionStatements,
+} from "../../../src/features/sync/repository";
 
 class SqliteStatement {
   private values: unknown[] = [];
@@ -121,6 +124,34 @@ function bankAccountRecord(index: number): SyncWriteRecord {
   };
 }
 
+function bankTransactionRecord(
+  sourceId: string,
+  status: "pending" | "posted",
+  dates: { authorizedAt: string; postedDate?: string },
+): SyncWriteRecord {
+  const id = `tdcc:account-0:${sourceId}`;
+  return {
+    entityType: "bank_transaction",
+    recordKey: id,
+    payload: {
+      id,
+      connector_id: "tdcc",
+      account_id: "tdcc:account-0",
+      source_id: sourceId,
+      posted_date: dates.postedDate ?? null,
+      authorized_at: dates.authorizedAt,
+      amount: -252,
+      currency: "TWD",
+      description: "全支付﹘全聯",
+      counterparty: "全支付﹘全聯",
+      status,
+      raw_payload: JSON.stringify({ status }),
+      created_at: "2026-07-05T00:00:00.000Z",
+      updated_at: dates.postedDate ?? dates.authorizedAt,
+    },
+  };
+}
+
 describe("staged sync persistence", () => {
   it("migrates preferences and removes E.SUN lifecycle shadow transactions", async () => {
     const db = createDb();
@@ -170,6 +201,53 @@ describe("staged sync persistence", () => {
     ).toEqual({ target_id: "canonical", category_id: "shopping" });
   });
 
+  it("migrates preferences and removes matching legacy Sinopac transaction ids", async () => {
+    const db = createDb();
+    db.database.exec(`
+      INSERT INTO bank_accounts
+        (id, connector_id, source_id, account_type, currency, raw_payload, created_at, updated_at)
+      VALUES
+        ('sinopac:credit:sinopac:main', 'sinopac', 'credit:sinopac:main', 'credit', 'TWD', '{}', '2026-07-01', '2026-07-01');
+
+      INSERT INTO bank_transactions
+        (id, connector_id, account_id, source_id, posted_date, authorized_at, amount, currency, description, status, raw_payload, created_at, updated_at)
+      VALUES
+        ('sinopac-legacy', 'sinopac', 'sinopac:credit:sinopac:main', 'sinopac:card:tx:TWD:legacy', '2026-07-19', NULL, -260, 'TWD', '連支＊餐廳', 'posted', '{}', '2026-07-19', '2026-07-19'),
+        ('sinopac-canonical', 'sinopac', 'sinopac:credit:sinopac:main', 'sinopac:card:tx:v2:TWD:2026-07-19:-260:8000:1', '2026-07-22', '2026-07-19', -260, 'TWD', '連支＊餐廳', 'posted', '{}', '2026-07-22', '2026-07-22');
+
+      INSERT INTO bank_transaction_preferences
+        (transaction_id, excluded_from_calculation, created_at, updated_at)
+      VALUES ('sinopac-legacy', 1, '2026-07-19', '2026-07-19');
+
+      INSERT INTO classification_overrides
+        (id, target_type, target_id, category_id, created_at, updated_at)
+      VALUES ('sinopac-legacy-override', 'bank_transaction', 'sinopac-legacy', 'shopping', '2026-07-19', '2026-07-19');
+    `);
+
+    await db.batch(
+      reconcileSinopacLegacyTransactionStatements(db as unknown as D1Database),
+    );
+
+    expect(
+      db.database
+        .prepare("SELECT id FROM bank_transactions ORDER BY id")
+        .all()
+        .map((row) => row.id),
+    ).toEqual(["sinopac-canonical"]);
+    expect(
+      db.database
+        .prepare(
+          "SELECT transaction_id AS transactionId FROM bank_transaction_preferences",
+        )
+        .get(),
+    ).toEqual({ transactionId: "sinopac-canonical" });
+    expect(
+      db.database
+        .prepare("SELECT target_id AS targetId FROM classification_overrides")
+        .get(),
+    ).toEqual({ targetId: "sinopac-canonical" });
+  });
+
   it("stages records in bounded JSON chunks and advances the cursor only after promotion", async () => {
     const db = createDb();
     const records = Array.from({ length: 205 }, (_, index) =>
@@ -189,6 +267,7 @@ describe("staged sync persistence", () => {
         currency: "TWD",
         description: null,
         counterparty: null,
+        status: "posted",
         raw_payload: "{}",
         created_at: "2026-07-19T00:00:00.000Z",
         updated_at: "2026-07-19T00:00:00.000Z",
@@ -235,6 +314,74 @@ describe("staged sync persistence", () => {
     ).toMatchObject({ cursor: "new-cursor" });
   });
 
+  it("upgrades pending to posted in place and never downgrades posted history", async () => {
+    const db = createDb();
+    const pending = bankTransactionRecord("purchase-1", "pending", {
+      authorizedAt: "2026-07-05T00:00:00.000Z",
+    });
+
+    await persistStagedSyncWrite(db as unknown as D1Database, {
+      records: [bankAccountRecord(0), pending],
+    });
+    db.database
+      .prepare(
+        `INSERT INTO bank_transaction_preferences
+         (transaction_id, excluded_from_calculation, created_at, updated_at)
+         VALUES (?, 1, '2026-07-05', '2026-07-05')`,
+      )
+      .run(pending.recordKey);
+
+    await persistStagedSyncWrite(db as unknown as D1Database, {
+      records: [
+        bankTransactionRecord("purchase-1", "posted", {
+          authorizedAt: "2026-07-05",
+          postedDate: "2026-07-07T00:00:00.000Z",
+        }),
+      ],
+    });
+    await persistStagedSyncWrite(db as unknown as D1Database, {
+      records: [pending],
+    });
+
+    expect(
+      db.database
+        .prepare(
+          `SELECT id, status, authorized_at AS authorizedAt,
+                  posted_date AS postedDate,
+                  json_extract(raw_payload, '$.status') AS rawStatus
+           FROM bank_transactions WHERE source_id = 'purchase-1'`,
+        )
+        .get(),
+    ).toEqual({
+      id: pending.recordKey,
+      status: "posted",
+      authorizedAt: "2026-07-05T00:00:00.000Z",
+      postedDate: "2026-07-07T00:00:00.000Z",
+      rawStatus: "posted",
+    });
+    expect(
+      db.database
+        .prepare(
+          "SELECT excluded_from_calculation AS excluded FROM bank_transaction_preferences WHERE transaction_id = ?",
+        )
+        .get(pending.recordKey),
+    ).toEqual({ excluded: 1 });
+
+    await persistStagedSyncWrite(db as unknown as D1Database, {
+      records: [
+        bankTransactionRecord("purchase-2", "pending", {
+          authorizedAt: "2026-07-08T00:00:00.000Z",
+        }),
+      ],
+    });
+    await persistStagedSyncWrite(db as unknown as D1Database, { records: [] });
+    expect(
+      db.database
+        .prepare("SELECT COUNT(*) AS count FROM bank_transactions")
+        .get(),
+    ).toEqual({ count: 2 });
+  });
+
   it("rolls back promotion and leaves the cursor unchanged when a staged record is invalid", async () => {
     const db = createDb();
     const invalidTransaction: SyncWriteRecord = {
@@ -251,6 +398,7 @@ describe("staged sync persistence", () => {
         currency: "TWD",
         description: null,
         counterparty: null,
+        status: "posted",
         raw_payload: "{}",
         created_at: "2026-07-19T00:00:00.000Z",
         updated_at: "2026-07-19T00:00:00.000Z",

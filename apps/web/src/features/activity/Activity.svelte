@@ -163,7 +163,7 @@
         return {
           id: t.id,
           source: isCard ? ("card" as const) : ("bank" as const),
-          date: t.postedDate ?? t.authorizedAt ?? "",
+          date: t.authorizedAt ?? t.postedDate ?? "",
           title:
             matchedInvoice?.sellerName ??
             t.description ??
@@ -1249,8 +1249,8 @@
                         >
                         <span class="mt-1 block truncate text-xs text-ink/50"
                           >{mappingAccount(transaction)} · {formatDate(
-                            transaction.postedDate ??
-                              transaction.authorizedAt ??
+                            transaction.authorizedAt ??
+                              transaction.postedDate ??
                               "",
                           )}</span
                         >

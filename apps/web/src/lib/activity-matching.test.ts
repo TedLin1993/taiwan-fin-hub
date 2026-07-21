@@ -269,7 +269,7 @@ describe("invoice transaction matching", () => {
     expect(result.invoiceToTransactionId.size).toBe(0);
   });
 
-  it("does not match an otherwise identical transaction from another day", () => {
+  it("uses the authorization day when the posting day differs", () => {
     const result = matchInvoicesToTransactions(
       [
         transaction({
@@ -280,7 +280,9 @@ describe("invoice transaction matching", () => {
       [invoice()],
     );
 
-    expect(result.invoiceToTransactionId.size).toBe(0);
+    expect(result.invoiceToTransactionId.get("invoice-1")).toBe(
+      "transaction-1",
+    );
   });
 
   it("uses the Taipei calendar day for ISO timestamps near midnight", () => {
@@ -390,6 +392,7 @@ describe("bank transaction deduplication", () => {
         "2026-07-05T00:00:00.000Z:credit:esun:1204:全支付﹘全聯:252:TWD:未入帳:1",
       accountType: "credit",
       postedDate: "2026-07-05T00:00:00.000Z",
+      authorizedAt: "2026-07-05T00:00:00.000Z",
       amount: 252,
       description: "全支付﹘全聯",
       counterparty: "全支付﹘全聯",

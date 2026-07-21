@@ -13,7 +13,10 @@ const MOBILE_HOST = "https://m.sinopac.com";
 const LOGIN_URL = `${MOBILE_HOST}/m/member/login/m_login.aspx?RequestTrans=MobileCard`;
 const CARD_SUMMARY_PATH = "/ws/card/cardqry/ws_cardsum.ashx";
 const CARD_BILLS_PATH = "/ws/card/cardqry/ws_cardbilling_sp.ashx";
-const CARD_UNBILLED_PATH = "/ws/card/cardqry/ws_nonbilling.ashx";
+const CARD_SSO_PATH = "/m/SinoCard/api/security/sso";
+const CARD_AUTH_PATH = "/m/SinoCard/api/security/auth";
+const CARD_LATEST_TX_PATH = "/m/SinoCard/api/Accounting/LatestTx";
+const CARD_OUTSTANDING_DETAIL_PATH = "/m/SinoCard/api/Accounting/OutstandingDetail";
 export const SINOPAC_SESSION_PROTOCOL = "sinopac-mobile-app-json-v1";
 export const SINOPAC_AUTO_LOGIN_ATTEMPTS = 3;
 const CAPTCHA_BROWSER_KEEP_ALIVE_MS = 150_000;
@@ -27,7 +30,9 @@ type FetchImpl = typeof fetch;
 type SinopacApiPayloads = {
   summary: unknown;
   bills: unknown;
-  unbilled: unknown;
+  latest?: unknown;
+  outstanding?: unknown;
+  unbilled?: unknown;
 };
 type Scraped = {
   bankAccounts: Array<Omit<BankAccount, "id" | "connectorId">>;
@@ -109,7 +114,10 @@ export function createSinopacConnector(browser?: Fetcher, fetchImpl: FetchImpl =
       }
 
       const lookbackMonths = config.lookbackMonths ?? 3;
-      const client = new SinopacAppClient(sessionCookies, fetchImpl);
+      if (!config.userId) {
+        throw new SinopacVerificationRequiredError("永豐最新消費同步需要重新登入以取得身分識別資料。");
+      }
+      const client = new SinopacAppClient(sessionCookies, config.userId, fetchImpl);
       const payloads = await client.fetchCreditCards(lookbackMonths);
       const cards = parseSinopacCardData(payloads, lookbackMonths);
       const now = new Date();
@@ -129,12 +137,15 @@ export function createSinopacConnector(browser?: Fetcher, fetchImpl: FetchImpl =
 
 class SinopacAppClient {
   private readonly cookieHeader: string;
+  private readonly sinoCardCookies: Map<string, string>;
 
   constructor(
     serializedCookies: string,
+    private readonly userId: string,
     private readonly fetchImpl: FetchImpl
   ) {
     this.cookieHeader = cookieHeaderFromSerialized(serializedCookies);
+    this.sinoCardCookies = cookieMapFromHeader(this.cookieHeader);
   }
 
   fetchSummary() {
@@ -149,8 +160,17 @@ class SinopacAppClient {
     for (const month of billMonths) {
       olderBills.push(await this.post(`${CARD_BILLS_PATH}?TxDate=${month}&TxType=01`, `${month} 帳單`));
     }
-    const unbilled = await this.post(CARD_UNBILLED_PATH, "未出帳明細");
-    return { summary, bills: [initialBills, ...olderBills], unbilled };
+    const sso = await this.postSinoCard(CARD_SSO_PATH, "信用卡單一登入", {});
+    const customerId = sinoCardCustomerId(sso) ?? this.userId;
+    await this.postSinoCard(CARD_AUTH_PATH, "信用卡授權", {}, customerId);
+    const latest = await this.postSinoCard(CARD_LATEST_TX_PATH, "最新消費", { ID: customerId }, customerId);
+    const outstanding = await this.postSinoCard(
+      CARD_OUTSTANDING_DETAIL_PATH,
+      "已請款消費明細",
+      { IsExcludePaidUp: false, ID: customerId, DateYYYYMMDD: "" },
+      customerId
+    );
+    return { summary, bills: [initialBills, ...olderBills], latest, outstanding };
   }
 
   private async post(path: string, label: string) {
@@ -181,6 +201,45 @@ class SinopacAppClient {
       throw new Error(`永豐${label} API 回應不是有效 JSON。`);
     }
     assertSinopacApiSuccess(payload, label);
+    return payload;
+  }
+
+  private async postSinoCard(path: string, label: string, content: JsonRecord, userId = this.userId) {
+    const response = await this.fetchImpl.call(globalThis, `${MOBILE_HOST}${path}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        Cookie: cookieHeaderFromMap(this.sinoCardCookies),
+        Referer: `${MOBILE_HOST}/m/SinoCard/Account/UnbilledTxInquiry`,
+        "User-Agent": ANDROID_USER_AGENT
+      },
+      body: JSON.stringify({
+        Content: content,
+        Header: {
+          ApplicationName: "MWEB",
+          UserID: userId,
+          ClientRefNo: crypto.randomUUID().replaceAll("-", ""),
+          ClientTimestamp: new Date().toISOString()
+        }
+      })
+    });
+    storeSetCookies(this.sinoCardCookies, response.headers);
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`永豐${label} API 回應 HTTP ${response.status}。`);
+    }
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      if (/m_login|尚未登入|登入\/Login/i.test(text)) {
+        throw new SinopacVerificationRequiredError("永豐銀行 session 已失效，請重新完成圖形驗證。");
+      }
+      throw new Error(`永豐${label} API 回應不是有效 JSON。`);
+    }
+    assertSinoCardApiSuccess(payload, label);
     return payload;
   }
 }
@@ -488,6 +547,42 @@ function cookieHeaderFromSerialized(serialized: string) {
   return header;
 }
 
+function cookieMapFromHeader(header: string) {
+  return new Map(
+    header.split(";").flatMap((part) => {
+      const separator = part.indexOf("=");
+      if (separator <= 0) return [];
+      const name = part.slice(0, separator).trim();
+      const value = part.slice(separator + 1).trim();
+      return name && value ? [[name, value] as const] : [];
+    })
+  );
+}
+
+function cookieHeaderFromMap(cookies: Map<string, string>) {
+  return Array.from(cookies, ([name, value]) => `${name}=${value}`).join("; ");
+}
+
+function storeSetCookies(cookies: Map<string, string>, headers: Headers) {
+  const withGetter = headers as Headers & { getSetCookie?: () => string[] };
+  const values = typeof withGetter.getSetCookie === "function"
+    ? withGetter.getSetCookie()
+    : splitCombinedSetCookie(headers.get("set-cookie") ?? "");
+  for (const value of values) {
+    const [pair] = value.split(";");
+    const separator = pair.indexOf("=");
+    if (separator <= 0) continue;
+    const name = pair.slice(0, separator).trim();
+    const cookieValue = pair.slice(separator + 1).trim();
+    if (cookieValue) cookies.set(name, cookieValue);
+    else cookies.delete(name);
+  }
+}
+
+function splitCombinedSetCookie(value: string) {
+  return value ? value.split(/,(?=\s*[^;,=]+=[^;,]+)/g).map((cookie) => cookie.trim()).filter(Boolean) : [];
+}
+
 function assertSinopacApiSuccess(payload: unknown, label: string) {
   const envelope = flattenRecords(payload).find((record) => typeof record.Header === "string");
   if (!envelope) throw new Error(`永豐${label} API 回應缺少 Header。`);
@@ -499,10 +594,28 @@ function assertSinopacApiSuccess(payload: unknown, label: string) {
   if (header !== "SUCCESS") throw new Error(`永豐${label} API 失敗：${message}`);
 }
 
+function assertSinoCardApiSuccess(payload: unknown, label: string) {
+  if (!isRecord(payload)) throw new Error(`永豐${label} API 回應格式無效。`);
+  const resultCode = stringValue(payload.ResultCode);
+  const message = stringValue(payload.ResultMessage) || stringValue(payload.Error) || "銀行未提供錯誤訊息";
+  if (resultCode === "00") return;
+  if (/尚未登入|登入|逾時|session|授權|驗證/i.test(message) || /單一登入|信用卡授權/.test(label)) {
+    throw new SinopacVerificationRequiredError("永豐銀行 session 已失效，請重新完成圖形驗證。");
+  }
+  throw new Error(`永豐${label} API 失敗：${message}`);
+}
+
+function sinoCardCustomerId(payload: unknown) {
+  if (!isRecord(payload) || !isRecord(payload.Result)) return undefined;
+  return stringValue(payload.Result.ID) || undefined;
+}
+
 export function parseSinopacCardData(payloads: SinopacApiPayloads, lookbackMonths: number, now = new Date()): Scraped {
   const summary = parseSummary(payloads.summary);
   const bills = parseBills(payloads.bills, lookbackMonths, now);
-  const transactions = parseTransactions(payloads.unbilled);
+  const transactions = payloads.outstanding != null || payloads.latest != null
+    ? parseSinoCardTransactions(payloads.latest, payloads.outstanding)
+    : parseTransactions(payloads.unbilled);
   const latestTwdBill = bills
     .filter((bill) => bill.currency === "TWD")
     .sort((left, right) => right.billingPeriod.localeCompare(left.billingPeriod))[0];
@@ -669,15 +782,123 @@ function parseTransactions(payload: unknown) {
       amount,
       currency,
       description,
+      status: "posted",
       raw: {
         ...(sanitizeValue(record) as JsonRecord),
-        duplicateOccurrence: occurrence,
-        pending: true
+        duplicateOccurrence: occurrence
       }
     });
   }
 
   return out;
+}
+
+type SinoCardTransactionCandidate = Omit<BankTransaction, "id" | "connectorId" | "accountId" | "sourceId"> & {
+  matchKey: string;
+};
+
+function parseSinoCardTransactions(latestPayload: unknown, outstandingPayload: unknown) {
+  const pending = sinoCardResultRecords(latestPayload, "Items").flatMap<SinoCardTransactionCandidate>((record) => {
+    const transactionDate = parseDate(stringValue(record.AuthDate));
+    const rawAmount = parseAmount(stringValue(record.AuthAmt)) ?? parseAmount(stringValue(record.AuthAmtDesc));
+    if (!transactionDate || rawAmount == null || rawAmount === 0) return [];
+    const description = stringValue(record.Memo).trim() || "永豐信用卡消費";
+    const amount = signedTransactionAmount(rawAmount, description, recordText(record));
+    const cardLast4 = last4FromValue(record.CardNo);
+    const authorizedAt = dateTimeWithTaipeiOffset(transactionDate, stringValue(record.AuthTime));
+    return [{
+      matchKey: sinoCardTransactionMatchKey("TWD", transactionDate, amount, cardLast4),
+      authorizedAt,
+      amount,
+      currency: "TWD",
+      description,
+      counterparty: description,
+      status: "pending",
+      raw: sanitizeValue(record)
+    }];
+  });
+
+  const posted = sinoCardResultRecords(outstandingPayload, "Detail").flatMap<SinoCardTransactionCandidate>((record) => {
+    const transactionDate = parseDate(stringValue(record.TXDATE));
+    const rawAmount = parseAmount(stringValue(record.AMT)) ?? parseAmount(stringValue(record.TXAMT));
+    if (!transactionDate || rawAmount == null || rawAmount === 0) return [];
+    const description = stringValue(record.MEMO).trim() || "永豐信用卡消費";
+    const amount = signedTransactionAmount(rawAmount, description, recordText(record));
+    const currency = normalizeCurrency(stringValue(record.CurrencyCode) || stringValue(record.TXCUR));
+    const cardLast4 = last4FromValue(record.CardNoLast4) ?? last4FromValue(record.CardLast4);
+    return [{
+      matchKey: sinoCardTransactionMatchKey(currency, transactionDate, amount, cardLast4),
+      authorizedAt: transactionDate,
+      postedDate: parseDate(stringValue(record.DEDATE)) ?? transactionDate,
+      amount,
+      currency,
+      description,
+      counterparty: description,
+      status: "posted",
+      raw: sanitizeValue(record)
+    }];
+  });
+
+  const postedTransactions = assignSinoCardSourceIds(posted);
+  const pendingTransactions = assignSinoCardSourceIds(pending);
+  const postedCounts = new Map<string, number>();
+  for (const transaction of postedTransactions) {
+    postedCounts.set(transaction.matchKey, (postedCounts.get(transaction.matchKey) ?? 0) + 1);
+  }
+  const pendingCounts = new Map<string, number>();
+  const unmatchedPending = pendingTransactions.filter((transaction) => {
+    const occurrence = (pendingCounts.get(transaction.matchKey) ?? 0) + 1;
+    pendingCounts.set(transaction.matchKey, occurrence);
+    return occurrence > (postedCounts.get(transaction.matchKey) ?? 0);
+  });
+
+  return [...postedTransactions, ...unmatchedPending].map(({ matchKey: _matchKey, ...transaction }) => transaction);
+}
+
+function sinoCardResultRecords(payload: unknown, key: "Items" | "Detail") {
+  if (!isRecord(payload) || !isRecord(payload.Result) || !Array.isArray(payload.Result[key])) return [];
+  return payload.Result[key].filter(isRecord);
+}
+
+function assignSinoCardSourceIds(candidates: SinoCardTransactionCandidate[]) {
+  const occurrences = new Map<string, number>();
+  return candidates.map((candidate) => {
+    const occurrence = (occurrences.get(candidate.matchKey) ?? 0) + 1;
+    occurrences.set(candidate.matchKey, occurrence);
+    return {
+      ...candidate,
+      sourceId: `sinopac:card:tx:v2:${candidate.matchKey}:${occurrence}`,
+      raw: {
+        ...(candidate.raw as JsonRecord),
+        duplicateOccurrence: occurrence
+      }
+    };
+  });
+}
+
+function sinoCardTransactionMatchKey(currency: string, transactionDate: string, amount: number, cardLast4?: string) {
+  return [currency, transactionDate, amount, cardLast4 || "unknown"].join(":");
+}
+
+function signedTransactionAmount(rawAmount: number, description: string, statusText: string) {
+  const isCredit =
+    rawAmount < 0 ||
+    /退款|退貨|折讓|回饋|沖銷|貸方|繳款|自扣|payment|credit|refund/i.test(`${description} ${statusText}`);
+  return isCredit ? Math.abs(rawAmount) : -Math.abs(rawAmount);
+}
+
+function last4FromValue(value: unknown) {
+  return stringValue(value).match(/(\d{4})\D*$/)?.[1];
+}
+
+function dateTimeWithTaipeiOffset(date: string, time: string) {
+  const match = time.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return date;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const second = Number(match[3] ?? "0");
+  if (hour > 23 || minute > 59 || second > 59) return date;
+  return `${date}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}+08:00`;
 }
 
 function extractAdvertisedBillMonths(payload: unknown) {
