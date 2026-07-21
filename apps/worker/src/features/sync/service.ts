@@ -42,7 +42,6 @@ import {
   connectorCursorStatement,
   connectorEncryptedConfigStatement,
   connectorStateStatement,
-  deleteSyncedBankDataStatements,
   linkCanonicalBankAccountsStatement,
   reconcileEsunLifecycleShadowStatements,
   updateConnectorEncryptedConfig,
@@ -555,10 +554,6 @@ export async function syncSinopac(
   }
   await persistStagedSyncWrite(env.DB, {
     records,
-    beforePromoteStatements: deleteSyncedBankDataStatements(
-      env.DB,
-      connectorId,
-    ),
     afterPromoteStatements:
       bankAccounts.length > 0
         ? [linkCanonicalBankAccountsStatement(env.DB)]

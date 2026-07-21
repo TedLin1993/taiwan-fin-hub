@@ -42,6 +42,11 @@ describe("E.SUN credit card timeline normalization", () => {
     expect(rows[0].sourceId).toBe(
       "2026-07-05T00:00:00.000Z:credit:esun:1204:全支付﹘全聯:252:TWD:1",
     );
+    expect(rows[0]).toMatchObject({
+      status: "posted",
+      authorizedAt: "2026-07-05T00:00:00.000Z",
+      postedDate: "2026-07-05T00:00:00.000Z",
+    });
     expect((rows[0].raw as EsunTimelineTransaction).acfg).toBe("已入帳");
   });
 
@@ -62,6 +67,7 @@ describe("E.SUN credit card timeline normalization", () => {
     expect(
       rows.map(({ raw }) => (raw as EsunTimelineTransaction).acfg),
     ).toEqual(["已入帳", "已入帳"]);
+    expect(rows.map(({ status }) => status)).toEqual(["posted", "posted"]);
   });
 
   it("keeps all pending purchases while no posted copy exists", () => {
@@ -70,5 +76,44 @@ describe("E.SUN credit card timeline normalization", () => {
     ]);
 
     expect(rows).toHaveLength(2);
+    expect(rows).toEqual([
+      expect.objectContaining({ status: "pending", postedDate: undefined }),
+      expect.objectContaining({ status: "pending", postedDate: undefined }),
+    ]);
+  });
+
+  it("upgrades a cross-day pending purchase to posted without changing its source id", () => {
+    const rows = normalizeEsunTimelineTransactions([
+      page([
+        transaction("未入帳", { consumerDt: "07/05" }),
+        transaction("已入帳", { consumerDt: "07/05", postingDt: "07/07" }),
+      ]),
+    ]);
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        sourceId: "2026-07-05T00:00:00.000Z:credit:esun:1204:全支付﹘全聯:252:TWD:1",
+        status: "posted",
+        authorizedAt: "2026-07-05T00:00:00.000Z",
+        postedDate: "2026-07-07T00:00:00.000Z",
+      }),
+    ]);
+  });
+
+  it("keeps equal purchases on different cards separate", () => {
+    const rows = normalizeEsunTimelineTransactions([
+      page([
+        transaction("未入帳", { cardNo: "****1204" }),
+        transaction("未入帳", { cardNo: "****9876" }),
+        transaction("已入帳", { cardNo: "****1204" }),
+        transaction("已入帳", { cardNo: "****9876" }),
+      ]),
+    ]);
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map(({ accountId, status }) => ({ accountId, status }))).toEqual([
+      { accountId: "credit:esun:1204", status: "posted" },
+      { accountId: "credit:esun:9876", status: "posted" },
+    ]);
   });
 });

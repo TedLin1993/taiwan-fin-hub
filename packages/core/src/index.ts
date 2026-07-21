@@ -140,6 +140,8 @@ export interface BankBalanceSnapshot {
   raw?: unknown;
 }
 
+export type BankTransactionStatus = "pending" | "posted";
+
 export interface BankTransaction {
   id: string;
   connectorId: string;
@@ -151,6 +153,7 @@ export interface BankTransaction {
   currency: string;
   description?: string;
   counterparty?: string;
+  status?: BankTransactionStatus;
   raw?: unknown;
 }
 

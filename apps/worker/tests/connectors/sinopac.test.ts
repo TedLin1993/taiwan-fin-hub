@@ -172,12 +172,14 @@ describe("sinopac App JSON parser", () => {
       expect.objectContaining({
         postedDate: "2026-07-16",
         amount: -1280,
-        description: "全聯福利中心"
+        description: "全聯福利中心",
+        status: "posted"
       }),
       expect.objectContaining({
         postedDate: "2026-07-16",
         amount: 500,
-        description: "網購退貨退款"
+        description: "網購退貨退款",
+        status: "posted"
       })
     ]);
   });

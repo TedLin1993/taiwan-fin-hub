@@ -59,20 +59,6 @@ export function connectorCursorStatement(
     .bind(cursor, now, connectorId);
 }
 
-export function deleteSyncedBankDataStatements(
-  db: D1Database,
-  connectorId: ConnectorId,
-) {
-  return [
-    db
-      .prepare(`DELETE FROM bank_transactions WHERE connector_id = ?`)
-      .bind(connectorId),
-    db
-      .prepare(`DELETE FROM credit_card_bills WHERE connector_id = ?`)
-      .bind(connectorId),
-  ];
-}
-
 export function reconcileEsunLifecycleShadowStatements(db: D1Database) {
   const shadowJoin = `canonical.connector_id = shadow.connector_id
       AND canonical.account_id = shadow.account_id

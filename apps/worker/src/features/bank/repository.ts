@@ -17,6 +17,7 @@ export type BankTransactionPageRow = {
   currency: string;
   description: string | null;
   counterparty: string | null;
+  status: "pending" | "posted";
   effectiveDate: string;
   updatedAt: string;
   calculationPreference: number | null;
@@ -88,6 +89,7 @@ export async function listBankTransactions(
       txn.currency,
       txn.description,
       txn.counterparty,
+      txn.status,
       txn.effective_date AS effectiveDate,
       txn.updated_at AS updatedAt,
       preference.excluded_from_calculation AS calculationPreference

@@ -121,6 +121,34 @@ function bankAccountRecord(index: number): SyncWriteRecord {
   };
 }
 
+function bankTransactionRecord(
+  sourceId: string,
+  status: "pending" | "posted",
+  dates: { authorizedAt: string; postedDate?: string },
+): SyncWriteRecord {
+  const id = `tdcc:account-0:${sourceId}`;
+  return {
+    entityType: "bank_transaction",
+    recordKey: id,
+    payload: {
+      id,
+      connector_id: "tdcc",
+      account_id: "tdcc:account-0",
+      source_id: sourceId,
+      posted_date: dates.postedDate ?? null,
+      authorized_at: dates.authorizedAt,
+      amount: -252,
+      currency: "TWD",
+      description: "全支付﹘全聯",
+      counterparty: "全支付﹘全聯",
+      status,
+      raw_payload: JSON.stringify({ status }),
+      created_at: "2026-07-05T00:00:00.000Z",
+      updated_at: dates.postedDate ?? dates.authorizedAt,
+    },
+  };
+}
+
 describe("staged sync persistence", () => {
   it("migrates preferences and removes E.SUN lifecycle shadow transactions", async () => {
     const db = createDb();
@@ -189,6 +217,7 @@ describe("staged sync persistence", () => {
         currency: "TWD",
         description: null,
         counterparty: null,
+        status: "posted",
         raw_payload: "{}",
         created_at: "2026-07-19T00:00:00.000Z",
         updated_at: "2026-07-19T00:00:00.000Z",
@@ -235,6 +264,73 @@ describe("staged sync persistence", () => {
     ).toMatchObject({ cursor: "new-cursor" });
   });
 
+  it("upgrades pending to posted in place and never downgrades posted history", async () => {
+    const db = createDb();
+    const pending = bankTransactionRecord("purchase-1", "pending", {
+      authorizedAt: "2026-07-05T00:00:00.000Z",
+    });
+
+    await persistStagedSyncWrite(db as unknown as D1Database, {
+      records: [bankAccountRecord(0), pending],
+    });
+    db.database
+      .prepare(
+        `INSERT INTO bank_transaction_preferences
+         (transaction_id, excluded_from_calculation, created_at, updated_at)
+         VALUES (?, 1, '2026-07-05', '2026-07-05')`,
+      )
+      .run(pending.recordKey);
+
+    await persistStagedSyncWrite(db as unknown as D1Database, {
+      records: [
+        bankTransactionRecord("purchase-1", "posted", {
+          authorizedAt: "2026-07-05T00:00:00.000Z",
+          postedDate: "2026-07-07T00:00:00.000Z",
+        }),
+      ],
+    });
+    await persistStagedSyncWrite(db as unknown as D1Database, {
+      records: [pending],
+    });
+
+    expect(
+      db.database
+        .prepare(
+          `SELECT id, status, authorized_at AS authorizedAt,
+                  posted_date AS postedDate,
+                  json_extract(raw_payload, '$.status') AS rawStatus
+           FROM bank_transactions WHERE source_id = 'purchase-1'`,
+        )
+        .get(),
+    ).toEqual({
+      id: pending.recordKey,
+      status: "posted",
+      authorizedAt: "2026-07-05T00:00:00.000Z",
+      postedDate: "2026-07-07T00:00:00.000Z",
+      rawStatus: "posted",
+    });
+    expect(
+      db.database
+        .prepare(
+          "SELECT excluded_from_calculation AS excluded FROM bank_transaction_preferences WHERE transaction_id = ?",
+        )
+        .get(pending.recordKey),
+    ).toEqual({ excluded: 1 });
+
+    await persistStagedSyncWrite(db as unknown as D1Database, {
+      records: [
+        bankTransactionRecord("purchase-2", "pending", {
+          authorizedAt: "2026-07-08T00:00:00.000Z",
+        }),
+      ],
+    });
+    expect(
+      db.database
+        .prepare("SELECT COUNT(*) AS count FROM bank_transactions")
+        .get(),
+    ).toEqual({ count: 2 });
+  });
+
   it("rolls back promotion and leaves the cursor unchanged when a staged record is invalid", async () => {
     const db = createDb();
     const invalidTransaction: SyncWriteRecord = {
@@ -251,6 +347,7 @@ describe("staged sync persistence", () => {
         currency: "TWD",
         description: null,
         counterparty: null,
+        status: "posted",
         raw_payload: "{}",
         created_at: "2026-07-19T00:00:00.000Z",
         updated_at: "2026-07-19T00:00:00.000Z",

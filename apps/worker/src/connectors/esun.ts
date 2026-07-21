@@ -427,12 +427,14 @@ type EsunTimelineCandidate = {
   timelinePage: EsunTimelinePage;
   timelineMonth: EsunTimelineMonth;
   accountId: string;
-  postedDate: string;
+  authorizedAt: string;
+  postedDate?: string;
   amount: number;
   currency: string;
   description: string;
   sourceKey: string;
   lifecycle: string;
+  status: "pending" | "posted";
   order: number;
 };
 
@@ -447,16 +449,20 @@ export function normalizeEsunTimelineTransactions(
       if (!year) continue;
 
       for (const txn of month.txnList ?? []) {
-        const postedDate = normalizeEsunMonthDay(
+        const lifecycle = txn.acfg?.trim() ?? "";
+        const authorizedAt = normalizeEsunMonthDay(
           year,
           txn.consumerDt ?? txn.postingDt ?? "",
         );
+        const postedDate = lifecycle === "未入帳"
+          ? undefined
+          : normalizeEsunMonthDay(year, txn.postingDt ?? txn.consumerDt ?? "");
         const amount = parseTwd(txn.payAmt ?? txn.consumerAmt ?? "0");
         const currency = txn.payCur?.trim() || txn.consumerCur?.trim() || "TWD";
         const description = txn.storeName?.trim() || "玉山信用卡交易";
         const accountId = creditCardSourceId(txn.cardNo);
         const sourceKey = [
-          postedDate,
+          authorizedAt,
           accountId,
           description,
           amount,
@@ -467,12 +473,14 @@ export function normalizeEsunTimelineTransactions(
           timelinePage,
           timelineMonth: month,
           accountId,
+          authorizedAt,
           postedDate,
           amount,
           currency,
           description,
           sourceKey,
-          lifecycle: txn.acfg?.trim() ?? "",
+          lifecycle,
+          status: lifecycle === "未入帳" ? "pending" : "posted",
           order: candidates.length,
         });
       }
@@ -507,10 +515,12 @@ export function normalizeEsunTimelineTransactions(
       accountId: candidate.accountId,
       sourceId: `${candidate.sourceKey}:${occurrence}`,
       postedDate: candidate.postedDate,
+      authorizedAt: candidate.authorizedAt,
       amount: candidate.amount,
       currency: candidate.currency,
       description: candidate.description,
       counterparty: candidate.description,
+      status: candidate.status,
       raw: {
         ...candidate.transaction,
         timelineYear: candidate.timelineMonth.year,

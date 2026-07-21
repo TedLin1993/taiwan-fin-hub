@@ -669,10 +669,10 @@ function parseTransactions(payload: unknown) {
       amount,
       currency,
       description,
+      status: "posted",
       raw: {
         ...(sanitizeValue(record) as JsonRecord),
-        duplicateOccurrence: occurrence,
-        pending: true
+        duplicateOccurrence: occurrence
       }
     });
   }

@@ -182,6 +182,7 @@ export function bankTransactionRecord(
       currency: transaction.currency || "TWD",
       description: transaction.description ?? null,
       counterparty: transaction.counterparty ?? null,
+      status: transaction.status ?? "posted",
       raw_payload: JSON.stringify(transaction.raw ?? transaction),
       created_at: now,
       updated_at: now,
