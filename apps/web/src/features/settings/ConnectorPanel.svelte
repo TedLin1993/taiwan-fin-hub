@@ -389,12 +389,28 @@
             }}
             ><KeyRound class="size-4" />{$prepareSinopac.isPending
               ? "取得中…"
-              : "重新驗證"}</Button
+              : "人工重新驗證"}</Button
           >
         {:else}
           <Button
             size="sm"
             disabled={demoMode ||
+              $sync.isPending ||
+              $prepareSinopac.isPending ||
+              $verifySinopac.isPending}
+            onclick={() => {
+              error = "";
+              $sync.mutate("default");
+            }}
+            ><RefreshCw
+              class={$sync.isPending ? "size-4 animate-spin" : "size-4"}
+            />{$sync.isPending ? "自動驗證中…" : "自動驗證並同步"}</Button
+          >
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={demoMode ||
+              $sync.isPending ||
               $prepareSinopac.isPending ||
               $verifySinopac.isPending}
             onclick={() => {
@@ -403,7 +419,7 @@
             }}
             ><KeyRound class="size-4" />{$prepareSinopac.isPending
               ? "取得中…"
-              : "取得驗證碼"}</Button
+              : "人工輸入驗證碼"}</Button
           >
         {/if}
       {:else}
@@ -481,15 +497,13 @@
       <ol class="list-decimal space-y-1.5 px-3 pb-3 pt-1 pl-8">
         <li>先儲存身分證字號／統編、行動／網路銀行使用者代碼與網路密碼。</li>
         <li>
-          首次或銀行 session 失效時，透過行動網銀頁面取得並輸入一次圖形驗證碼。
+          首次或銀行 session 失效時，系統會用 Gemma 4 自動辨識圖形驗證碼並登入。
         </li>
         <li>
           驗證成功後會加密保存 session；信用卡總覽、近期帳單與未出帳消費皆直接由
           App JSON API 同步，不解析 MMA 頁面。
         </li>
-        <li>
-          後續手動與排程同步會自動續用 session，銀行強制登出時才需重新驗證。
-        </li>
+        <li>每次自動登入最多嘗試三張不同驗證碼；連續失敗後可改用人工輸入。</li>
       </ol>
     </details>{/if}
   {#if connectorId === "sinopac" && sinopacCaptchaImage}
@@ -542,7 +556,7 @@
           {#if connectorId === "sinopac"}<span
               >登入：{sinopacSessionAvailable
                 ? "session 可自動續用"
-                : "需要人工驗證"}</span
+                : "下次同步會自動驗證"}</span
             >{/if}
           {#if job}<span
               >狀態：{job.running
@@ -861,7 +875,7 @@
     </p>{/if}
   <p class="mt-3 text-xs text-ink/50">
     {connectorId === "sinopac"
-      ? "永豐首次驗證成功後，正式同步會直接呼叫 App JSON API；只有銀行要求重新登入時才需再輸入驗證碼。"
+      ? "永豐 session 失效時會由 Gemma 4 自動辨識並登入，連續三次失敗後才需人工驗證。"
       : connectorId === "tdcc"
         ? "排程同步不會在背景寄送驗證碼；登入失效時會標記為需要重新驗證。"
         : "輸入完帳號密碼後，請先按「儲存設定」，再按「同步」。"}

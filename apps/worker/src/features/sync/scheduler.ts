@@ -12,7 +12,6 @@ import type { Env } from "../../platform/env";
 import {
   canonicalSyncLockRowId,
   isUserActionError,
-  maintainSinopacSession,
   NeedsUserActionError,
   safeErrorMessage,
   startSyncLockHeartbeat,
@@ -30,17 +29,6 @@ export async function runSchedulerTick(
   env: Env,
   controller: ScheduledController,
 ) {
-  try {
-    await maintainSinopacSession(env);
-  } catch (error) {
-    console.error(
-      JSON.stringify({
-        event: "sinopac_session_keep_alive_failed",
-        cron: controller.cron,
-        message: safeErrorMessage(error),
-      }),
-    );
-  }
   for (let index = 0; index < MAX_SCHEDULED_JOBS_PER_TICK; index += 1) {
     const due = await findNextDueSyncJob<ConnectorId>(env.DB);
     if (!due) return;
