@@ -22,8 +22,8 @@ function createDb() {
       "transaction-1",
       {
         id: "transaction-1",
-        postedDate: "2026-07-06",
-        authorizedAt: null,
+        postedDate: "2026-07-07",
+        authorizedAt: "2026-07-06",
         amount: 37,
         currency: "TWD",
         accountType: "credit",

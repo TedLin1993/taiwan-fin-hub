@@ -130,6 +130,81 @@ export function reconcileEsunLifecycleShadowStatements(db: D1Database) {
   ];
 }
 
+export function reconcileSinopacLegacyTransactionStatements(db: D1Database) {
+  const match = `canonical.connector_id = legacy.connector_id
+      AND canonical.account_id = legacy.account_id
+      AND (
+        substr(canonical.authorized_at, 1, 10) = substr(legacy.posted_date, 1, 10)
+        OR substr(canonical.posted_date, 1, 10) = substr(legacy.posted_date, 1, 10)
+      )
+      AND canonical.amount = legacy.amount
+      AND canonical.currency = legacy.currency
+      AND COALESCE(canonical.description, '') = COALESCE(legacy.description, '')`;
+  const isLegacy = `legacy.connector_id = 'sinopac'
+      AND legacy.source_id LIKE 'sinopac:card:tx:%'
+      AND legacy.source_id NOT LIKE 'sinopac:card:tx:v2:%'`;
+  const isCanonical = `canonical.connector_id = 'sinopac'
+      AND canonical.source_id LIKE 'sinopac:card:tx:v2:%'
+      AND canonical.status = 'posted'`;
+
+  return [
+    db.prepare(
+      `INSERT INTO bank_transaction_preferences
+        (transaction_id, excluded_from_calculation, created_at, updated_at)
+       SELECT canonical.id, preference.excluded_from_calculation,
+              preference.created_at, preference.updated_at
+       FROM bank_transactions legacy
+       JOIN bank_transactions canonical ON ${match}
+       JOIN bank_transaction_preferences preference
+         ON preference.transaction_id = legacy.id
+       WHERE ${isLegacy} AND ${isCanonical}
+       ON CONFLICT(transaction_id) DO NOTHING`,
+    ),
+    db.prepare(
+      `INSERT INTO classification_overrides
+        (id, target_type, target_id, category_id, created_at, updated_at)
+       SELECT 'override:bank_transaction:' || canonical.id,
+              'bank_transaction', canonical.id, override.category_id,
+              override.created_at, override.updated_at
+       FROM bank_transactions legacy
+       JOIN bank_transactions canonical ON ${match}
+       JOIN classification_overrides override
+         ON override.target_type = 'bank_transaction'
+        AND override.target_id = legacy.id
+       WHERE ${isLegacy} AND ${isCanonical}
+       ON CONFLICT(target_type, target_id) DO NOTHING`,
+    ),
+    db.prepare(
+      `DELETE FROM bank_transaction_preferences
+       WHERE transaction_id IN (
+         SELECT legacy.id
+         FROM bank_transactions legacy
+         JOIN bank_transactions canonical ON ${match}
+         WHERE ${isLegacy} AND ${isCanonical}
+       )`,
+    ),
+    db.prepare(
+      `DELETE FROM classification_overrides
+       WHERE target_type = 'bank_transaction'
+         AND target_id IN (
+           SELECT legacy.id
+           FROM bank_transactions legacy
+           JOIN bank_transactions canonical ON ${match}
+           WHERE ${isLegacy} AND ${isCanonical}
+         )`,
+    ),
+    db.prepare(
+      `DELETE FROM bank_transactions
+       WHERE id IN (
+         SELECT legacy.id
+         FROM bank_transactions legacy
+         JOIN bank_transactions canonical ON ${match}
+         WHERE ${isLegacy} AND ${isCanonical}
+       )`,
+    ),
+  ];
+}
+
 export function linkCanonicalBankAccountsStatement(db: D1Database) {
   return db.prepare(
     `UPDATE bank_accounts

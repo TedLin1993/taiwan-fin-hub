@@ -6,7 +6,10 @@ import {
   persistStagedSyncWrite,
   type SyncWriteRecord,
 } from "../../../src/features/sync/persistence";
-import { reconcileEsunLifecycleShadowStatements } from "../../../src/features/sync/repository";
+import {
+  reconcileEsunLifecycleShadowStatements,
+  reconcileSinopacLegacyTransactionStatements,
+} from "../../../src/features/sync/repository";
 
 class SqliteStatement {
   private values: unknown[] = [];
@@ -198,6 +201,53 @@ describe("staged sync persistence", () => {
     ).toEqual({ target_id: "canonical", category_id: "shopping" });
   });
 
+  it("migrates preferences and removes matching legacy Sinopac transaction ids", async () => {
+    const db = createDb();
+    db.database.exec(`
+      INSERT INTO bank_accounts
+        (id, connector_id, source_id, account_type, currency, raw_payload, created_at, updated_at)
+      VALUES
+        ('sinopac:credit:sinopac:main', 'sinopac', 'credit:sinopac:main', 'credit', 'TWD', '{}', '2026-07-01', '2026-07-01');
+
+      INSERT INTO bank_transactions
+        (id, connector_id, account_id, source_id, posted_date, authorized_at, amount, currency, description, status, raw_payload, created_at, updated_at)
+      VALUES
+        ('sinopac-legacy', 'sinopac', 'sinopac:credit:sinopac:main', 'sinopac:card:tx:TWD:legacy', '2026-07-19', NULL, -260, 'TWD', '連支＊餐廳', 'posted', '{}', '2026-07-19', '2026-07-19'),
+        ('sinopac-canonical', 'sinopac', 'sinopac:credit:sinopac:main', 'sinopac:card:tx:v2:TWD:2026-07-19:-260:8000:1', '2026-07-22', '2026-07-19', -260, 'TWD', '連支＊餐廳', 'posted', '{}', '2026-07-22', '2026-07-22');
+
+      INSERT INTO bank_transaction_preferences
+        (transaction_id, excluded_from_calculation, created_at, updated_at)
+      VALUES ('sinopac-legacy', 1, '2026-07-19', '2026-07-19');
+
+      INSERT INTO classification_overrides
+        (id, target_type, target_id, category_id, created_at, updated_at)
+      VALUES ('sinopac-legacy-override', 'bank_transaction', 'sinopac-legacy', 'shopping', '2026-07-19', '2026-07-19');
+    `);
+
+    await db.batch(
+      reconcileSinopacLegacyTransactionStatements(db as unknown as D1Database),
+    );
+
+    expect(
+      db.database
+        .prepare("SELECT id FROM bank_transactions ORDER BY id")
+        .all()
+        .map((row) => row.id),
+    ).toEqual(["sinopac-canonical"]);
+    expect(
+      db.database
+        .prepare(
+          "SELECT transaction_id AS transactionId FROM bank_transaction_preferences",
+        )
+        .get(),
+    ).toEqual({ transactionId: "sinopac-canonical" });
+    expect(
+      db.database
+        .prepare("SELECT target_id AS targetId FROM classification_overrides")
+        .get(),
+    ).toEqual({ targetId: "sinopac-canonical" });
+  });
+
   it("stages records in bounded JSON chunks and advances the cursor only after promotion", async () => {
     const db = createDb();
     const records = Array.from({ length: 205 }, (_, index) =>
@@ -284,7 +334,7 @@ describe("staged sync persistence", () => {
     await persistStagedSyncWrite(db as unknown as D1Database, {
       records: [
         bankTransactionRecord("purchase-1", "posted", {
-          authorizedAt: "2026-07-05T00:00:00.000Z",
+          authorizedAt: "2026-07-05",
           postedDate: "2026-07-07T00:00:00.000Z",
         }),
       ],
@@ -324,6 +374,7 @@ describe("staged sync persistence", () => {
         }),
       ],
     });
+    await persistStagedSyncWrite(db as unknown as D1Database, { records: [] });
     expect(
       db.database
         .prepare("SELECT COUNT(*) AS count FROM bank_transactions")

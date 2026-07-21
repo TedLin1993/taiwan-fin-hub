@@ -44,6 +44,7 @@ import {
   connectorStateStatement,
   linkCanonicalBankAccountsStatement,
   reconcileEsunLifecycleShadowStatements,
+  reconcileSinopacLegacyTransactionStatements,
   updateConnectorEncryptedConfig,
 } from "./repository";
 import {
@@ -554,10 +555,12 @@ export async function syncSinopac(
   }
   await persistStagedSyncWrite(env.DB, {
     records,
-    afterPromoteStatements:
-      bankAccounts.length > 0
+    afterPromoteStatements: [
+      ...reconcileSinopacLegacyTransactionStatements(env.DB),
+      ...(bankAccounts.length > 0
         ? [linkCanonicalBankAccountsStatement(env.DB)]
-        : [],
+        : []),
+    ],
     finalizeStatements,
   });
   if (bankBalanceSnapshots.length > 0)

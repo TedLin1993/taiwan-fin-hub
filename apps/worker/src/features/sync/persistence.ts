@@ -389,6 +389,14 @@ function promotionStatement(
         return `${column} = excluded.${column}`;
       if (column === "status")
         return "status = CASE WHEN bank_transactions.status = 'posted' OR excluded.status = 'posted' THEN 'posted' ELSE 'pending' END";
+      if (column === "authorized_at")
+        return `authorized_at = CASE
+          WHEN bank_transactions.status = 'pending' AND excluded.status = 'posted'
+            THEN COALESCE(bank_transactions.authorized_at, excluded.authorized_at)
+          WHEN bank_transactions.status = 'posted' AND excluded.status = 'pending'
+            THEN bank_transactions.authorized_at
+          ELSE excluded.authorized_at
+        END`;
       return `${column} = CASE WHEN bank_transactions.status = 'posted' AND excluded.status = 'pending' THEN bank_transactions.${column} ELSE excluded.${column} END`;
     })
     .join(", ");

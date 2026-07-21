@@ -218,7 +218,7 @@ function isSameDayTwdExpense(
     return false;
 
   const transactionDate = dayNumber(
-    transaction.postedDate ?? transaction.authorizedAt,
+    transaction.authorizedAt ?? transaction.postedDate,
   );
   const invoiceDate = dayNumber(invoice.invoiceDate);
   return invoiceDate != null && transactionDate === invoiceDate;
