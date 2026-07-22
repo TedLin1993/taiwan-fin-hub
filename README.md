@@ -171,17 +171,32 @@ npm run dev
 
 ## 更新
 
-Deploy to Cloudflare 會將本專案複製成你 GitHub 帳號下的新 repository，而不是建立 Fork，因此不會自動保留 upstream 關係。
+Deploy to Cloudflare 會將本專案複製成你 GitHub 帳號下的新 repository，而不是建立 Fork。部署後的 repository 會透過 GitHub Actions 每天同步一次本專案 `main` branch 的最新版本。
 
-### 方法一：透過 Git 更新（推薦）
+### 自動更新（推薦）
 
-第一次更新前，先在自己部署後的 repository 加入 upstream：
+`Sync Latest Version` workflow 會在每天台灣時間 **04:15** 執行：
+
+1. 取得 `TedLin1993/taiwan-fin-hub` 的最新 `main`
+2. 以一般 Git merge 合併至部署 repository 的 `main`
+3. 將更新推送至部署 repository
+4. 由 Cloudflare Workers Builds 自動重新部署
+
+若需要立即更新，可前往部署 repository 的 **Actions → Sync Latest Version → Run workflow** 手動執行。
+
+若 workflow 因權限不足而無法 push，請前往 **Settings → Actions → General → Workflow permissions**，確認允許 GitHub Actions 讀寫 repository 內容。
+
+自動更新不會使用 force push。若你曾自行修改程式碼，且與上游更新發生 merge conflict，workflow 會停止並保留目前可用版本；請在 GitHub Actions 執行紀錄中查看錯誤並手動解決衝突。
+
+### 手動透過 Git 更新
+
+也可以在本機操作部署後的 repository。第一次更新前先加入 upstream：
 
 ```bash
 git remote add upstream https://github.com/TedLin1993/taiwan-fin-hub.git
 ```
 
-之後每次更新執行：
+之後執行：
 
 ```bash
 git switch main
@@ -189,11 +204,11 @@ git pull upstream main
 git push origin main
 ```
 
-推送至 `main` 後，Cloudflare Workers Builds 會自動部署新版本。若你曾自行修改程式，更新時可能需要手動解決 merge conflict。
+推送至 `main` 後，Cloudflare Workers Builds 會自動部署新版本。
 
-### 方法二：重新部署
+### 重新部署
 
-點擊下方按鈕重新走一次部署流程：
+若自動或手動更新無法使用，也可以點擊下方按鈕重新走一次部署流程：
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/TedLin1993/taiwan-fin-hub)
 
