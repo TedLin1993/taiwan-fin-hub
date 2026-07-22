@@ -176,7 +176,7 @@ async function deliverPushPayload(env: Env, payload: PushNotificationPayload) {
         await webpush.sendNotification(subscription, JSON.stringify(payload), {
           TTL: 60 * 60,
           urgency: payload.tag.includes("needs-action") ? "high" : "normal",
-          topic: payload.tag,
+          // Keep the semantic tag in the encrypted payload; Apple rejects it as a raw Web Push Topic.
         });
         delivered += 1;
         await markPushSuccess(env.DB, row.id, new Date().toISOString());
