@@ -1,10 +1,15 @@
 import {
   calculateBankDepositValue,
   findBankHistoryDateBounds,
+  listNetWorthChartHistory,
   listNetWorthHistory,
   upsertBankDepositHistory,
   type NetWorthPageCursor,
 } from "./repository";
+
+export function getNetWorthChartHistory(db: D1Database) {
+  return listNetWorthChartHistory(db);
+}
 
 export async function getNetWorthPage(
   db: D1Database,

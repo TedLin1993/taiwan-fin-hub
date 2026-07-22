@@ -9,7 +9,11 @@ import {
   parseKeysetPagination,
   setKeysetPaginationHeaders,
 } from "../../platform/http";
-import { getNetWorthPage, rebuildBankDepositHistoryRange } from "./service";
+import {
+  getNetWorthChartHistory,
+  getNetWorthPage,
+  rebuildBankDepositHistoryRange,
+} from "./service";
 
 const netWorthPageCursorSchema = z.object({
   date: z.string(),
@@ -33,6 +37,10 @@ export const netWorthRoutes = honoFactory.createApp();
 registerNetWorthRoutes(netWorthRoutes);
 
 function registerNetWorthRoutes(api: Hono<AppBindings>) {
+  api.get("/history/net-worth/chart", async (c) =>
+    c.json(await getNetWorthChartHistory(c.env.DB)),
+  );
+
   api.get("/history/net-worth", async (c) => {
     const { limit, cursor } = parseKeysetPagination(
       c.req.query(),
