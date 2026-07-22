@@ -223,7 +223,7 @@ function pushDeliveryFailureDetails(error: unknown, endpoint?: string) {
         "reason" in parsed &&
         typeof parsed.reason === "string"
       ) {
-        reason = parsed.reason;
+        reason = parsed.reason.slice(0, 128);
       }
     } catch {
       // Keep the truncated response body below for non-JSON push service errors.
