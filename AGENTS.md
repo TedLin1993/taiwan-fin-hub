@@ -14,6 +14,10 @@
 ## 目錄責任
 
 - `apps/web`：Svelte 前端、頁面、元件、資料查詢與前端測試。
+- `apps/web/src/app`：前端 Composition Root、導覽、全域 providers 與應用層型別。
+- `apps/web/src/data`：依 API resource 組織的 query options 與前端 response DTO。
+- `apps/web/src/features`：依使用者功能組織的頁面、feature 元件與純商業顯示邏輯。
+- `apps/web/src/shared`：跨 feature 共用的 UI、API client、格式化、state 與 actions。
 - `apps/worker`：Hono API、同步流程、Cloudflare bindings 與靜態網站服務。
 - `apps/worker/src/features`：依業務功能組織的後端 vertical slices。
 - `apps/worker/src/connectors`：依賴 Browser Rendering、Workers AI 等 Worker bindings 的連接器 adapter。
@@ -21,6 +25,7 @@
 - `packages/connectors`：不依賴 Hono、D1 或 Worker `Env` 的外部資料來源邏輯。
 - `packages/db`：跨 feature 共用的 D1 基礎能力與 migrations。
 - `docs/002-backend-architecture.md`：後端分層、相依方向與維護約定的詳細文件。
+- `docs/003-frontend-architecture.md`：前端分層、相依方向與測試 colocate 約定。
 
 ## 架構約定
 
@@ -28,7 +33,10 @@
 - `apps/worker/src/index.ts` 是 Composition Root，只負責 middleware、routes、錯誤處理、靜態資源與 scheduled event 的組裝。
 - HTTP concerns 放在 `route.ts`，use case 與商業流程放在 `service.ts`，feature 專用 SQL 放在 `repository.ts`。
 - 共用 API contract 與金融資料型別放在 `packages/core`，不得混入 Hono `Context`、D1 row 或 Puppeteer object。
+- 前端採 feature-first 結構；`features` 可依賴 `data` 與 `shared`，`data`、`shared` 不得反向依賴 feature。
+- 前端單元及元件測試與實作 colocate；Playwright browser tests 放在 `apps/web/e2e`。
 - 詳細後端變更開始前，先閱讀 `docs/002-backend-architecture.md` 的相關章節。
+- 詳細前端結構變更開始前，先閱讀 `docs/003-frontend-architecture.md`。
 
 ## 常用驗證指令
 

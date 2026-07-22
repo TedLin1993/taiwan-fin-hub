@@ -6,21 +6,20 @@
     useQueryClient,
   } from "@tanstack/svelte-query";
   import { Search } from "@lucide/svelte";
-  import Card from "../../components/ui/Card.svelte";
-  import CardHeader from "../../components/ui/CardHeader.svelte";
-  import CardContent from "../../components/ui/CardContent.svelte";
-  import EmptyState from "../../components/ui/EmptyState.svelte";
-  import Button from "../../components/ui/Button.svelte";
-  import Input from "../../components/ui/Input.svelte";
-  import Select from "../../components/ui/Select.svelte";
-  import type { ApiClient } from "../../lib/api";
-  import { queryKeys } from "../../lib/api";
-  import {
-    bankQuery,
-    classificationCategoriesQuery,
-    exchangeRatesQuery,
-  } from "../../lib/queries";
-  import type { BankTransactionRow, View } from "../../lib/types";
+  import Card from "@/shared/ui/Card.svelte";
+  import CardHeader from "@/shared/ui/CardHeader.svelte";
+  import CardContent from "@/shared/ui/CardContent.svelte";
+  import EmptyState from "@/shared/ui/EmptyState.svelte";
+  import Button from "@/shared/ui/Button.svelte";
+  import Input from "@/shared/ui/Input.svelte";
+  import Select from "@/shared/ui/Select.svelte";
+  import type { ApiClient } from "@/shared/api/client";
+  import { queryKeys } from "@/shared/api/query-keys";
+  import { exchangeRatesQuery } from "@/data/assets/queries";
+  import { bankQuery } from "@/data/bank/queries";
+  import type { BankTransactionRow } from "@/data/bank/types";
+  import { classificationCategoriesQuery } from "@/data/classification/queries";
+  import type { View } from "@/app/types";
   import {
     formatBankAccountName,
     formatCurrency,
@@ -28,7 +27,7 @@
     formatDate,
     rateMap,
     transactionValueTwd,
-  } from "../../lib/format.svelte";
+  } from "@/shared/format/financial";
   let { api, navigate }: { api: ApiClient; navigate: (view: View) => void } =
     $props();
   const bank = createQuery(bankQuery(() => api));

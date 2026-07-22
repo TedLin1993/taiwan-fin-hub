@@ -1,25 +1,25 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
   import { Search } from "@lucide/svelte";
-  import Card from "../../components/ui/Card.svelte";
-  import CardHeader from "../../components/ui/CardHeader.svelte";
-  import CardContent from "../../components/ui/CardContent.svelte";
-  import EmptyState from "../../components/ui/EmptyState.svelte";
-  import Input from "../../components/ui/Input.svelte";
-  import Select from "../../components/ui/Select.svelte";
-  import type { ApiClient } from "../../lib/api";
+  import Card from "@/shared/ui/Card.svelte";
+  import CardHeader from "@/shared/ui/CardHeader.svelte";
+  import CardContent from "@/shared/ui/CardContent.svelte";
+  import EmptyState from "@/shared/ui/EmptyState.svelte";
+  import Input from "@/shared/ui/Input.svelte";
+  import Select from "@/shared/ui/Select.svelte";
+  import type { ApiClient } from "@/shared/api/client";
+  import { exchangeRatesQuery } from "@/data/assets/queries";
   import {
-    exchangeRatesQuery,
     investmentsQuery,
     investmentTransactionsQuery,
-  } from "../../lib/queries";
-  import type { InvestmentTransactionRow } from "../../lib/types";
+  } from "@/data/investments/queries";
+  import type { InvestmentTransactionRow } from "@/data/investments/types";
   import {
     formatCurrency,
     formatDate,
     formatNumber,
     rateMap,
-  } from "../../lib/format.svelte";
+  } from "@/shared/format/financial";
   let { api }: { api: ApiClient } = $props();
   const investments = createQuery(investmentsQuery(() => api));
   const trades = createQuery(investmentTransactionsQuery(() => api));

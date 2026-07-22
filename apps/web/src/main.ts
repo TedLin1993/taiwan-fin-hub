@@ -1,6 +1,6 @@
 import { mount } from "svelte";
-import App from "./App.svelte";
-import { isStandalonePwa } from "./lib/pwa";
+import App from "./app/App.svelte";
+import { isStandalonePwa } from "./shared/pwa/detection";
 
 document.documentElement.classList.toggle("is-standalone", isStandalonePwa());
 

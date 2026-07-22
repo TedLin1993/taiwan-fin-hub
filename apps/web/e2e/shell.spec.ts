@@ -68,7 +68,11 @@ test("loads the responsive shell and changes primary views", async ({
     page.getByRole("heading", { name: "總覽", exact: true }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "資產" }).first().click();
+  await page
+    .getByRole("button", { name: "資產", exact: true })
+    .filter({ visible: true })
+    .first()
+    .click();
   await expect(
     page.getByRole("heading", { name: "資產", exact: true }),
   ).toBeVisible();

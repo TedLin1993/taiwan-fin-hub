@@ -1,4 +1,4 @@
-import type { View } from "../lib/types";
+import type { View } from "./types";
 
 const views = new Set<View>([
   "overview",
