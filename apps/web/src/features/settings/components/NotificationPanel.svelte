@@ -170,15 +170,23 @@
     try {
       const result = await api.post<{
         delivered: number;
+        failed: number;
         attempted: number;
         removed: number;
       }>("/api/notifications/test");
+      const text =
+        result.delivered > 0
+          ? "測試通知已送出，請查看你的裝置。"
+          : result.attempted === 0
+            ? "目前沒有已登錄的推播裝置。"
+            : result.removed === result.attempted
+              ? "推播訂閱已失效，請重新開啟此裝置的推播。"
+              : result.failed > 0
+                ? "推播裝置已登錄，但測試通知送出失敗；請重新開啟此裝置的推播後再試。"
+                : "測試通知未送達，請稍後再試。";
       feedback = {
         tone: result.delivered > 0 ? "success" : "error",
-        text:
-          result.delivered > 0
-            ? "測試通知已送出，請查看你的裝置。"
-            : "目前沒有可用的推播裝置。",
+        text,
       };
     } catch (error) {
       feedback = {

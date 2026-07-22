@@ -42,6 +42,14 @@ function env(): Env {
   };
 }
 
+function configuredPushEnv() {
+  const testEnv = env();
+  testEnv.VAPID_PUBLIC_KEY =
+    "BGtkbcjrO12YMoDuq2sCQeHlu47uPx3SHTgFKZFYiBW8Qr0D9vgyZSZPdw6_4ZFEI9Snk1VEAj2qTYI1I1YxBXE";
+  testEnv.VAPID_PRIVATE_KEY = "I0_d0vnesxbBSUmlDdOKibGo6vEXRO-Vu88QlSlm5j0";
+  return testEnv;
+}
+
 describe("notification routes", () => {
   it("reports the configured shared push state", async () => {
     const response = await notificationRoutes.request(
@@ -73,6 +81,22 @@ describe("notification routes", () => {
     await expect(response.json()).resolves.toMatchObject({
       enabled: true,
       publicKey: "public-key",
+    });
+  });
+
+  it("distinguishes an empty device list from delivery failures", async () => {
+    const response = await notificationRoutes.request(
+      "/notifications/test",
+      { method: "POST" },
+      configuredPushEnv(),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      delivered: 0,
+      failed: 0,
+      removed: 0,
+      attempted: 0,
     });
   });
 
