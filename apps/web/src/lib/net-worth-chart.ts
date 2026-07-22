@@ -6,10 +6,10 @@ export type NetWorthTimeframe = "1M" | "3M" | "6M" | "1Y" | "ALL";
 
 export interface NetWorthChartPoint {
   date: string;
-  stock: number;
-  fund: number;
-  deposit: number;
-  manual: number;
+  stock?: number;
+  fund?: number;
+  deposit?: number;
+  manual?: number;
   selectedTotal: number;
 }
 
@@ -66,7 +66,7 @@ function cutoffDate(timeframe: NetWorthTimeframe, now: Date) {
 }
 
 function latestValue(rows: NetWorthHistoryRow[], date: string) {
-  let value = 0;
+  let value: number | undefined;
   for (const row of rows) {
     if (row.date > date) break;
     value = row.netWorth;
@@ -96,10 +96,10 @@ function buildAssetSeries(
   return new Map(
     dates.map((date) => [
       date,
-      [...identities.values()].reduce(
-        (sum, values) => sum + latestValue(values, date),
-        0,
-      ),
+      [...identities.values()].reduce<number | undefined>((sum, values) => {
+        const value = latestValue(values, date);
+        return value === undefined ? sum : (sum ?? 0) + value;
+      }, undefined),
     ]),
   );
 }
@@ -139,19 +139,19 @@ export function buildNetWorthChartData(
       key,
       buildAssetSeries(sortedRows, key, dates),
     ]),
-  ) as Record<NetWorthAssetType, Map<string, number>>;
+  ) as Record<NetWorthAssetType, Map<string, number | undefined>>;
 
   return dates.map((date) => {
     const point: NetWorthChartPoint = {
       date,
-      stock: valuesByType.stock.get(date) ?? 0,
-      fund: valuesByType.fund.get(date) ?? 0,
-      deposit: valuesByType.deposit.get(date) ?? 0,
-      manual: valuesByType.manual.get(date) ?? 0,
+      stock: valuesByType.stock.get(date),
+      fund: valuesByType.fund.get(date),
+      deposit: valuesByType.deposit.get(date),
+      manual: valuesByType.manual.get(date),
       selectedTotal: 0,
     };
     point.selectedTotal = includedAssets.reduce(
-      (sum, key) => sum + point[key],
+      (sum, key) => sum + (point[key] ?? 0),
       0,
     );
     return point;

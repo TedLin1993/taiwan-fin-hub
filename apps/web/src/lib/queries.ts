@@ -89,7 +89,8 @@ export const exchangeRatesQuery = (getApi: ApiProvider) =>
 export const netWorthHistoryQuery = (getApi: ApiProvider) =>
   queryOptions({
     queryKey: queryKeys.netWorthHistory,
-    queryFn: () => getApi().get<NetWorthHistoryRow[]>("/api/history/net-worth"),
+    queryFn: () =>
+      getApi().get<NetWorthHistoryRow[]>("/api/history/net-worth/chart"),
   });
 
 export const syncJobsQuery = (getApi: ApiProvider) =>

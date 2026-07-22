@@ -84,7 +84,7 @@
             label: "總和",
             value: "selectedTotal",
             color: "var(--color-selectedTotal)",
-            props: { strokeDasharray: "6 4", strokeWidth: 2.5 },
+            props: { "stroke-dasharray": "6 4", strokeWidth: 2.5 },
           },
         ],
   );

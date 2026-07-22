@@ -36,9 +36,9 @@ describe("net worth chart data", () => {
       {
         date: "2026-01-01",
         stock: 100,
-        fund: 0,
-        deposit: 0,
-        manual: 0,
+        fund: undefined,
+        deposit: undefined,
+        manual: undefined,
         selectedTotal: 100,
       },
       {
@@ -46,7 +46,7 @@ describe("net worth chart data", () => {
         stock: 100,
         fund: 40,
         deposit: 500,
-        manual: 0,
+        manual: undefined,
         selectedTotal: 640,
       },
       {
@@ -56,6 +56,32 @@ describe("net worth chart data", () => {
         deposit: 500,
         manual: 250,
         selectedTotal: 650,
+      },
+    ]);
+  });
+
+  it("starts each category at its own first valuation date", () => {
+    const points = buildNetWorthChartData(rows, ["stock", "manual"], "ALL");
+
+    expect(
+      points.map(({ date, stock, manual, selectedTotal }) => ({
+        date,
+        stock,
+        manual,
+        selectedTotal,
+      })),
+    ).toEqual([
+      {
+        date: "2026-01-01",
+        stock: 100,
+        manual: undefined,
+        selectedTotal: 100,
+      },
+      {
+        date: "2026-01-03",
+        stock: 110,
+        manual: 250,
+        selectedTotal: 360,
       },
     ]);
   });

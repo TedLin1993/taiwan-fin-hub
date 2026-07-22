@@ -5,6 +5,25 @@ export type NetWorthPageCursor = {
   id: string;
 };
 
+export async function listNetWorthChartHistory(db: D1Database) {
+  const result = await db
+    .prepare(
+      `SELECT date, net_worth AS netWorth, asset_type AS assetType, source
+       FROM net_worth_history
+       WHERE source = 'manual'
+          OR (source = 'bank' AND asset_type = 'deposit')
+          OR asset_type IN ('stock', 'fund')
+       ORDER BY date ASC, source ASC, asset_type ASC, id ASC`,
+    )
+    .all<{
+      date: string;
+      netWorth: number;
+      assetType: string;
+      source: string;
+    }>();
+  return result.results;
+}
+
 export async function listNetWorthHistory(
   db: D1Database,
   limit: number,
