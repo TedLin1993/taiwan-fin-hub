@@ -19,7 +19,8 @@
     "dev": "npm run dev -w @taiwan-fin-hub/worker",
     "deploy": "npm run db:migrate:remote && XDG_CONFIG_HOME=.wrangler-config wrangler deploy",
     "db:migrate:local": "XDG_CONFIG_HOME=.wrangler-config wrangler d1 migrations apply DB --local",
-    "db:migrate:remote": "XDG_CONFIG_HOME=.wrangler-config wrangler d1 migrations apply DB --remote"
+    "db:migrate:remote": "XDG_CONFIG_HOME=.wrangler-config wrangler d1 migrations apply DB --remote",
+    "db:schema:docs": "node scripts/generate-database-schema.mjs"
   },
   "cloudflare": {
     "bindings": {

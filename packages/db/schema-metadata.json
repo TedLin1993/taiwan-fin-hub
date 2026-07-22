@@ -1,0 +1,326 @@
+{
+  "tables": {
+    "bank_accounts": {
+      "description": "各銀行與信用卡連接器同步回來的帳戶主檔；同一個實體帳戶可能同時存在多個來源記錄。",
+      "notes": "canonical_account_id 為 NULL 的記錄是主要帳戶；有值的記錄是用於跨連接器對應的來源帳戶。",
+      "columns": {
+        "id": "系統內部使用的穩定帳戶識別碼。",
+        "connector_id": "建立此記錄的外部連接器識別碼。",
+        "source_id": "外部銀行或連接器提供的帳戶識別碼。",
+        "institution_name": "銀行、發卡機構或金融機構名稱。",
+        "account_name": "前端顯示用的帳戶名稱。",
+        "account_type": "帳戶類型，例如 checking、savings、credit 或 loan。",
+        "currency": "帳戶金額使用的幣別，預設為 TWD。",
+        "raw_payload": "連接器回傳的原始或正規化 JSON，供除錯與重新解析使用。",
+        "created_at": "此帳戶記錄首次寫入的時間。",
+        "updated_at": "此帳戶記錄最後更新的時間。",
+        "bank_code": "金融機構代碼，用於跨連接器辨識同一帳戶。",
+        "account_last4": "帳號末四碼，用於顯示與帳戶比對。",
+        "canonical_account_id": "指向同一實體的主要帳戶；NULL 表示此記錄本身就是主要帳戶。",
+        "credit_limit": "信用卡或授信帳戶的額度；非授信帳戶通常為 NULL。"
+      }
+    },
+    "bank_balance_snapshots": {
+      "description": "帳戶在特定時間點的餘額快照，供資產總值與歷史圖表計算。",
+      "notes": "同一帳戶可以有多個時間點的快照；查詢最新餘額時會依 as_of_at 與 updated_at 排序。",
+      "columns": {
+        "id": "餘額快照的系統識別碼。",
+        "connector_id": "產生此快照的外部連接器識別碼。",
+        "account_id": "所屬 bank_accounts 記錄的識別碼。",
+        "source_id": "外部來源對此餘額或帳戶的識別碼。",
+        "balance": "連接器回報的帳戶餘額。",
+        "available_balance": "可立即使用的餘額；部分金融機構不提供時為 NULL。",
+        "currency": "餘額使用的幣別，預設為 TWD。",
+        "as_of_at": "餘額實際觀測或結算的時間。",
+        "raw_payload": "連接器回傳的原始或正規化 JSON。",
+        "created_at": "此快照首次寫入的時間。",
+        "updated_at": "此快照最後更新的時間。",
+        "statement_balance": "信用卡帳單上的應繳金額。",
+        "payment_due_date": "信用卡帳單繳款期限。",
+        "no_payment_needed": "是否標示為本期不需要繳款的旗標。",
+        "statement_closing_date": "信用卡帳單結帳日。"
+      }
+    },
+    "bank_transaction_preferences": {
+      "description": "使用者對銀行交易計算方式的個別偏好。",
+      "notes": "目前主要用來記錄交易是否排除於資產或支出計算之外；沒有偏好的交易不會建立記錄。",
+      "columns": {
+        "transaction_id": "套用偏好的 bank_transactions 記錄識別碼。",
+        "excluded_from_calculation": "是否將此交易排除於計算，0 表示納入、1 表示排除。",
+        "created_at": "偏好首次建立的時間。",
+        "updated_at": "偏好最後更新的時間。"
+      }
+    },
+    "bank_transactions": {
+      "description": "銀行帳戶、信用卡與其他存款型連接器同步回來的交易明細。",
+      "notes": "effective_date 統一有 posted_date 與 authorized_at 的交易排序；status 用來區分 pending 與 posted。",
+      "columns": {
+        "id": "交易的系統識別碼。",
+        "connector_id": "產生此交易的外部連接器識別碼。",
+        "account_id": "所屬 bank_accounts 記錄的識別碼。",
+        "source_id": "外部來源系統提供的交易識別碼。",
+        "posted_date": "交易正式入帳的日期或時間；尚未入帳時可能為 NULL。",
+        "authorized_at": "交易授權或刷卡發生的時間。",
+        "amount": "交易金額；正負方向依連接器正規化規則表示。",
+        "currency": "交易使用的幣別，預設為 TWD。",
+        "description": "銀行或商店提供的交易說明。",
+        "counterparty": "交易對手、商店或收付款方名稱。",
+        "raw_payload": "連接器回傳的原始或正規化 JSON。",
+        "created_at": "交易首次寫入的時間。",
+        "updated_at": "交易最後更新的時間。",
+        "effective_date": "由 posted_date 優先、authorized_at 備援產生的查詢排序日期。",
+        "status": "交易狀態，目前限制為 pending 或 posted。"
+      }
+    },
+    "classification_categories": {
+      "description": "交易與發票使用的分類字典，包含系統預設分類與使用者分類。",
+      "columns": {
+        "id": "分類的穩定識別碼。",
+        "label": "前端顯示的分類名稱。",
+        "sort_order": "分類在介面中的排序順序。",
+        "is_system": "是否為系統內建分類；1 表示不可視為一般使用者資料刪除。",
+        "created_at": "分類建立的時間。",
+        "updated_at": "分類最後更新的時間。"
+      }
+    },
+    "classification_overrides": {
+      "description": "使用者對單筆目標資料指定的分類覆寫。",
+      "notes": "同一個 target_type 與 target_id 只能有一個覆寫，優先於自動分類規則。",
+      "columns": {
+        "id": "覆寫記錄的系統識別碼。",
+        "target_type": "被分類資料的類型，例如 bank_transaction。",
+        "target_id": "被分類資料的識別碼。",
+        "category_id": "指定的 classification_categories 識別碼。",
+        "created_at": "覆寫建立的時間。",
+        "updated_at": "覆寫最後更新的時間。"
+      }
+    },
+    "classification_rules": {
+      "description": "以文字條件自動判斷交易或其他資料分類的規則。",
+      "notes": "規則依 enabled、target_type 與 priority 套用；system 規則由程式提供，user 規則可由使用者管理。",
+      "columns": {
+        "id": "規則的穩定識別碼。",
+        "category_id": "符合規則時套用的分類識別碼。",
+        "target_type": "規則適用的資料類型；NULL 表示可套用於共用目標。",
+        "field": "要比對的欄位或欄位集合，例如 any_text。",
+        "operator": "比對運算子，例如 regex。",
+        "pattern": "運算子使用的比對模式或關鍵字。",
+        "priority": "規則套用的優先序。",
+        "enabled": "規則是否啟用，0 表示停用。",
+        "is_system": "是否為系統內建規則。",
+        "source": "規則來源，例如 system 或 user。",
+        "description": "規則用途的可讀說明。",
+        "created_at": "規則建立的時間。",
+        "updated_at": "規則最後更新的時間。",
+        "excluded_from_calculation": "符合規則的交易是否預設排除於計算，0 表示納入、1 表示排除。"
+      }
+    },
+    "connector_settings": {
+      "description": "每個外部金融資料連接器的認證設定、公開設定與同步游標。",
+      "notes": "encrypted_config 儲存敏感憑證；public_config 僅供非敏感的連接器設定使用。",
+      "columns": {
+        "id": "設定記錄的系統識別碼。",
+        "connector_id": "連接器的穩定識別碼，每個連接器只有一筆設定。",
+        "encrypted_config": "使用 Worker 設定的金鑰加密後的認證與私密設定。",
+        "sync_cursor": "連接器下次增量同步使用的游標或狀態。",
+        "created_at": "連接器設定首次建立的時間。",
+        "updated_at": "連接器設定最後更新的時間。",
+        "public_config": "不含敏感資訊、可供前端或同步流程讀取的 JSON 設定。"
+      }
+    },
+    "credit_card_bills": {
+      "description": "信用卡依帳單週期整理的帳單主檔。",
+      "notes": "此表描述帳單，不是逐筆交易；逐筆刷卡資料仍位於 bank_transactions。",
+      "columns": {
+        "id": "帳單的系統識別碼。",
+        "connector_id": "產生此帳單的外部連接器識別碼。",
+        "account_id": "所屬信用卡帳戶的 bank_accounts 識別碼。",
+        "source_id": "外部來源系統提供的帳單識別碼。",
+        "billing_period": "帳單週期，格式通常為 YYYY-MM。",
+        "statement_amount": "本期帳單總額。",
+        "minimum_payment": "本期最低應繳金額。",
+        "paid_amount": "目前已繳付的金額。",
+        "is_paid": "帳單是否已繳清的旗標。",
+        "payment_due_date": "帳單繳款期限。",
+        "statement_closing_date": "帳單結帳日。",
+        "currency": "帳單金額使用的幣別，預設為 TWD。",
+        "raw_payload": "連接器回傳的原始或正規化 JSON。",
+        "created_at": "帳單首次寫入的時間。",
+        "updated_at": "帳單最後更新的時間。"
+      }
+    },
+    "exchange_rates": {
+      "description": "將外幣換算為新台幣時使用的最新匯率。",
+      "notes": "net_worth 計算會使用 rate_to_twd；找不到非 TWD 匯率時不會硬算。",
+      "columns": {
+        "currency": "外幣幣別代碼，也是此表的主鍵。",
+        "rate_to_twd": "一單位該幣別換算成 TWD 的匯率。",
+        "updated_at": "匯率最後更新的時間。"
+      }
+    },
+    "investment_positions": {
+      "description": "投資帳戶在特定日期的持倉與資產市值快照。",
+      "notes": "同一 connector、source 與日期可有一組持倉；最新持倉與分頁查詢依 as_of_date。",
+      "columns": {
+        "id": "持倉快照的系統識別碼。",
+        "connector_id": "產生此持倉的外部連接器識別碼。",
+        "source_id": "外部來源系統提供的持倉識別碼。",
+        "asset_type": "資產類型，目前限制為 stock、etf 或 fund。",
+        "symbol": "證券、基金或 ETF 的代號。",
+        "name": "投資標的名稱。",
+        "quantity": "持有數量。",
+        "market_value": "持倉的市場價值。",
+        "cash_balance": "此投資帳戶或資產項目中的現金餘額。",
+        "currency": "市值與現金使用的幣別，預設為 TWD。",
+        "as_of_date": "持倉快照所代表的日期。",
+        "raw_payload": "連接器回傳的原始或正規化 JSON。",
+        "created_at": "持倉首次寫入的時間。",
+        "updated_at": "持倉最後更新的時間。"
+      }
+    },
+    "investment_transactions": {
+      "description": "投資帳戶的買賣、配息或其他證券交易明細。",
+      "notes": "account_id 是外部投資帳戶識別碼，不直接 FK 到 bank_accounts；effective_date 用於列表排序。",
+      "columns": {
+        "id": "投資交易的系統識別碼。",
+        "connector_id": "產生此交易的外部連接器識別碼。",
+        "account_id": "外部券商或投資帳戶識別碼。",
+        "source_id": "外部來源系統提供的交易識別碼。",
+        "broker_no": "券商或分公司代碼。",
+        "broker_account": "券商帳號或交割帳號。",
+        "broker_name": "券商或交易機構名稱。",
+        "symbol": "交易標的代號。",
+        "name": "交易標的名稱。",
+        "asset_type": "資產類型，例如 stock、etf、fund、bond 或 unknown。",
+        "trade_date": "交易發生日期。",
+        "posted_date": "交易正式入帳日期。",
+        "transaction_code": "外部系統的交易類型代碼。",
+        "transaction_name": "外部系統的交易類型名稱。",
+        "quantity": "交易數量。",
+        "price": "每單位成交或計算價格。",
+        "amount": "交易總金額。",
+        "currency": "交易金額使用的幣別，預設為 TWD。",
+        "raw_payload": "連接器回傳的原始或正規化 JSON。",
+        "created_at": "交易首次寫入的時間。",
+        "updated_at": "交易最後更新的時間。",
+        "effective_date": "由 trade_date 優先、posted_date 備援產生的排序日期。"
+      }
+    },
+    "invoice_line_items": {
+      "description": "電子發票底下的商品或服務明細。",
+      "columns": {
+        "id": "發票明細的系統識別碼。",
+        "invoice_id": "所屬 invoices 記錄的識別碼。",
+        "connector_id": "取得此明細的外部連接器識別碼。",
+        "invoice_source_id": "外部來源發票識別碼，用於同步比對。",
+        "source_id": "外部來源明細識別碼。",
+        "line_number": "明細在發票中的順序。",
+        "description": "商品或服務描述。",
+        "quantity": "購買數量。",
+        "unit_price": "單位價格。",
+        "amount": "此明細的小計金額。",
+        "raw_payload": "連接器回傳的原始或正規化 JSON。",
+        "created_at": "明細首次寫入的時間。",
+        "updated_at": "明細最後更新的時間。"
+      }
+    },
+    "invoice_transaction_preferences": {
+      "description": "使用者對電子發票與銀行交易是否關聯的決策。",
+      "notes": "decision=linked 時 transaction_id 必須存在；decision=separate 表示刻意維持兩筆獨立資料。",
+      "columns": {
+        "invoice_id": "套用決策的 invoices 記錄識別碼。",
+        "transaction_id": "被關聯的 bank_transactions 識別碼；separate 時為 NULL。",
+        "decision": "關聯決策，目前限制為 linked 或 separate。",
+        "created_at": "決策首次建立的時間。",
+        "updated_at": "決策最後更新的時間。"
+      }
+    },
+    "invoices": {
+      "description": "電子發票的抬頭與總額主檔。",
+      "notes": "商品明細另存於 invoice_line_items；同一 connector 與 source_id 只保留一張發票。",
+      "columns": {
+        "id": "發票的系統識別碼。",
+        "connector_id": "取得此發票的外部連接器識別碼。",
+        "source_id": "外部來源系統提供的發票識別碼。",
+        "invoice_number": "發票字軌號碼或發票號碼。",
+        "invoice_date": "發票開立日期。",
+        "seller_name": "賣方或開立人名稱。",
+        "amount": "發票總金額。",
+        "raw_payload": "連接器回傳的原始或正規化 JSON。",
+        "created_at": "發票首次寫入的時間。",
+        "updated_at": "發票最後更新的時間。"
+      }
+    },
+    "manual_assets": {
+      "description": "使用者手動登錄、無法由銀行或投資連接器同步的資產。",
+      "notes": "資產目前的金額與歷史值存於 net_worth_history，asset_type 對應此表的 id。",
+      "columns": {
+        "id": "手動資產的系統識別碼。",
+        "name": "前端顯示的資產名稱。",
+        "category": "資產分類，例如房產、現金或其他。",
+        "note": "使用者補充的備註。",
+        "created_at": "手動資產建立的時間。"
+      }
+    },
+    "net_worth_history": {
+      "description": "按日期保存的淨資產或資產類別歷史數值，用於圖表與歷史查詢。",
+      "notes": "這是由銀行餘額、投資持倉與手動資產等來源整理出的讀模型，不是單一連接器的原始資料。",
+      "columns": {
+        "id": "歷史點的系統識別碼。",
+        "date": "此數值所代表的日期。",
+        "net_worth": "該日期與資產類型的金額，通常以 TWD 表示。",
+        "asset_type": "資產類型，例如 total、deposit、stock、fund 或手動資產 id。",
+        "source": "數值來源，例如 bank 或 manual。",
+        "snapshotted_at": "此歷史點實際建立或重算的時間。"
+      }
+    },
+    "sync_jobs": {
+      "description": "每個連接器與同步範圍的排程、鎖定狀態與最近執行結果。",
+      "notes": "Worker Cron 會依 next_run_at 找到工作並取得 lease；locked_* 欄位用來避免同一工作重複執行。",
+      "columns": {
+        "id": "同步工作的系統識別碼，通常由 connector_id 與 scope 組成。",
+        "connector_id": "要執行同步的連接器識別碼。",
+        "scope": "同步範圍，例如 all 或特定帳戶範圍。",
+        "enabled": "是否啟用此同步工作。",
+        "interval_minutes": "同步間隔，單位為分鐘。",
+        "next_run_at": "下一次允許執行的時間。",
+        "locked_until": "目前 lease 鎖定到期時間。",
+        "locked_by": "取得 lease 的同步執行識別碼。",
+        "lock_trigger": "取得鎖定的觸發來源，例如 manual 或 scheduled。",
+        "lock_scope": "此次執行實際鎖定的細部範圍。",
+        "last_run_at": "最近一次開始執行的時間。",
+        "last_success_at": "最近一次成功完成的時間。",
+        "last_status": "最近一次結果，例如 success、failed 或 needs_user_action。",
+        "last_error": "最近一次失敗或需要使用者處理的錯誤訊息。",
+        "created_at": "同步工作建立的時間。",
+        "updated_at": "同步工作最後更新的時間。",
+        "schedule_mode": "排程模式；inherit 使用全域設定，custom 使用工作自己的設定。",
+        "preferred_time": "每日或每週排程偏好的台北時間。",
+        "preferred_weekday": "每週排程的星期，0 代表週日、6 代表週六。"
+      }
+    },
+    "sync_schedule_settings": {
+      "description": "所有使用 inherit 模式之同步工作的全域預設排程。",
+      "notes": "id 固定為 default；修改設定時會同步重算繼承此設定的 sync_jobs。",
+      "columns": {
+        "id": "設定識別碼，固定為 default。",
+        "interval_minutes": "預設同步間隔，單位為分鐘。",
+        "preferred_time": "預設每日或每週執行時間，使用台北時間。",
+        "timezone": "排程使用的時區，目前為 Asia/Taipei。",
+        "updated_at": "全域排程最後更新的時間。",
+        "preferred_weekday": "每週排程的預設星期，0 代表週日、6 代表週六。"
+      }
+    },
+    "sync_write_staging": {
+      "description": "同步流程寫入正式資料表前的暫存資料。",
+      "notes": "payload 必須是合法 JSON；同步完成或失敗後會清理，避免部分同步結果直接暴露為正式資料。",
+      "columns": {
+        "run_id": "此次同步執行的識別碼。",
+        "entity_type": "暫存資料的實體類型，例如 bank_transaction。",
+        "record_key": "該實體在此次同步中的去重與覆寫鍵。",
+        "payload": "待寫入正式表的正規化 JSON 資料。",
+        "created_at": "暫存資料建立的時間。"
+      }
+    }
+  }
+}
