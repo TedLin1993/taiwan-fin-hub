@@ -1,0 +1,50 @@
+name: Sync Latest Version
+
+on:
+  schedule:
+    # GitHub Actions 使用 UTC；台灣時間每天 04:15 執行。
+    - cron: "15 20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    # 官方 repository 不需要同步自己；Deploy to Cloudflare 建立的副本才會執行。
+    if: github.repository != 'TedLin1993/taiwan-fin-hub'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout deployed repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge upstream main
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "taiwan-fin-hub-updater"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/TedLin1993/taiwan-fin-hub.git
+          git fetch --no-tags upstream main
+
+          before=$(git rev-parse HEAD)
+          git merge --no-edit upstream/main
+          after=$(git rev-parse HEAD)
+
+          if [ "$before" = "$after" ]; then
+            echo "Already up to date."
+            exit 0
+          fi
+
+          git push origin HEAD:main
