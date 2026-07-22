@@ -163,11 +163,13 @@ async function deliverPushPayload(env: Env, payload: PushNotificationPayload) {
   const encryptionKey = configEncryptionKey(env);
   let delivered = 0;
   let removed = 0;
+  let failed = 0;
 
   await Promise.all(
     subscriptions.map(async (row) => {
+      let subscription: PushSubscriptionInput | undefined;
       try {
-        const subscription = await decryptJson<PushSubscriptionInput>(
+        subscription = await decryptJson<PushSubscriptionInput>(
           row.encrypted_subscription,
           encryptionKey,
         );
@@ -185,19 +187,66 @@ async function deliverPushPayload(env: Env, payload: PushNotificationPayload) {
           removed += 1;
           return;
         }
+        failed += 1;
         await markPushFailure(env.DB, row.id, new Date().toISOString());
+        const details = pushDeliveryFailureDetails(
+          error,
+          subscription?.endpoint,
+        );
         console.warn(
           JSON.stringify({
             event: "push_subscription_delivery_failed",
             subscriptionId: row.id,
-            statusCode,
+            ...details,
           }),
         );
       }
     }),
   );
 
-  return { delivered, removed, attempted: subscriptions.length };
+  return { delivered, failed, removed, attempted: subscriptions.length };
+}
+
+function pushDeliveryFailureDetails(error: unknown, endpoint?: string) {
+  if (!(error instanceof WebPushError)) {
+    return { statusCode: 0 };
+  }
+
+  const responseBody = error.body?.trim();
+  let reason: string | undefined;
+  if (responseBody) {
+    try {
+      const parsed: unknown = JSON.parse(responseBody);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        "reason" in parsed &&
+        typeof parsed.reason === "string"
+      ) {
+        reason = parsed.reason.slice(0, 128);
+      }
+    } catch {
+      // Keep the truncated response body below for non-JSON push service errors.
+    }
+  }
+
+  return {
+    statusCode: error.statusCode,
+    ...(reason ? { reason } : {}),
+    ...(responseBody ? { responseBody: responseBody.slice(0, 512) } : {}),
+    ...(error.headers["apns-id"]
+      ? { pushServiceRequestId: error.headers["apns-id"] }
+      : {}),
+    ...(endpoint ? { endpointHost: safeEndpointHostname(endpoint) } : {}),
+  };
+}
+
+function safeEndpointHostname(endpoint: string) {
+  try {
+    return new URL(endpoint).hostname;
+  } catch {
+    return "invalid";
+  }
 }
 
 function validatePushEndpoint(value: string) {
