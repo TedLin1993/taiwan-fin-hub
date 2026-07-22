@@ -8,6 +8,7 @@ import { z } from "zod";
 import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
 import { jsonError } from "../../platform/http";
+import { validationHook } from "../../platform/validation";
 import {
   getNotificationConfig,
   PushNotificationConfigurationError,
@@ -42,7 +43,11 @@ function registerNotificationRoutes(api: Hono<AppBindings>) {
 
   api.post(
     "/notifications/subscriptions",
-    zValidator("json", pushSubscriptionSchema),
+    zValidator(
+      "json",
+      pushSubscriptionSchema,
+      validationHook("INVALID_REQUEST", "Push subscription is invalid."),
+    ),
     async (c) => {
       try {
         const input = c.req.valid("json") as PushSubscriptionInput;
@@ -62,7 +67,14 @@ function registerNotificationRoutes(api: Hono<AppBindings>) {
 
   api.put(
     "/notifications/preferences",
-    zValidator("json", preferencesSchema),
+    zValidator(
+      "json",
+      preferencesSchema,
+      validationHook(
+        "INVALID_REQUEST",
+        "Notification preferences are invalid.",
+      ),
+    ),
     async (c) => {
       const input = c.req.valid("json") as NotificationPreferences;
       return c.json(await updateNotificationPreferences(c.env, input));

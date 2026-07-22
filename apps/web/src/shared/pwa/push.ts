@@ -36,9 +36,14 @@ export async function registerPushServiceWorker() {
   return navigator.serviceWorker.register("/sw.js");
 }
 
-export async function getPushSubscription() {
+export async function getPushSubscription(publicKey: string) {
   const registration = await navigator.serviceWorker.ready;
-  return registration.pushManager.getSubscription();
+  const existing = await registration.pushManager.getSubscription();
+  if (!existing || pushSubscriptionUsesKey(existing, publicKey))
+    return existing;
+
+  await existing.unsubscribe();
+  return null;
 }
 
 export async function subscribeToPush(publicKey: string) {
@@ -52,7 +57,7 @@ export async function subscribeToPush(publicKey: string) {
   }
 
   const registration = await navigator.serviceWorker.ready;
-  const existing = await registration.pushManager.getSubscription();
+  const existing = await getPushSubscription(publicKey);
   return (
     existing ??
     (await registration.pushManager.subscribe({
@@ -75,6 +80,25 @@ export function subscriptionInput(subscription: PushSubscription) {
       auth: value.keys.auth,
     },
   };
+}
+
+export function pushSubscriptionUsesKey(
+  subscription: PushSubscription,
+  publicKey: string,
+) {
+  const configuredKey = base64UrlToUint8Array(publicKey);
+  const subscriptionKey = subscription.options.applicationServerKey;
+  if (
+    !subscriptionKey ||
+    subscriptionKey.byteLength !== configuredKey.byteLength
+  ) {
+    return false;
+  }
+
+  const subscriptionBytes = new Uint8Array(subscriptionKey);
+  return configuredKey.every(
+    (byte, index) => byte === subscriptionBytes[index],
+  );
 }
 
 export function isStandalonePwa() {

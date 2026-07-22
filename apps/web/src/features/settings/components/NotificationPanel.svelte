@@ -55,26 +55,53 @@
 
   onMount(() => {
     support = pushSupport();
-    if (!support.supported) return;
-    void registerPushServiceWorker()
-      .then(() => getPushSubscription())
-      .then((current) => (subscription = current))
-      .catch(() => {
-        subscription = null;
-      });
+    if (support.supported) void hydrateSubscription();
   });
+
+  async function hydrateSubscription() {
+    try {
+      const notificationConfig = await queryClient.ensureQueryData(
+        notificationConfigQuery(() => api),
+      );
+      if (!notificationConfig.publicKey) return;
+      await registerPushServiceWorker();
+      const current = await getPushSubscription(notificationConfig.publicKey);
+      if (!current) {
+        const storedId = localStorage.getItem("taiwan-fin-hub-push-id");
+        if (storedId) await removeStoredSubscription(storedId);
+      }
+      subscription = current;
+    } catch {
+      subscription = null;
+    }
+  }
+
+  async function removeStoredSubscription(id: string) {
+    await api.delete(`/api/notifications/subscriptions/${id}`);
+    if (localStorage.getItem("taiwan-fin-hub-push-id") === id) {
+      localStorage.removeItem("taiwan-fin-hub-push-id");
+    }
+  }
 
   async function enablePush() {
     if (!serverEnabled || !$config.data?.publicKey) return;
     busy = true;
     feedback = null;
     try {
+      const previousId = localStorage.getItem("taiwan-fin-hub-push-id");
       await registerPushServiceWorker();
       const current = await subscribeToPush($config.data.publicKey);
       const registered = await api.post<PushSubscriptionRegistration>(
         "/api/notifications/subscriptions",
         subscriptionInput(current),
       );
+      if (previousId && previousId !== registered.id) {
+        try {
+          await removeStoredSubscription(previousId);
+        } catch (error) {
+          console.warn("[pwa] stale push subscription cleanup failed", error);
+        }
+      }
       localStorage.setItem("taiwan-fin-hub-push-id", registered.id);
       subscription = current;
       await queryClient.invalidateQueries({
@@ -97,9 +124,8 @@
     feedback = null;
     try {
       const id = localStorage.getItem("taiwan-fin-hub-push-id");
-      if (id) await api.delete(`/api/notifications/subscriptions/${id}`);
+      if (id) await removeStoredSubscription(id);
       await subscription?.unsubscribe();
-      localStorage.removeItem("taiwan-fin-hub-push-id");
       subscription = null;
       await queryClient.invalidateQueries({
         queryKey: queryKeys.notifications,

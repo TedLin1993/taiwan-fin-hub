@@ -96,4 +96,53 @@ describe("notification routes", () => {
       error: { code: "INVALID_PUSH_SUBSCRIPTION" },
     });
   });
+
+  it("returns the shared error contract for invalid subscriptions", async () => {
+    const response = await notificationRoutes.request(
+      "/notifications/subscriptions",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoint: "https://push.example.com/subscribe",
+          keys: { p256dh: "key" },
+        }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      success: false,
+      error: {
+        code: "INVALID_REQUEST",
+        message: "Push subscription is invalid.",
+      },
+    });
+  });
+
+  it("returns the shared error contract for invalid preferences", async () => {
+    const response = await notificationRoutes.request(
+      "/notifications/preferences",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          success: true,
+          failed: "yes",
+          needsUserAction: true,
+        }),
+      },
+      env(),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      success: false,
+      error: {
+        code: "INVALID_REQUEST",
+        message: "Notification preferences are invalid.",
+      },
+    });
+  });
 });
