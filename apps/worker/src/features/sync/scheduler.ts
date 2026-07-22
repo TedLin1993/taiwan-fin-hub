@@ -22,6 +22,7 @@ import {
   syncTdcc,
   SYNC_LOCK_LEASE_MS,
 } from "./service";
+import { safelySendSyncNotification } from "../notifications/service";
 
 const MAX_SCHEDULED_JOBS_PER_TICK = 3;
 
@@ -54,6 +55,8 @@ async function runScheduledJob(
 
   const stopHeartbeat = startSyncLockHeartbeat(env.DB, lockRowId, runId);
   const startedAt = Date.now();
+  let notification:
+    { connectorId: ConnectorId; status: SyncStatus } | undefined;
   try {
     const outcome = await runDueSyncJob(env, due);
     await completeSyncJob(env.DB, due);
@@ -70,6 +73,10 @@ async function runScheduledJob(
         durationMs: Date.now() - startedAt,
       }),
     );
+    notification = {
+      connectorId: outcome.connectorId,
+      status: "success",
+    };
   } catch (error) {
     const status: SyncStatus = isUserActionError(error)
       ? "needs_user_action"
@@ -91,9 +98,17 @@ async function runScheduledJob(
         durationMs: Date.now() - startedAt,
       }),
     );
+    notification = {
+      connectorId: due.connector_id,
+      status,
+    };
   } finally {
     stopHeartbeat();
     await releaseSyncJobLock(env.DB, lockRowId, runId);
+  }
+
+  if (notification) {
+    await safelySendSyncNotification(env, notification);
   }
 }
 

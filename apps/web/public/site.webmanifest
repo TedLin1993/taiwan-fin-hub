@@ -1,6 +1,9 @@
 {
   "name": "Taiwan Fin Hub",
   "short_name": "Fin Hub",
+  "id": "/",
+  "start_url": "/#/overview",
+  "scope": "/",
   "icons": [
     {
       "src": "/icon-192x192.png",

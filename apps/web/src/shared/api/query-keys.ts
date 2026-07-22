@@ -12,6 +12,7 @@ export const queryKeys = {
   netWorthHistory: ["netWorthHistory"] as const,
   syncJobs: ["sync-jobs"] as const,
   syncSchedule: ["sync-schedule"] as const,
+  notifications: ["notifications"] as const,
   classificationCategories: ["classification-categories"] as const,
   classificationRules: ["classification-rules"] as const,
   connectorSettings: (id: string) => ["connector-settings", id] as const,

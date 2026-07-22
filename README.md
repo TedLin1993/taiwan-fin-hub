@@ -115,6 +115,16 @@
 
 > 進階用法：若同一個 Worker 需要接受多個 Access Application，可另外設定 `POLICY_AUDS`，以逗號或空白分隔多個 Audience。
 
+若要啟用同步完成推播，請另外產生一組固定的 VAPID 金鑰，並在同一個 Worker 的 **Variables and secrets** 設定：
+
+```bash
+npx web-push generate-vapid-keys
+wrangler secret put VAPID_PUBLIC_KEY
+wrangler secret put VAPID_PRIVATE_KEY
+```
+
+`VAPID_SUBJECT` 可省略，程式會使用內建的 `mailto:admin@example.com` 預設值；若要提供實際聯絡方式，可自行設定為 `mailto:` 或 `https:` URI。VAPID public/private key 必須在同一個部署中保持不變；若更換金鑰，既有瀏覽器訂閱需要重新開啟推播。
+
 ### 步驟三：確認部署
 
 1. 開啟 Worker 的 `workers.dev` 網址，確認會先要求 Cloudflare Access 登入

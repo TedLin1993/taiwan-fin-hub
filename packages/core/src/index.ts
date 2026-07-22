@@ -181,6 +181,30 @@ export interface SyncResponse {
   cursorUpdated: boolean;
 }
 
+export type SyncNotificationStatus = "success" | "failed" | "needs_user_action";
+
+export interface NotificationPreferences {
+  success: boolean;
+  failed: boolean;
+  needsUserAction: boolean;
+}
+
+export interface PushSubscriptionInput {
+  endpoint: string;
+  expirationTime: number | null;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+}
+
+export interface NotificationConfig {
+  enabled: boolean;
+  publicKey: string | null;
+  subscribedDevices: number;
+  preferences: NotificationPreferences;
+}
+
 export interface ApiErrorResponse {
   success: false;
   error: {
