@@ -47,6 +47,15 @@
       },
       "AI": {
         "description": "Cloudflare Workers AI binding，供 Gemma 4 辨識永豐登入驗證碼。"
+      },
+      "VAPID_PUBLIC_KEY": {
+        "description": "Web Push 的 VAPID public key；可與 private key 一起用 wrangler secret put 設定。"
+      },
+      "VAPID_PRIVATE_KEY": {
+        "description": "Web Push 的 VAPID private key；請使用 wrangler secret put 設定並保持機密。"
+      },
+      "VAPID_SUBJECT": {
+        "description": "Web Push VAPID 聯絡資訊，可省略；省略時使用 mailto:admin@example.com。"
       }
     }
   },

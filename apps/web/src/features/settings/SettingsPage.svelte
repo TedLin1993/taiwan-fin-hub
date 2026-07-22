@@ -16,6 +16,7 @@
   import ExchangeRatesPanel from "./components/ExchangeRatesPanel.svelte";
   import Metric from "./components/Metric.svelte";
   import MobileMore from "./components/MobileMore.svelte";
+  import NotificationPanel from "./components/NotificationPanel.svelte";
   import SourceCard from "./components/SourceCard.svelte";
   import ConnectorPanel from "./connectors/ConnectorPanel.svelte";
   let {
@@ -59,6 +60,7 @@
 {:else if mobileView === "data-sources"}
   <div class="grid gap-4">
     <DefaultSchedulePanel {api} {demoMode} jobs={$jobs.data ?? []} />
+    <NotificationPanel {api} {demoMode} />
     <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
       {#each sources as source (source.id)}
         <SourceCard
@@ -112,6 +114,7 @@
     </section>
 
     <DefaultSchedulePanel {api} {demoMode} jobs={$jobs.data ?? []} />
+    <NotificationPanel {api} {demoMode} />
 
     <section
       aria-label="資料來源"

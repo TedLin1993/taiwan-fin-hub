@@ -4,3 +4,7 @@ POLICY_AUD=replace-with-cloudflare-access-application-audience-tag
 # Optional: comma- or whitespace-separated additional audience tags.
 POLICY_AUDS=
 DEMO_MODE=false
+VAPID_PUBLIC_KEY=replace-with-web-push-public-key
+VAPID_PRIVATE_KEY=replace-with-web-push-private-key
+# Optional; defaults to mailto:admin@example.com
+# VAPID_SUBJECT=mailto:admin@example.com

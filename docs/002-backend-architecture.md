@@ -34,6 +34,7 @@ apps/
     │   │   ├── invoices/
     │   │   ├── manual-assets/
     │   │   ├── net-worth/
+    │   │   ├── notifications/
     │   │   ├── ocr/
     │   │   └── sync/
     │   ├── connectors/
@@ -414,6 +415,17 @@ sequenceDiagram
 - Lock acquisition 失敗時回傳或記錄「已有同步執行中」，不得平行執行同一 connector。
 
 Cron trigger 只負責喚醒 scheduler。是否到期由 D1 sync job 狀態判斷。
+
+## 同步結果通知
+
+同步結果通知位於 `apps/worker/src/features/notifications/`，不放入 sync repository。
+
+- `route.ts`：推播設定、裝置 subscription、偏好與測試通知 API。
+- `service.ts`：VAPID 設定、subscription 加密、通知派送與失效 endpoint 清理。
+- `repository.ts`：`push_subscriptions` 與 `notification_preferences` 的 D1 存取。
+- `payload.ts`：將 sync status 轉成不含金融明細的安全通知內容。
+
+排程同步更新 `sync_jobs` 後才呼叫通知 service。通知是 best-effort；發送失敗只記錄 log，不得將成功同步改成失敗。瀏覽器 subscription payload 使用既有設定加密金鑰保存。
 
 每次 scheduler tick：
 

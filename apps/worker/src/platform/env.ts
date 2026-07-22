@@ -6,6 +6,9 @@ export interface Env {
   BROWSER: Fetcher;
   AI: Ai;
   CONFIG_ENCRYPTION_KEY?: string;
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  VAPID_SUBJECT?: string;
   TEAM_DOMAIN?: string;
   POLICY_AUD?: string;
   POLICY_AUDS?: string;

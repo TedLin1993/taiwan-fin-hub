@@ -27,7 +27,7 @@ The connector settings table already stores encrypted credentials and a `sync_cu
 - Do not bypass OTP, CAPTCHA, bank device verification, or other interactive security checks.
 - Do not introduce a separate server, GitHub Action, or external scheduler.
 - Do not add multi-user tenancy in this design.
-- Do not implement email, push, or chat notifications in the first version.
+- Keep notification delivery separate from the sync transaction so notification failures cannot change sync state.
 
 ## Proposed Schedule
 
@@ -44,11 +44,11 @@ This pattern keeps the cron configuration simple while letting job frequency and
 
 Default v1 intervals:
 
-| Job | Default interval | Notes |
-| --- | --- | --- |
-| `einvoice/all` | 24 hours | Fetch invoice list and details. |
-| `tdcc/all` | 24 hours | Sync positions, settlement bank data, and trade history together. Reuse trusted session only; disable the scheduled job when OTP is required. |
-| `esun/all` | 24 hours | Reuse valid session only in v1. |
+| Job            | Default interval | Notes                                                                                                                                         |
+| -------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `einvoice/all` | 24 hours         | Fetch invoice list and details.                                                                                                               |
+| `tdcc/all`     | 24 hours         | Sync positions, settlement bank data, and trade history together. Reuse trusted session only; disable the scheduled job when OTP is required. |
+| `esun/all`     | 24 hours         | Reuse valid session only in v1.                                                                                                               |
 
 The user can still manually sync when they need immediate updates or when OTP is required.
 
@@ -61,7 +61,7 @@ export default {
   fetch: app.fetch,
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(runSchedulerTick(env, controller));
-  }
+  },
 } satisfies ExportedHandler<Env>;
 ```
 
@@ -116,11 +116,11 @@ The scheduler framework treats `scope` as connector-local data. For example, TDC
 
 ## Connector Policy
 
-| Connector | Scheduled behavior | Reasoning |
-| --- | --- | --- |
-| `einvoice` | Run when `sync_jobs.next_run_at` is due, with `fetchDetails: true`. | Login token and mobile barcode can be refreshed and stored in encrypted config. Writes are idempotent by `connector_id + source_id`. |
-| `tdcc` | Run `tdcc/all` when due: positions, settlement bank data, and trade history are synced in one connector job. If OTP is required, mark `needs_user_action` and set `sync_jobs.enabled = 0`. | TDCC device verification is interactive. The TDCC scopes share cursor/session state, so scheduled sync treats them as one connector job. |
-| `esun` | Run when due if stored session cookies are still valid; allow browser login only after an explicit config flag is added. | Current implementation can perform browser login with credentials, but automated bank login may trigger duplicate-login or security checks. V1 should prefer session reuse and manual recovery. |
+| Connector  | Scheduled behavior                                                                                                                                                                         | Reasoning                                                                                                                                                                                       |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `einvoice` | Run when `sync_jobs.next_run_at` is due, with `fetchDetails: true`.                                                                                                                        | Login token and mobile barcode can be refreshed and stored in encrypted config. Writes are idempotent by `connector_id + source_id`.                                                            |
+| `tdcc`     | Run `tdcc/all` when due: positions, settlement bank data, and trade history are synced in one connector job. If OTP is required, mark `needs_user_action` and set `sync_jobs.enabled = 0`. | TDCC device verification is interactive. The TDCC scopes share cursor/session state, so scheduled sync treats them as one connector job.                                                        |
+| `esun`     | Run when due if stored session cookies are still valid; allow browser login only after an explicit config flag is added.                                                                   | Current implementation can perform browser login with credentials, but automated bank login may trigger duplicate-login or security checks. V1 should prefer session reuse and manual recovery. |
 
 Scheduled frequency and enablement should live in `sync_jobs`, not in the encrypted connector config. Add optional connector-level behavior later if users want more control:
 
@@ -192,14 +192,14 @@ Use fixed UTC timestamps only as initial seed values. After the first run, the s
 
 For v1, the canonical lock row is always `${connector_id}:all`.
 
-| Sync request | Due row | Canonical lock row |
-| --- | --- | --- |
-| `einvoice/all` | `einvoice:all` | `einvoice:all` |
-| `tdcc/all` | `tdcc:all` | `tdcc:all` |
-| `tdcc/investments` manual sync | none | `tdcc:all` |
-| `tdcc/bank` manual sync | none | `tdcc:all` |
-| `tdcc/trades` manual sync | none | `tdcc:all` |
-| `esun/all` | `esun:all` | `esun:all` |
+| Sync request                   | Due row        | Canonical lock row |
+| ------------------------------ | -------------- | ------------------ |
+| `einvoice/all`                 | `einvoice:all` | `einvoice:all`     |
+| `tdcc/all`                     | `tdcc:all`     | `tdcc:all`         |
+| `tdcc/investments` manual sync | none           | `tdcc:all`         |
+| `tdcc/bank` manual sync        | none           | `tdcc:all`         |
+| `tdcc/trades` manual sync      | none           | `tdcc:all`         |
+| `esun/all`                     | `esun:all`     | `esun:all`         |
 
 This keeps v1 to one table while still preventing scheduled `tdcc/all` and manual `tdcc/investments`, `tdcc/bank`, or `tdcc/trades` from running at the same time.
 
@@ -279,7 +279,7 @@ async function runSchedulerTick(env: Env, controller: ScheduledController) {
     lockRowId,
     scope: due.scope,
     trigger: "scheduled",
-    runId
+    runId,
   });
   if (!locked) {
     return;
@@ -402,9 +402,10 @@ Manual sync routes should still work after the refactor, especially TDCC OTP ret
 - Add a `sync_runs` history table if the UI needs detailed run history beyond the current status stored in `sync_jobs`.
 - Add exponential backoff if fixed 60 minute retry is too aggressive or too slow.
 - Add Cloudflare Queues if a single connector job still regularly approaches the 15 minute scheduled invocation limit.
+- Web Push delivery remains a separate best-effort feature. The scheduler emits only a safe status summary after updating `sync_jobs`; a push delivery error must never change the recorded sync status.
 
 ## Open Questions
 
 - Should E.SUN scheduled sync be allowed to perform full browser login by default, or only reuse existing sessions?
 - Should users be able to configure the cron time from the UI, or should it remain deployment configuration?
-- Should future notification support use email, webhook, or Cloudflare Queues plus another Worker?
+- Future notification channels may include email or webhook; the first implementation uses standard Web Push with VAPID and stores browser subscriptions in D1.
