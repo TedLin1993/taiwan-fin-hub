@@ -1,5 +1,14 @@
 # Taiwan Fin Hub 專案指引
 
+## Code Review Rules
+
+### Review 語言
+
+- 所有 Codex GitHub PR Review 摘要與 inline review comments 一律使用台灣正體中文（zh-TW）。
+- 不得使用簡體中文；用語以台灣軟體工程慣用詞為準。
+- 程式碼識別字、套件名稱、指令、錯誤訊息與必要的技術名詞保留英文，不強制翻譯。
+- Review 意見應直接說明問題、觸發條件、可能影響與建議修正方式，避免只有籠統結論。
+
 ## 專案概況
 
 - 本專案是使用 TypeScript ESM 與 npm workspaces 管理的 monorepo。
