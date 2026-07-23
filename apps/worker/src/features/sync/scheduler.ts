@@ -30,6 +30,7 @@ import type { SyncNotificationEvent } from "../notifications/payload";
 import {
   claimCompletedDefaultScheduleBatch,
   ensureDefaultScheduleBatch,
+  finalizeOpenDefaultScheduleBatch,
   recordDefaultScheduleBatchResult,
 } from "./notification-batch-repository";
 
@@ -39,6 +40,11 @@ export async function runSchedulerTick(
   env: Env,
   controller: ScheduledController,
 ) {
+  const pendingSummary = await finalizeOpenDefaultScheduleBatch(env.DB);
+  if (pendingSummary) {
+    await safelySendScheduledSyncSummary(env, pendingSummary);
+  }
+
   for (let index = 0; index < MAX_SCHEDULED_JOBS_PER_TICK; index += 1) {
     const due = await findNextDueSyncJob<ConnectorId>(env.DB);
     if (!due) return;

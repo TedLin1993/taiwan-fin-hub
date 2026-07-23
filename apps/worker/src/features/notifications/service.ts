@@ -166,7 +166,7 @@ export async function safelySendScheduledSyncSummary(
   const status = summaryStatus(events);
   try {
     const preferences = await getNotificationPreferences(env.DB);
-    if (!events.some((event) => shouldNotify(preferences, event.status))) return;
+    if (!shouldNotify(preferences, status)) return;
     if (!isPushConfigured(env)) {
       console.warn("[notifications] skipped: VAPID keys are not configured");
       return;

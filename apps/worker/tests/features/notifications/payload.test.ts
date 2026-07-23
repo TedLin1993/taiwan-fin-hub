@@ -44,6 +44,20 @@ describe("sync notification payload", () => {
     expect(shouldNotify(preferences, "failed")).toBe(true);
     expect(shouldNotify(preferences, "needs_user_action")).toBe(true);
   });
+
+  it("uses the aggregate status for a mixed summary preference", () => {
+    const preferences: NotificationPreferences = {
+      success: true,
+      failed: false,
+      needsUserAction: false,
+    };
+    const events: SyncNotificationEvent[] = [
+      { connectorId: "einvoice", status: "success" },
+      { connectorId: "tdcc", status: "failed" },
+    ];
+
+    expect(shouldNotify(preferences, summaryStatus(events))).toBe(false);
+  });
 });
 
 describe("scheduled sync summary payload", () => {

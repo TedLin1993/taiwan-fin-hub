@@ -53,6 +53,22 @@ function createDb() {
     prepare(sql: string) {
       return new SqliteStatement(database, sql);
     },
+    async batch(statements: D1PreparedStatement[]) {
+      database.exec("BEGIN");
+      try {
+        const results = [];
+        for (const statement of statements) {
+          results.push(
+            await (statement as unknown as SqliteStatement).run(),
+          );
+        }
+        database.exec("COMMIT");
+        return results;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    },
   } as unknown as D1Database;
   return { database, db };
 }
@@ -104,5 +120,64 @@ describe("default schedule notification batches", () => {
     await expect(
       claimCompletedDefaultScheduleBatch(db, batchId),
     ).resolves.toBeNull();
+  });
+
+  it("keeps staggered inherited jobs in the same open batch", async () => {
+    const { database, db } = createDb();
+    databases.push(database);
+    const firstRun = "2026-07-23T22:00:00.000Z";
+    const secondRun = "2026-07-23T22:10:00.000Z";
+    database
+      .prepare(
+        `UPDATE sync_jobs
+         SET enabled = 1, schedule_mode = 'inherit', next_run_at = ?, last_status = NULL`,
+      )
+      .run(firstRun);
+    const jobs = database
+      .prepare("SELECT * FROM sync_jobs ORDER BY id")
+      .all() as unknown as SyncJobRow<ConnectorId>[];
+    database
+      .prepare("UPDATE sync_jobs SET next_run_at = ? WHERE id = ?")
+      .run(secondRun, jobs[1]!.id);
+
+    const firstBatch = await ensureDefaultScheduleBatch(db, jobs[0]!);
+    const secondBatch = await ensureDefaultScheduleBatch(db, {
+      ...jobs[1]!,
+      next_run_at: secondRun,
+    });
+
+    expect(secondBatch).toBe(firstBatch);
+  });
+
+  it("reconciles a member disabled before its scheduled tick", async () => {
+    const { database, db } = createDb();
+    databases.push(database);
+    const scheduledFor = "2026-07-23T22:00:00.000Z";
+    database
+      .prepare(
+        `UPDATE sync_jobs
+         SET enabled = 1, schedule_mode = 'inherit', next_run_at = ?, last_status = NULL`,
+      )
+      .run(scheduledFor);
+    const jobs = database
+      .prepare("SELECT * FROM sync_jobs ORDER BY id")
+      .all() as unknown as SyncJobRow<ConnectorId>[];
+    const batchId = await ensureDefaultScheduleBatch(db, jobs[0]!);
+    database
+      .prepare("UPDATE sync_jobs SET enabled = 0 WHERE id = ?")
+      .run(jobs[1]!.id);
+
+    for (const [index, job] of jobs.entries()) {
+      if (index === 1) continue;
+      await recordDefaultScheduleBatchResult(db, {
+        batchId,
+        jobId: job.id,
+        notification: { connectorId: job.connector_id, status: "success" },
+      });
+    }
+
+    const summary = await claimCompletedDefaultScheduleBatch(db, batchId);
+    expect(summary).toHaveLength(jobs.length - 1);
+    expect(summary?.every((event) => event.status === "success")).toBe(true);
   });
 });
