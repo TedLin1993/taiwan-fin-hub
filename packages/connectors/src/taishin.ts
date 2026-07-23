@@ -49,6 +49,9 @@ type TransactionCandidate = Omit<
   matchKey: string;
   cardLast4: string;
 };
+type TransactionWithOccurrence = TransactionCandidate & {
+  occurrence: number;
+};
 
 const ACCOUNT_SOURCE_ID = "credit:taishin:main";
 
@@ -289,45 +292,116 @@ function mergeTransactionLifecycle(
   posted: TransactionCandidate[],
   pending: TransactionCandidate[],
 ) {
-  const postedWithIds = assignSourceIds(posted);
-  const pendingWithIds = assignSourceIds(pending);
-  const postedCounts = countByMatchKey(postedWithIds);
-  const seenPending = new Map<string, number>();
-  const unmatchedPending = pendingWithIds.filter((transaction) => {
-    const occurrence = (seenPending.get(transaction.matchKey) ?? 0) + 1;
-    seenPending.set(transaction.matchKey, occurrence);
-    return occurrence > (postedCounts.get(transaction.matchKey) ?? 0);
-  });
+  const pendingWithOccurrences = assignOccurrences(pending);
+  const pendingByMatchKey = groupByMatchKey(pendingWithOccurrences);
+  const postedByMatchKey = groupByMatchKey(posted);
+  const postedOccurrences = new Map<TransactionCandidate, number>();
+  const consumedPending = new Set<TransactionWithOccurrence>();
+
+  for (const [matchKey, postedGroup] of postedByMatchKey) {
+    const pendingGroup = pendingByMatchKey.get(matchKey) ?? [];
+
+    for (const postedTransaction of postedGroup) {
+      const matchingPending = pendingGroup.filter((pendingTransaction) =>
+        merchantNamesMatch(
+          postedTransaction.description,
+          pendingTransaction.description,
+        ),
+      );
+      if (matchingPending.length !== 1) continue;
+
+      const pendingTransaction = matchingPending[0]!;
+      const matchingPosted = postedGroup.filter((candidate) =>
+        merchantNamesMatch(
+          candidate.description,
+          pendingTransaction.description,
+        ),
+      );
+      if (matchingPosted.length !== 1) continue;
+
+      postedOccurrences.set(postedTransaction, pendingTransaction.occurrence);
+      consumedPending.add(pendingTransaction);
+    }
+
+    let nextOccurrence =
+      Math.max(0, ...pendingGroup.map(({ occurrence }) => occurrence)) + 1;
+    for (const postedTransaction of postedGroup) {
+      if (postedOccurrences.has(postedTransaction)) continue;
+      postedOccurrences.set(postedTransaction, nextOccurrence);
+      nextOccurrence += 1;
+    }
+  }
+
+  const postedWithIds = posted.map((transaction) =>
+    assignSourceId(transaction, postedOccurrences.get(transaction) ?? 1),
+  );
+  const unmatchedPending = pendingWithOccurrences
+    .filter((transaction) => !consumedPending.has(transaction))
+    .map(({ occurrence, ...transaction }) =>
+      assignSourceId(transaction, occurrence),
+    );
+
   return [...postedWithIds, ...unmatchedPending].map(
     ({ matchKey: _matchKey, cardLast4: _cardLast4, ...transaction }) =>
       transaction,
   );
 }
 
-function assignSourceIds(candidates: TransactionCandidate[]) {
+function assignOccurrences(
+  candidates: TransactionCandidate[],
+): TransactionWithOccurrence[] {
   const occurrences = new Map<string, number>();
   return candidates.map((candidate) => {
     const occurrence = (occurrences.get(candidate.matchKey) ?? 0) + 1;
     occurrences.set(candidate.matchKey, occurrence);
     return {
       ...candidate,
-      sourceId: `taishin:card:tx:v1:${candidate.matchKey}:${occurrence}`,
-      raw: {
-        ...(candidate.raw as JsonRecord),
-        duplicateOccurrence: occurrence,
-      },
+      occurrence,
     };
   });
 }
 
-function countByMatchKey(
-  candidates: Array<TransactionCandidate & { sourceId: string }>,
-) {
-  const counts = new Map<string, number>();
+function assignSourceId(candidate: TransactionCandidate, occurrence: number) {
+  return {
+    ...candidate,
+    sourceId: `taishin:card:tx:v1:${candidate.matchKey}:${occurrence}`,
+    raw: {
+      ...(candidate.raw as JsonRecord),
+      duplicateOccurrence: occurrence,
+    },
+  };
+}
+
+function groupByMatchKey<T extends TransactionCandidate>(candidates: T[]) {
+  const groups = new Map<string, T[]>();
   for (const candidate of candidates) {
-    counts.set(candidate.matchKey, (counts.get(candidate.matchKey) ?? 0) + 1);
+    const group = groups.get(candidate.matchKey) ?? [];
+    group.push(candidate);
+    groups.set(candidate.matchKey, group);
   }
-  return counts;
+  return groups;
+}
+
+function merchantNamesMatch(
+  left: string | undefined,
+  right: string | undefined,
+) {
+  const normalizedLeft = normalizeMerchantName(left);
+  const normalizedRight = normalizeMerchantName(right);
+  if (!normalizedLeft || !normalizedRight) return false;
+  if (normalizedLeft === normalizedRight) return true;
+  return (
+    Math.min(normalizedLeft.length, normalizedRight.length) >= 4 &&
+    (normalizedLeft.includes(normalizedRight) ||
+      normalizedRight.includes(normalizedLeft))
+  );
+}
+
+function normalizeMerchantName(value: string | undefined) {
+  return (value ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s()[\]{}（）【】〈〉《》,，.。:：/\\_-]+/g, "");
 }
 
 function responseValue(value: unknown): JsonRecord | undefined {

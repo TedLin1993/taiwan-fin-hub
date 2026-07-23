@@ -122,18 +122,18 @@ describe("Taishin credit-card parser", () => {
     });
   });
 
-  it("upgrades matched pending occurrences to posted without using merchant text", () => {
+  it("upgrades merchant-matched pending occurrences and keeps the rest pending", () => {
     const result = parseTaishinCreditCardData({
       summary,
       bills: [
         bill("2026/07", [
-          transaction("商店名稱（入帳後）", "350"),
-          transaction("第二筆同額", "350"),
+          transaction("第一商店（入帳後）", "350"),
+          transaction("第二商店", "350"),
         ]),
       ],
       realtime: realtime([
-        ["2026/07/08", "12:30:00", "授權名稱", "350", "TW", "成功"],
-        ["2026/07/08", "13:30:00", "另一授權名稱", "350", "TW", "成功"],
+        ["2026/07/08", "12:30:00", "第一商店", "350", "TW", "成功"],
+        ["2026/07/08", "13:30:00", "第二商店", "350", "TW", "成功"],
         ["2026/07/08", "14:30:00", "尚未入帳", "350", "TW", "成功"],
       ]),
     });
@@ -149,6 +149,33 @@ describe("Taishin credit-card parser", () => {
       "posted",
       "pending",
     ]);
+  });
+
+  it("keeps an ambiguous same-day same-amount authorization pending", () => {
+    const result = parseTaishinCreditCardData({
+      summary,
+      bills: [bill("2026/07", [transaction("商戶 B", "350")])],
+      realtime: realtime([
+        ["2026/07/08", "12:30:00", "商戶 A", "350", "TW", "成功"],
+      ]),
+    });
+
+    expect(result.bankTransactions).toHaveLength(2);
+    expect(result.bankTransactions).toEqual([
+      expect.objectContaining({
+        description: "商戶 B",
+        status: "posted",
+        sourceId: expect.stringContaining(":2"),
+      }),
+      expect.objectContaining({
+        description: "商戶 A",
+        status: "pending",
+        sourceId: expect.stringContaining(":1"),
+      }),
+    ]);
+    expect(
+      new Set(result.bankTransactions.map(({ sourceId }) => sourceId)).size,
+    ).toBe(2);
   });
 
   it("keeps cards isolated and preserves refunds and foreign currency", () => {

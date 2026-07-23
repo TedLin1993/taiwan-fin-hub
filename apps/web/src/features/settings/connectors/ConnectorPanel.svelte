@@ -36,6 +36,7 @@
     SyncTarget,
   } from "@/data/connectors/types";
   import { formatDateTime } from "@/shared/format/financial";
+  import { browserCaptchaFailure } from "./browser-captcha";
 
   let {
     api,
@@ -256,7 +257,17 @@
       if (connectorId === "sinopac" && job && !job.enabled)
         $updateJob.mutate({ enabled: true });
     },
-    onError: (e) => (error = e instanceof Error ? e.message : "驗證或同步失敗"),
+    onError: (e) => {
+      const failure = browserCaptchaFailure(e);
+      error = failure.message;
+      if (failure.sessionInvalidated) {
+        bankCaptcha = "";
+        bankCaptchaImage = "";
+        qc.invalidateQueries({
+          queryKey: queryKeys.connectorSettings(connectorId),
+        });
+      }
+    },
   });
   const verifyOtp = createMutation({
     mutationFn: () => {

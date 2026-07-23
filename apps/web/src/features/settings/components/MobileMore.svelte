@@ -6,6 +6,7 @@
   import type { View } from "@/app/types";
   import type { BankData } from "@/data/bank/types";
   import type { ClassificationRuleRow } from "@/data/classification/types";
+  import { connectorDefinitions } from "@/data/connectors/definitions";
   import type { SyncJobRow } from "@/data/connectors/types";
   let {
     demoMode,
@@ -21,13 +22,7 @@
     bank: BankData;
     navigate: (view: View) => void;
   } = $props();
-  const sources = [
-    { id: "einvoice", label: "電子發票" },
-    { id: "esun", label: "玉山銀行" },
-    { id: "cathaybk", label: "國泰世華" },
-    { id: "sinopac", label: "永豐行動銀行" },
-    { id: "tdcc", label: "集保 e 存摺" },
-  ];
+  const sources = connectorDefinitions;
   const unhealthy = $derived(
     jobs.filter(
       (job) =>
@@ -115,7 +110,7 @@
           <div
             class="flex items-center justify-between gap-3 px-4 py-3 text-sm"
           >
-            <span class="font-semibold">{source.label}</span><span
+            <span class="font-semibold">{source.title}</span><span
               class={job?.lastStatus === "failed" ||
               job?.lastStatus === "needs_user_action"
                 ? "text-coral"
