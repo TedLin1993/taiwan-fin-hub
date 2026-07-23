@@ -68,9 +68,7 @@ function removeSingleOption(argumentsToInspect, optionName) {
   }
 
   if (values.length > 1) {
-    throw new Error(
-      `${optionName} can only be provided once; pass one file containing all deployment secrets.`,
-    );
+    throw new Error(`${optionName} can only be provided once.`);
   }
 
   return { remaining, value: values[0] ?? null };
@@ -150,6 +148,7 @@ function isMissingWorkerResult(result) {
 
 async function existingSecretNames() {
   const contextArguments = optionArguments(deployArguments, [
+    "--cwd",
     "--config",
     "-c",
     "--env",
@@ -188,6 +187,16 @@ async function existingSecretNames() {
   return new Set(secrets.map((secret) => secret?.name).filter(Boolean));
 }
 
+function deploymentDirectory() {
+  const { value: requestedDirectory } = removeSingleOption(
+    deployArguments,
+    "--cwd",
+  );
+  return requestedDirectory
+    ? resolve(invocationDirectory, requestedDirectory)
+    : invocationDirectory;
+}
+
 function parseJsonSecrets(content, filePath) {
   let secrets;
   try {
@@ -213,23 +222,72 @@ function parseJsonSecrets(content, filePath) {
   return secrets;
 }
 
+function parseDotenvVapidSecrets(content) {
+  const secrets = {};
+
+  for (const line of content.split(/\r?\n/)) {
+    const match = line.match(
+      /^\s*(?:export\s+)?(VAPID_PUBLIC_KEY|VAPID_PRIVATE_KEY)\s*=\s*(.*)\s*$/,
+    );
+    if (!match) continue;
+
+    const value = match[2].trim();
+    const quotedValue = value.match(/^(['"])(.*?)\1(?:\s*#.*)?$/);
+    secrets[match[1]] = quotedValue
+      ? quotedValue[2]
+      : value.replace(/\s*#.*$/, "").trim();
+  }
+
+  return secrets;
+}
+
+function providedVapidKeys(secrets, filePath) {
+  const publicKey = secrets.VAPID_PUBLIC_KEY?.trim() ?? "";
+  const privateKey = secrets.VAPID_PRIVATE_KEY?.trim() ?? "";
+
+  if (Boolean(publicKey) !== Boolean(privateKey)) {
+    throw new Error(
+      `Secrets file ${filePath} must provide both VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY, or neither.`,
+    );
+  }
+
+  if (!publicKey) return null;
+
+  return {
+    VAPID_PUBLIC_KEY: publicKey,
+    VAPID_PRIVATE_KEY: privateKey,
+  };
+}
+
+function generateVapidSecrets() {
+  const keys = generateVapidKeys();
+  return {
+    VAPID_PUBLIC_KEY: keys.publicKey,
+    VAPID_PRIVATE_KEY: keys.privateKey,
+  };
+}
+
 async function createInitialSecretsFile(
   temporaryDirectory,
   sourceFile,
-  vapidKeys,
+  effectiveDirectory,
 ) {
   if (!sourceFile) {
+    const vapidKeys = generateVapidSecrets();
     const secretsFile = join(temporaryDirectory, "secrets.json");
     await writeFile(secretsFile, `${JSON.stringify(vapidKeys)}\n`, {
       encoding: "utf8",
       mode: 0o600,
     });
-    return secretsFile;
+    return { secretsFile, generated: true };
   }
 
-  const sourcePath = resolve(invocationDirectory, sourceFile);
+  const sourcePath = resolve(effectiveDirectory, sourceFile);
   const sourceContent = await readFile(sourcePath, "utf8");
   const parsedJson = parseJsonSecrets(sourceContent, sourceFile);
+  const sourceSecrets = parsedJson ?? parseDotenvVapidSecrets(sourceContent);
+  const existingVapidKeys = providedVapidKeys(sourceSecrets, sourceFile);
+  const vapidKeys = existingVapidKeys ?? generateVapidSecrets();
   const secretsFile = join(
     temporaryDirectory,
     parsedJson ? "secrets.json" : "secrets.env",
@@ -241,15 +299,17 @@ async function createInitialSecretsFile(
       `${JSON.stringify({ ...parsedJson, ...vapidKeys })}\n`,
       { encoding: "utf8", mode: 0o600 },
     );
-    return secretsFile;
+    return { secretsFile, generated: existingVapidKeys === null };
   }
 
-  await writeFile(
-    secretsFile,
-    `${sourceContent.trimEnd()}\nVAPID_PUBLIC_KEY=${vapidKeys.publicKey}\nVAPID_PRIVATE_KEY=${vapidKeys.privateKey}\n`,
-    { encoding: "utf8", mode: 0o600 },
-  );
-  return secretsFile;
+  const vapidLines = existingVapidKeys
+    ? ""
+    : `VAPID_PUBLIC_KEY=${vapidKeys.VAPID_PUBLIC_KEY}\nVAPID_PRIVATE_KEY=${vapidKeys.VAPID_PRIVATE_KEY}\n`;
+  await writeFile(secretsFile, `${sourceContent.trimEnd()}\n${vapidLines}`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  return { secretsFile, generated: existingVapidKeys === null };
 }
 
 async function deploy() {
@@ -273,22 +333,21 @@ async function deploy() {
 
   const { remaining: deployArgumentsWithoutSecretsFile, value: sourceFile } =
     removeSingleOption(deployArguments, "--secrets-file");
-  const vapidKeys = generateVapidKeys();
+  const effectiveDirectory = deploymentDirectory();
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "taiwan-fin-hub-vapid-"),
   );
 
   try {
-    const secretsFile = await createInitialSecretsFile(
+    const { secretsFile, generated } = await createInitialSecretsFile(
       temporaryDirectory,
       sourceFile,
-      {
-        VAPID_PUBLIC_KEY: vapidKeys.publicKey,
-        VAPID_PRIVATE_KEY: vapidKeys.privateKey,
-      },
+      effectiveDirectory,
     );
     console.log(
-      "[deploy] No VAPID key pair found; generating one for this Worker.",
+      generated
+        ? "[deploy] No VAPID key pair found; generating one for this Worker."
+        : "[deploy] Using the VAPID key pair from the supplied secrets file.",
     );
 
     const result = await runWrangler([
