@@ -10,10 +10,21 @@ export async function recognizeValidateNumber(
   imageBytes: ArrayBuffer,
   contentType: string | undefined,
 ) {
+  return recognizeNumericCaptcha(ai, imageBytes, contentType, 6);
+}
+
+export async function recognizeNumericCaptcha(
+  ai: Ai,
+  imageBytes: ArrayBuffer,
+  contentType: string | undefined,
+  digitCount: number,
+) {
   if (imageBytes.byteLength === 0) throw new ValidateNumberEmptyImageError();
   if (imageBytes.byteLength > 256_000)
     throw new ValidateNumberImageTooLargeError();
   if (!contentType || !["image/jpeg", "image/jpg"].includes(contentType))
+    throw new ValidateNumberOcrError();
+  if (!Number.isInteger(digitCount) || digitCount < 4 || digitCount > 8)
     throw new ValidateNumberOcrError();
 
   let response: Record<string, unknown>;
@@ -26,7 +37,7 @@ export async function recognizeValidateNumber(
           content: [
             {
               type: "text",
-              text: "Read the six digits in this CAPTCHA. Return exactly six digits and nothing else.",
+              text: `Read the ${digitCount} digits in this CAPTCHA. Return exactly ${digitCount} digits and nothing else.`,
             },
             {
               type: "image_url",
@@ -53,7 +64,8 @@ export async function recognizeValidateNumber(
   }
 
   const number = readMessageContent(response).trim();
-  if (!/^\d{6}$/.test(number)) throw new ValidateNumberOcrError();
+  if (!new RegExp(`^\\d{${digitCount}}$`).test(number))
+    throw new ValidateNumberOcrError();
   return {
     number,
     model: VALIDATE_NUMBER_MODEL,

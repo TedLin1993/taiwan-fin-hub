@@ -19,6 +19,7 @@ import {
   syncEinvoice,
   syncEsun,
   syncSinopac,
+  syncTaishin,
   syncTdcc,
   SYNC_LOCK_LEASE_MS,
 } from "./service";
@@ -211,5 +212,6 @@ async function runDueSyncJob(env: Env, job: SyncJobRow<ConnectorId>) {
   if (job.connector_id === "esun") return syncEsun(env, "scheduled");
   if (job.connector_id === "cathaybk") return syncCathaybk(env, "scheduled");
   if (job.connector_id === "sinopac") return syncSinopac(env, "scheduled");
+  if (job.connector_id === "taishin") return syncTaishin(env, "scheduled");
   throw new NeedsUserActionError("Scheduled connector is not supported.");
 }

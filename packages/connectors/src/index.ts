@@ -23,6 +23,10 @@ export { sinopacConfigSchema, parseSinopacConfig } from "./sinopac";
 export type { SinopacConfig } from "./sinopac";
 import { sinopacConfigSchema } from "./sinopac";
 
+export { parseTaishinConfig, parseTaishinCreditCardData, taishinConfigSchema } from "./taishin";
+export type { TaishinConfig, TaishinCreditCardData, TaishinCreditCardPayloads } from "./taishin";
+import { taishinConfigSchema } from "./taishin";
+
 const invoiceRecordSchema = z.object({
   sourceId: z.string().min(1),
   invoiceNumber: z.string().optional(),
@@ -376,6 +380,10 @@ export function parseConnectorConfig(connectorId: string, config: unknown) {
 
   if (connectorId === "sinopac") {
     return sinopacConfigSchema.parse(config);
+  }
+
+  if (connectorId === "taishin") {
+    return taishinConfigSchema.parse(config);
   }
 
   throw new Error("Unsupported connector id.");

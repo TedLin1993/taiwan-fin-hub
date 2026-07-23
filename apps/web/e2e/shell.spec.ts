@@ -3,6 +3,10 @@ import { expect, test } from "@playwright/test";
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (!path.startsWith("/api/")) {
+      await route.continue();
+      return;
+    }
     let body: unknown;
     if (path === "/api/runtime") body = { demoMode: true };
     else if (path === "/api/summary")
