@@ -1,5 +1,5 @@
 import { createECDH } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -40,6 +40,42 @@ function optionArguments(argumentsToInspect, optionNames) {
   return selected;
 }
 
+function removeSingleOption(argumentsToInspect, optionName) {
+  const remaining = [];
+  const values = [];
+
+  for (let index = 0; index < argumentsToInspect.length; index += 1) {
+    const argument = argumentsToInspect[index];
+
+    if (argument === optionName) {
+      const value = argumentsToInspect[index + 1];
+      if (!value || value.startsWith("-")) {
+        throw new Error(`${optionName} requires a file path.`);
+      }
+      values.push(value);
+      index += 1;
+      continue;
+    }
+
+    if (argument.startsWith(`${optionName}=`)) {
+      const value = argument.slice(optionName.length + 1);
+      if (!value) throw new Error(`${optionName} requires a file path.`);
+      values.push(value);
+      continue;
+    }
+
+    remaining.push(argument);
+  }
+
+  if (values.length > 1) {
+    throw new Error(
+      `${optionName} can only be provided once; pass one file containing all deployment secrets.`,
+    );
+  }
+
+  return { remaining, value: values[0] ?? null };
+}
+
 function runWrangler(argumentsToRun, options = {}) {
   const { captureOutput = false } = options;
   const child = spawn(process.execPath, [wranglerScript, ...argumentsToRun], {
@@ -47,7 +83,8 @@ function runWrangler(argumentsToRun, options = {}) {
     env: {
       ...process.env,
       XDG_CONFIG_HOME:
-        process.env.XDG_CONFIG_HOME ?? join(invocationDirectory, ".wrangler-config"),
+        process.env.XDG_CONFIG_HOME ??
+        join(invocationDirectory, ".wrangler-config"),
     },
     stdio: captureOutput ? ["ignore", "pipe", "pipe"] : "inherit",
     windowsHide: true,
@@ -117,6 +154,7 @@ async function existingSecretNames() {
     "-c",
     "--env",
     "-e",
+    "--env-file",
     "--name",
   ]);
   const result = await runWrangler(
@@ -150,11 +188,76 @@ async function existingSecretNames() {
   return new Set(secrets.map((secret) => secret?.name).filter(Boolean));
 }
 
+function parseJsonSecrets(content, filePath) {
+  let secrets;
+  try {
+    secrets = JSON.parse(content);
+  } catch {
+    return null;
+  }
+
+  if (!secrets || typeof secrets !== "object" || Array.isArray(secrets)) {
+    throw new Error(
+      `Secrets file ${filePath} must contain a JSON object or dotenv values.`,
+    );
+  }
+
+  for (const [key, value] of Object.entries(secrets)) {
+    if (value !== null && typeof value !== "string") {
+      throw new Error(
+        `Secret ${key} in ${filePath} must be a string or null value.`,
+      );
+    }
+  }
+
+  return secrets;
+}
+
+async function createInitialSecretsFile(
+  temporaryDirectory,
+  sourceFile,
+  vapidKeys,
+) {
+  if (!sourceFile) {
+    const secretsFile = join(temporaryDirectory, "secrets.json");
+    await writeFile(secretsFile, `${JSON.stringify(vapidKeys)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    return secretsFile;
+  }
+
+  const sourcePath = resolve(invocationDirectory, sourceFile);
+  const sourceContent = await readFile(sourcePath, "utf8");
+  const parsedJson = parseJsonSecrets(sourceContent, sourceFile);
+  const secretsFile = join(
+    temporaryDirectory,
+    parsedJson ? "secrets.json" : "secrets.env",
+  );
+
+  if (parsedJson) {
+    await writeFile(
+      secretsFile,
+      `${JSON.stringify({ ...parsedJson, ...vapidKeys })}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+    return secretsFile;
+  }
+
+  await writeFile(
+    secretsFile,
+    `${sourceContent.trimEnd()}\nVAPID_PUBLIC_KEY=${vapidKeys.publicKey}\nVAPID_PRIVATE_KEY=${vapidKeys.privateKey}\n`,
+    { encoding: "utf8", mode: 0o600 },
+  );
+  return secretsFile;
+}
+
 async function deploy() {
   const secrets = await existingSecretNames();
   const hasPublicKey = secrets?.has("VAPID_PUBLIC_KEY") ?? false;
   const hasPrivateKey = secrets?.has("VAPID_PRIVATE_KEY") ?? false;
-  const needsInitialKeys = secrets === null || (!hasPublicKey && !hasPrivateKey);
+  const needsInitialKeys =
+    secrets === null || (!hasPublicKey && !hasPrivateKey);
 
   if (hasPublicKey !== hasPrivateKey && !needsInitialKeys) {
     throw new Error(
@@ -168,20 +271,21 @@ async function deploy() {
     return;
   }
 
+  const { remaining: deployArgumentsWithoutSecretsFile, value: sourceFile } =
+    removeSingleOption(deployArguments, "--secrets-file");
   const vapidKeys = generateVapidKeys();
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "taiwan-fin-hub-vapid-"),
   );
-  const secretsFile = join(temporaryDirectory, "secrets.json");
 
   try {
-    await writeFile(
-      secretsFile,
-      `${JSON.stringify({
+    const secretsFile = await createInitialSecretsFile(
+      temporaryDirectory,
+      sourceFile,
+      {
         VAPID_PUBLIC_KEY: vapidKeys.publicKey,
         VAPID_PRIVATE_KEY: vapidKeys.privateKey,
-      })}\n`,
-      { encoding: "utf8", mode: 0o600 },
+      },
     );
     console.log(
       "[deploy] No VAPID key pair found; generating one for this Worker.",
@@ -189,7 +293,7 @@ async function deploy() {
 
     const result = await runWrangler([
       "deploy",
-      ...deployArguments,
+      ...deployArgumentsWithoutSecretsFile,
       "--secrets-file",
       secretsFile,
     ]);
