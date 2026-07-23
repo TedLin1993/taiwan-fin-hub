@@ -119,7 +119,7 @@ export function parseTaishinCreditCardData(
       {
         accountId: ACCOUNT_SOURCE_ID,
         sourceId: `${ACCOUNT_SOURCE_ID}:${asOfAt.slice(0, 10)}`,
-        balance: -statementAmount,
+        balance: remainingDue > 0 ? -remainingDue : 0,
         availableBalance: availableCredit,
         statementBalance: statementAmount,
         paymentDueDate,

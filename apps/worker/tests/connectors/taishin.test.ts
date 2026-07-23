@@ -88,6 +88,40 @@ describe("Taishin credit-card parser", () => {
     });
   });
 
+  it("uses the remaining amount as the current card liability", () => {
+    const partiallyPaidBill = bill();
+    Object.assign(partiallyPaidBill.value, {
+      showCbalance: "10,060",
+      showCdue: "2,060",
+      showPayment: "8,000",
+    });
+    const partial = parseTaishinCreditCardData({
+      summary,
+      bills: [partiallyPaidBill],
+    });
+
+    expect(partial.bankBalanceSnapshots[0]).toMatchObject({
+      balance: -2060,
+      statementBalance: 10060,
+      noPaymentNeeded: false,
+    });
+
+    Object.assign(partiallyPaidBill.value, {
+      showCdue: "0",
+      showPayment: "10,060",
+    });
+    const paid = parseTaishinCreditCardData({
+      summary,
+      bills: [partiallyPaidBill],
+    });
+
+    expect(paid.bankBalanceSnapshots[0]).toMatchObject({
+      balance: 0,
+      statementBalance: 10060,
+      noPaymentNeeded: true,
+    });
+  });
+
   it("upgrades matched pending occurrences to posted without using merchant text", () => {
     const result = parseTaishinCreditCardData({
       summary,

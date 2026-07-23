@@ -253,7 +253,8 @@
       qc.invalidateQueries({ queryKey: queryKeys.summary });
       qc.invalidateQueries({ queryKey: queryKeys.bank });
       qc.invalidateQueries({ queryKey: queryKeys.bills });
-      if (job && !job.enabled) $updateJob.mutate({ enabled: true });
+      if (connectorId === "sinopac" && job && !job.enabled)
+        $updateJob.mutate({ enabled: true });
     },
     onError: (e) => (error = e instanceof Error ? e.message : "驗證或同步失敗"),
   });
