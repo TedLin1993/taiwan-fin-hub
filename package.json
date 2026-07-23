@@ -17,7 +17,7 @@
     "test:e2e": "npm run test:e2e -w @taiwan-fin-hub/web",
     "verify:web": "npm run typecheck -w @taiwan-fin-hub/web && npm run test:unit -w @taiwan-fin-hub/web && npm run test:e2e -w @taiwan-fin-hub/web && npm run build -w @taiwan-fin-hub/web",
     "dev": "npm run dev -w @taiwan-fin-hub/worker",
-    "deploy": "npm run db:migrate:remote && XDG_CONFIG_HOME=.wrangler-config wrangler deploy",
+    "deploy": "npm run db:migrate:remote && XDG_CONFIG_HOME=.wrangler-config node scripts/deploy-with-vapid.mjs",
     "db:migrate:local": "XDG_CONFIG_HOME=.wrangler-config wrangler d1 migrations apply DB --local",
     "db:migrate:remote": "XDG_CONFIG_HOME=.wrangler-config wrangler d1 migrations apply DB --remote",
     "db:schema:docs": "node scripts/generate-database-schema.mjs"
@@ -47,15 +47,6 @@
       },
       "AI": {
         "description": "Cloudflare Workers AI binding，供 Gemma 4 辨識永豐登入驗證碼。"
-      },
-      "VAPID_PUBLIC_KEY": {
-        "description": "Web Push 的 VAPID public key；可與 private key 一起用 wrangler secret put 設定。"
-      },
-      "VAPID_PRIVATE_KEY": {
-        "description": "Web Push 的 VAPID private key；請使用 wrangler secret put 設定並保持機密。"
-      },
-      "VAPID_SUBJECT": {
-        "description": "Web Push VAPID 聯絡資訊，可省略；省略時使用 mailto:admin@example.com。"
       }
     }
   },

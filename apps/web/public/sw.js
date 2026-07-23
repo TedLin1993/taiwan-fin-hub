@@ -19,6 +19,8 @@ self.addEventListener("push", (event) => {
       icon: "/icon-192x192.png",
       badge: "/icon-192x192.png",
       tag: data.tag,
+      // iOS PWA notifications remain visible, but do not play a sound or vibrate.
+      silent: true,
       data: { url: data.url },
     }),
   );
