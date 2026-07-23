@@ -19,7 +19,9 @@ import {
   upsertPushSubscription,
 } from "./repository";
 import {
+  scheduledSyncSummaryPayload,
   shouldNotify,
+  summaryStatus,
   syncNotificationPayload,
   type PushNotificationPayload,
   type SyncNotificationEvent,
@@ -150,6 +152,32 @@ export async function safelySendSyncNotification(
         event: "push_notification_failed",
         connectorId: event.connectorId,
         status: event.status,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+}
+
+export async function safelySendScheduledSyncSummary(
+  env: Env,
+  events: SyncNotificationEvent[],
+) {
+  if (events.length === 0) return;
+  const status = summaryStatus(events);
+  try {
+    const preferences = await getNotificationPreferences(env.DB);
+    if (!events.some((event) => shouldNotify(preferences, event.status))) return;
+    if (!isPushConfigured(env)) {
+      console.warn("[notifications] skipped: VAPID keys are not configured");
+      return;
+    }
+    await deliverPushPayload(env, scheduledSyncSummaryPayload(events));
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "push_notification_failed",
+        scheduleMode: "inherit",
+        status,
         message: error instanceof Error ? error.message : String(error),
       }),
     );

@@ -297,6 +297,29 @@
         "consecutive_failures": "連續發送失敗次數，用於診斷暫時性問題。"
       }
     },
+    "scheduled_sync_batch_results": {
+      "description": "預設排程同步批次中各工作的完成結果。",
+      "notes": "每個 batch_id 與 job_id 只保存一筆結果；scheduler 以結果數判斷整批是否完成。",
+      "columns": {
+        "batch_id": "所屬的預設排程同步批次。",
+        "job_id": "已完成的同步工作識別碼。",
+        "connector_id": "此次結果所屬的連接器。",
+        "status": "工作結果，例如 success、failed 或 needs_user_action。",
+        "completed_at": "工作結果寫入批次的時間。"
+      }
+    },
+    "scheduled_sync_batches": {
+      "description": "追蹤預設排程中需彙總推播的一輪同步工作。",
+      "notes": "當結果數達 expected_jobs 時只允許一個 scheduler claim 推播，避免跨 Cron tick 重複通知。",
+      "columns": {
+        "id": "批次識別碼，由 default 與預定執行時間組成。",
+        "scheduled_for": "此輪預設排程原定執行時間。",
+        "expected_jobs": "此輪預期完成的同步工作數。",
+        "notification_claimed_at": "彙總推播被 scheduler 取得發送權的時間。",
+        "created_at": "批次建立時間。",
+        "updated_at": "批次最後更新時間。"
+      }
+    },
     "sync_jobs": {
       "description": "每個連接器與同步範圍的排程、鎖定狀態與最近執行結果。",
       "notes": "Worker Cron 會依 next_run_at 找到工作並取得 lease；locked_* 欄位用來避免同一工作重複執行。",

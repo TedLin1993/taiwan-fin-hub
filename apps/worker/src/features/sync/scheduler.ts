@@ -22,7 +22,16 @@ import {
   syncTdcc,
   SYNC_LOCK_LEASE_MS,
 } from "./service";
-import { safelySendSyncNotification } from "../notifications/service";
+import {
+  safelySendScheduledSyncSummary,
+  safelySendSyncNotification,
+} from "../notifications/service";
+import type { SyncNotificationEvent } from "../notifications/payload";
+import {
+  claimCompletedDefaultScheduleBatch,
+  ensureDefaultScheduleBatch,
+  recordDefaultScheduleBatchResult,
+} from "./notification-batch-repository";
 
 const MAX_SCHEDULED_JOBS_PER_TICK = 3;
 
@@ -33,7 +42,25 @@ export async function runSchedulerTick(
   for (let index = 0; index < MAX_SCHEDULED_JOBS_PER_TICK; index += 1) {
     const due = await findNextDueSyncJob<ConnectorId>(env.DB);
     if (!due) return;
-    await runScheduledJob(env, controller, due);
+    const batchId =
+      due.schedule_mode === "inherit"
+        ? await ensureDefaultScheduleBatch(env.DB, due)
+        : null;
+    const notification = await runScheduledJob(env, controller, due);
+    if (!notification) continue;
+
+    if (!batchId) {
+      await safelySendSyncNotification(env, notification);
+      continue;
+    }
+
+    await recordDefaultScheduleBatchResult(env.DB, {
+      batchId,
+      jobId: due.id,
+      notification,
+    });
+    const summary = await claimCompletedDefaultScheduleBatch(env.DB, batchId);
+    if (summary) await safelySendScheduledSyncSummary(env, summary);
   }
 }
 
@@ -55,8 +82,7 @@ async function runScheduledJob(
 
   const stopHeartbeat = startSyncLockHeartbeat(env.DB, lockRowId, runId);
   const startedAt = Date.now();
-  let notification:
-    { connectorId: ConnectorId; status: SyncStatus } | undefined;
+  let notification: SyncNotificationEvent | undefined;
   try {
     const outcome = await runDueSyncJob(env, due);
     await completeSyncJob(env.DB, due);
@@ -107,9 +133,7 @@ async function runScheduledJob(
     await releaseSyncJobLock(env.DB, lockRowId, runId);
   }
 
-  if (notification) {
-    await safelySendSyncNotification(env, notification);
-  }
+  return notification;
 }
 
 async function runDueSyncJob(env: Env, job: SyncJobRow<ConnectorId>) {
