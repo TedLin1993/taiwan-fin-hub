@@ -33,7 +33,7 @@ import {
   recordDefaultScheduleBatchResult,
 } from "./notification-batch-repository";
 
-const MAX_SCHEDULED_JOBS_PER_TICK = 3;
+const MAX_SCHEDULED_JOBS_PER_TICK = 1;
 
 export async function runSchedulerTick(
   env: Env,
