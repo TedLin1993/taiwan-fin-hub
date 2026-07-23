@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS scheduled_sync_batch_results (
   status TEXT CHECK (status IN ('success', 'failed', 'needs_user_action')),
   state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'completed', 'skipped')),
   completed_at TEXT,
+  scheduled_for TEXT,
   PRIMARY KEY (batch_id, job_id),
   FOREIGN KEY (batch_id) REFERENCES scheduled_sync_batches(id) ON DELETE CASCADE
 );

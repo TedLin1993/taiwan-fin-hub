@@ -15,15 +15,12 @@ type BatchRow = {
 
 type BatchMemberRow = {
   job_id: string;
-  connector_id: ConnectorId;
-  status: SyncNotificationStatus | null;
-  state: "pending" | "completed" | "skipped";
-  completed_at: string | null;
+  scheduled_for: string | null;
   enabled: number | null;
   schedule_mode: "inherit" | "custom" | null;
+  next_run_at: string | null;
   last_run_at: string | null;
   last_status: SyncNotificationStatus | null;
-  updated_at: string | null;
   locked_until: string | null;
 };
 
@@ -44,44 +41,54 @@ export async function ensureDefaultScheduleBatch(
 
   const jobs = await db
     .prepare(
-      `SELECT id, connector_id
+      `SELECT id, connector_id, next_run_at
        FROM sync_jobs
        WHERE enabled = 1
          AND schedule_mode = 'inherit'
          AND (last_status IS NULL OR last_status != 'needs_user_action')`,
     )
-    .all<{ id: string; connector_id: ConnectorId }>();
+    .all<{ id: string; connector_id: ConnectorId; next_run_at: string }>();
+  const members = jobs.results.some((member) => member.id === job.id)
+    ? jobs.results
+    : [
+        ...jobs.results,
+        {
+          id: job.id,
+          connector_id: job.connector_id,
+          next_run_at: job.next_run_at,
+        },
+      ];
   const batchId = `default:${crypto.randomUUID()}`;
   const now = new Date().toISOString();
-  const inserted = await db
-    .prepare(
-      `INSERT OR IGNORE INTO scheduled_sync_batches (
-         id, schedule_key, scheduled_for, expected_jobs,
-         notification_claimed_at, created_at, updated_at
-       ) VALUES (?, 'default', ?, ?, NULL, ?, ?)`,
-    )
-    .bind(batchId, job.next_run_at, Math.max(jobs.results.length, 1), now, now)
-    .run();
-
-  if (inserted.meta.changes !== 1) {
+  try {
+    await db.batch([
+      db
+        .prepare(
+          `INSERT INTO scheduled_sync_batches (
+             id, schedule_key, scheduled_for, expected_jobs,
+             notification_claimed_at, created_at, updated_at
+           ) VALUES (?, 'default', ?, ?, NULL, ?, ?)`,
+        )
+        .bind(batchId, job.next_run_at, members.length, now, now),
+      ...members.map((member) =>
+        db
+          .prepare(
+            `INSERT INTO scheduled_sync_batch_results (
+               batch_id, job_id, connector_id, status, state, completed_at, scheduled_for
+             ) VALUES (?, ?, ?, NULL, 'pending', NULL, ?)`,
+          )
+          .bind(batchId, member.id, member.connector_id, member.next_run_at),
+      ),
+    ]);
+    return batchId;
+  } catch (error) {
+    // Another scheduler may have won the unique open-batch race. D1 rolls the
+    // failed batch back, so continue with the winner if one now exists.
     const existing = await findOpenDefaultScheduleBatch(db);
-    if (!existing) throw new Error("Unable to create default sync batch.");
+    if (!existing) throw error;
     await ensureBatchMember(db, existing.id, job);
     return existing.id;
   }
-
-  await db.batch(
-    jobs.results.map((member) =>
-      db
-        .prepare(
-          `INSERT OR IGNORE INTO scheduled_sync_batch_results (
-             batch_id, job_id, connector_id, status, state, completed_at
-           ) VALUES (?, ?, ?, NULL, 'pending', NULL)`,
-        )
-        .bind(batchId, member.id, member.connector_id),
-    ),
-  );
-  return batchId;
 }
 
 export async function recordDefaultScheduleBatchResult(
@@ -137,24 +144,25 @@ export async function claimCompletedDefaultScheduleBatch(
     .first<BatchRow>();
   if (!batch || batch.notification_claimed_at) return null;
 
-  const pending = await db
-    .prepare(
-      `SELECT COUNT(*) AS count
-       FROM scheduled_sync_batch_results
-       WHERE batch_id = ? AND state = 'pending'`,
-    )
-    .bind(batchId)
-    .first<{ count: number }>();
-  if (Number(pending?.count ?? 0) > 0) return null;
-
   const now = new Date().toISOString();
   const claim = await db
     .prepare(
       `UPDATE scheduled_sync_batches
        SET notification_claimed_at = ?, updated_at = ?
-       WHERE id = ? AND notification_claimed_at IS NULL`,
+       WHERE id = ?
+         AND notification_claimed_at IS NULL
+         AND (
+           SELECT COUNT(*)
+           FROM scheduled_sync_batch_results
+           WHERE batch_id = ?
+         ) = expected_jobs
+         AND NOT EXISTS (
+           SELECT 1
+           FROM scheduled_sync_batch_results
+           WHERE batch_id = ? AND state = 'pending'
+         )`,
     )
-    .bind(now, now, batchId)
+    .bind(now, now, batchId, batchId, batchId)
     .run();
   if (claim.meta.changes !== 1) return null;
 
@@ -191,23 +199,36 @@ async function ensureBatchMember(
   batchId: string,
   job: SyncJobRow<ConnectorId>,
 ) {
-  const inserted = await db
-    .prepare(
-      `INSERT OR IGNORE INTO scheduled_sync_batch_results (
-         batch_id, job_id, connector_id, status, state, completed_at
-       ) VALUES (?, ?, ?, NULL, 'pending', NULL)`,
-    )
-    .bind(batchId, job.id, job.connector_id)
-    .run();
-  if (inserted.meta.changes !== 1) return;
-  await db
-    .prepare(
-      `UPDATE scheduled_sync_batches
-       SET expected_jobs = expected_jobs + 1, updated_at = ?
-       WHERE id = ?`,
-    )
-    .bind(new Date().toISOString(), batchId)
-    .run();
+  const now = new Date().toISOString();
+  await db.batch([
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO scheduled_sync_batch_results (
+           batch_id, job_id, connector_id, status, state, completed_at, scheduled_for
+         )
+         SELECT ?, ?, ?, NULL, 'pending', NULL, ?
+         FROM scheduled_sync_batches
+         WHERE id = ? AND notification_claimed_at IS NULL`,
+      )
+      .bind(
+        batchId,
+        job.id,
+        job.connector_id,
+        job.next_run_at,
+        batchId,
+      ),
+    db
+      .prepare(
+        `UPDATE scheduled_sync_batches
+         SET expected_jobs = MAX(
+               expected_jobs,
+               (SELECT COUNT(*) FROM scheduled_sync_batch_results WHERE batch_id = ?)
+             ),
+             updated_at = ?
+         WHERE id = ? AND notification_claimed_at IS NULL`,
+      )
+      .bind(batchId, now, batchId),
+  ]);
 }
 
 async function reconcileDefaultScheduleBatchMembers(
@@ -218,15 +239,12 @@ async function reconcileDefaultScheduleBatchMembers(
     .prepare(
       `SELECT
          r.job_id,
-         r.connector_id,
-         r.status,
-         r.state,
-         r.completed_at,
+         r.scheduled_for,
          j.enabled,
          j.schedule_mode,
+         j.next_run_at,
          j.last_run_at,
          j.last_status,
-         j.updated_at,
          j.locked_until
        FROM scheduled_sync_batch_results r
        LEFT JOIN sync_jobs j ON j.id = r.job_id
@@ -251,8 +269,9 @@ async function reconcileDefaultScheduleBatchMembers(
       row.last_run_at > batch.created_at &&
       row.last_status !== null;
     const scheduleChangedWhilePending =
-      row.updated_at !== null &&
-      row.updated_at > batch.created_at &&
+      row.scheduled_for !== null &&
+      row.next_run_at !== null &&
+      row.next_run_at !== row.scheduled_for &&
       (row.locked_until === null ||
         new Date(row.locked_until).getTime() <= Date.now());
 
@@ -260,7 +279,7 @@ async function reconcileDefaultScheduleBatchMembers(
       continue;
     }
 
-    const state = jobRemoved || scheduleChangedWhilePending ? "skipped" : "completed";
+    const state = hasCompletedRun ? "completed" : "skipped";
     await db
       .prepare(
         `UPDATE scheduled_sync_batch_results

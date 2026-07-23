@@ -306,7 +306,8 @@
         "connector_id": "此次結果所屬的連接器。",
         "status": "工作結果；pending 或 skipped 成員為 NULL。",
         "state": "批次成員狀態，例如 pending、completed 或 skipped。",
-        "completed_at": "工作結果或成員略過狀態寫入批次的時間。"
+        "completed_at": "工作結果或成員略過狀態寫入批次的時間。",
+        "scheduled_for": "建立批次成員時，該同步工作的預定執行時間；用於辨識排程是否在執行前被調整。"
       }
     },
     "scheduled_sync_batches": {
