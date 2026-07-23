@@ -7,13 +7,18 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   claimCompletedDefaultScheduleBatch,
   ensureDefaultScheduleBatch,
+  findNextDefaultScheduleBatchJob,
+  findOpenDefaultScheduleBatchId,
   recordDefaultScheduleBatchResult,
 } from "../../../src/features/sync/notification-batch-repository";
 
 class SqliteStatement {
   private values: unknown[] = [];
 
-  constructor(private readonly database: DatabaseSync, private readonly sql: string) {}
+  constructor(
+    private readonly database: DatabaseSync,
+    private readonly sql: string,
+  ) {}
 
   bind(...values: unknown[]) {
     this.values = values;
@@ -21,19 +26,31 @@ class SqliteStatement {
   }
 
   async run() {
-    const result = this.database.prepare(this.sql).run(...(this.values as never[]));
-    return { success: true, meta: { changes: Number(result.changes) }, results: [] };
+    const result = this.database
+      .prepare(this.sql)
+      .run(...(this.values as never[]));
+    return {
+      success: true,
+      meta: { changes: Number(result.changes) },
+      results: [],
+    };
   }
 
   async first<T>() {
-    return (this.database.prepare(this.sql).get(...(this.values as never[])) as T) ?? null;
+    return (
+      (this.database
+        .prepare(this.sql)
+        .get(...(this.values as never[])) as T) ?? null
+    );
   }
 
   async all<T>() {
     return {
       success: true,
       meta: {},
-      results: this.database.prepare(this.sql).all(...(this.values as never[])) as T[],
+      results: this.database
+        .prepare(this.sql)
+        .all(...(this.values as never[])) as T[],
     };
   }
 }
@@ -61,9 +78,7 @@ function createDb(options: { failBatchAt?: number } = {}) {
           if (options.failBatchAt === index) {
             throw new Error("simulated D1 batch failure");
           }
-          results.push(
-            await (statement as unknown as SqliteStatement).run(),
-          );
+          results.push(await (statement as unknown as SqliteStatement).run());
         }
         database.exec("COMMIT");
         return results;
@@ -76,28 +91,62 @@ function createDb(options: { failBatchAt?: number } = {}) {
   return { database, db };
 }
 
+function enableInheritedJobs(
+  database: DatabaseSync,
+  nextRunAt = "2026-07-23T22:00:00.000Z",
+) {
+  database
+    .prepare(
+      `UPDATE sync_jobs
+       SET enabled = 1,
+           schedule_mode = 'inherit',
+           next_run_at = ?,
+           last_status = NULL,
+           locked_until = NULL,
+           locked_by = NULL,
+           lock_trigger = NULL`,
+    )
+    .run(nextRunAt);
+}
+
+function listJobs(database: DatabaseSync) {
+  return database
+    .prepare("SELECT * FROM sync_jobs ORDER BY id")
+    .all() as unknown as SyncJobRow<ConnectorId>[];
+}
+
+async function createBatch(db: D1Database) {
+  const batchId = await ensureDefaultScheduleBatch(db);
+  if (!batchId) throw new Error("Expected a default schedule batch.");
+  return batchId;
+}
+
+async function completeMember(
+  db: D1Database,
+  batchId: string,
+  job: SyncJobRow<ConnectorId>,
+  status: "success" | "failed" | "needs_user_action" = "success",
+) {
+  return recordDefaultScheduleBatchResult(db, {
+    batchId,
+    jobId: job.id,
+    notification: { connectorId: job.connector_id, status },
+  });
+}
+
 const databases: DatabaseSync[] = [];
 
 afterEach(() => {
   for (const database of databases.splice(0)) database.close();
 });
 
-describe("default schedule notification batches", () => {
-  it("rolls back the header when member initialization fails", async () => {
+describe("default schedule notification rounds", () => {
+  it("creates the round header and fixed membership atomically", async () => {
     const { database, db } = createDb({ failBatchAt: 1 });
     databases.push(database);
-    const scheduledFor = "2026-07-23T22:00:00.000Z";
-    database
-      .prepare(
-        `UPDATE sync_jobs
-         SET enabled = 1, schedule_mode = 'inherit', next_run_at = ?, last_status = NULL`,
-      )
-      .run(scheduledFor);
-    const job = database
-      .prepare("SELECT * FROM sync_jobs ORDER BY id LIMIT 1")
-      .get() as unknown as SyncJobRow<ConnectorId>;
+    enableInheritedJobs(database);
 
-    await expect(ensureDefaultScheduleBatch(db, job)).rejects.toThrow(
+    await expect(ensureDefaultScheduleBatch(db)).rejects.toThrow(
       "simulated D1 batch failure",
     );
     expect(
@@ -112,30 +161,22 @@ describe("default schedule notification batches", () => {
     ).toEqual({ count: 0 });
   });
 
-  it("claims one summary only after every inherited job has a result", async () => {
+  it("claims one summary only after every member reaches a terminal state", async () => {
     const { database, db } = createDb();
     databases.push(database);
-    const scheduledFor = "2026-07-23T22:00:00.000Z";
-    database
-      .prepare(
-        `UPDATE sync_jobs
-         SET enabled = 1, schedule_mode = 'inherit', next_run_at = ?, last_status = NULL`,
-      )
-      .run(scheduledFor);
-    const jobs = database
-      .prepare("SELECT * FROM sync_jobs ORDER BY id")
-      .all() as unknown as SyncJobRow<ConnectorId>[];
-    const batchId = await ensureDefaultScheduleBatch(db, jobs[0]!);
+    enableInheritedJobs(database);
+    const jobs = listJobs(database);
+    const batchId = await createBatch(db);
 
     for (const [index, job] of jobs.entries()) {
-      await recordDefaultScheduleBatchResult(db, {
-        batchId,
-        jobId: job.id,
-        notification: {
-          connectorId: job.connector_id,
-          status: index === 0 ? "failed" : "success",
-        },
-      });
+      await expect(
+        completeMember(
+          db,
+          batchId,
+          job,
+          index === 0 ? "failed" : "success",
+        ),
+      ).resolves.toBe(true);
       if (index < jobs.length - 1) {
         await expect(
           claimCompletedDefaultScheduleBatch(db, batchId),
@@ -154,204 +195,158 @@ describe("default schedule notification batches", () => {
     ).resolves.toBeNull();
   });
 
-  it("keeps staggered inherited jobs in the same open batch", async () => {
+  it("does not select a completed member again while the round is open", async () => {
     const { database, db } = createDb();
     databases.push(database);
-    const firstRun = "2026-07-23T22:00:00.000Z";
-    const secondRun = "2026-07-23T22:10:00.000Z";
-    database
-      .prepare(
-        `UPDATE sync_jobs
-         SET enabled = 1, schedule_mode = 'inherit', next_run_at = ?, last_status = NULL`,
-      )
-      .run(firstRun);
-    const jobs = database
-      .prepare("SELECT * FROM sync_jobs ORDER BY id")
-      .all() as unknown as SyncJobRow<ConnectorId>[];
+    enableInheritedJobs(database);
+    const jobs = listJobs(database);
+    const batchId = await createBatch(db);
+    const first = await findNextDefaultScheduleBatchJob(db, batchId);
+    expect(first).not.toBeNull();
+    await completeMember(db, batchId, first!);
+
     database
       .prepare("UPDATE sync_jobs SET next_run_at = ? WHERE id = ?")
-      .run(secondRun, jobs[1]!.id);
+      .run("2020-01-01T00:00:00.000Z", first!.id);
+    const next = await findNextDefaultScheduleBatchJob(db, batchId);
 
-    const firstBatch = await ensureDefaultScheduleBatch(db, jobs[0]!);
-    const secondBatch = await ensureDefaultScheduleBatch(db, {
-      ...jobs[1]!,
-      next_run_at: secondRun,
-    });
-
-    expect(secondBatch).toBe(firstBatch);
+    expect(next?.id).not.toBe(first!.id);
+    expect(jobs.map((job) => job.id)).toContain(next?.id);
   });
 
-  it("reconciles a member disabled before its scheduled tick", async () => {
+  it("keeps the round membership fixed when another job becomes inherited", async () => {
     const { database, db } = createDb();
     databases.push(database);
-    const scheduledFor = "2026-07-23T22:00:00.000Z";
+    enableInheritedJobs(database);
+    const jobs = listJobs(database);
+    const addedLater = jobs.at(-1)!;
+    database
+      .prepare("UPDATE sync_jobs SET enabled = 0 WHERE id = ?")
+      .run(addedLater.id);
+    const batchId = await createBatch(db);
+    const originalCount = database
+      .prepare(
+        "SELECT COUNT(*) AS count FROM scheduled_sync_batch_results WHERE batch_id = ?",
+      )
+      .get(batchId) as { count: number };
+
+    database
+      .prepare("UPDATE sync_jobs SET enabled = 1 WHERE id = ?")
+      .run(addedLater.id);
+    await expect(ensureDefaultScheduleBatch(db)).resolves.toBe(batchId);
+    expect(
+      database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM scheduled_sync_batch_results WHERE batch_id = ?",
+        )
+        .get(batchId),
+    ).toEqual(originalCount);
+  });
+
+  it("still runs a pending round member after a manual sync moves its schedule", async () => {
+    const { database, db } = createDb();
+    databases.push(database);
+    enableInheritedJobs(database);
+    const jobs = listJobs(database);
+    const pending = jobs[0]!;
+    const batchId = await createBatch(db);
+
+    for (const job of jobs.slice(1)) {
+      await completeMember(db, batchId, job);
+    }
     database
       .prepare(
         `UPDATE sync_jobs
-         SET enabled = 1, schedule_mode = 'inherit', next_run_at = ?, last_status = NULL`,
+         SET last_status = 'success',
+             last_run_at = ?,
+             next_run_at = ?
+         WHERE id = ?`,
       )
-      .run(scheduledFor);
-    const jobs = database
-      .prepare("SELECT * FROM sync_jobs ORDER BY id")
-      .all() as unknown as SyncJobRow<ConnectorId>[];
-    const batchId = await ensureDefaultScheduleBatch(db, jobs[0]!);
+      .run(
+        "2026-07-23T22:05:00.000Z",
+        "2026-07-24T22:05:00.000Z",
+        pending.id,
+      );
+
+    await expect(
+      claimCompletedDefaultScheduleBatch(db, batchId),
+    ).resolves.toBeNull();
+    await expect(
+      findNextDefaultScheduleBatchJob(db, batchId),
+    ).resolves.toMatchObject({ id: pending.id });
+  });
+
+  it("skips a member disabled before its turn", async () => {
+    const { database, db } = createDb();
+    databases.push(database);
+    enableInheritedJobs(database);
+    const jobs = listJobs(database);
+    const skipped = jobs[0]!;
+    const batchId = await createBatch(db);
     database
       .prepare("UPDATE sync_jobs SET enabled = 0 WHERE id = ?")
-      .run(jobs[1]!.id);
+      .run(skipped.id);
 
-    for (const [index, job] of jobs.entries()) {
-      if (index === 1) continue;
-      await recordDefaultScheduleBatchResult(db, {
-        batchId,
-        jobId: job.id,
-        notification: { connectorId: job.connector_id, status: "success" },
-      });
+    for (const job of jobs.slice(1)) {
+      await completeMember(db, batchId, job);
     }
 
     const summary = await claimCompletedDefaultScheduleBatch(db, batchId);
     expect(summary).toHaveLength(jobs.length - 1);
-    expect(summary?.every((event) => event.status === "success")).toBe(true);
-  });
-
-  it("does not claim when the persisted membership is incomplete", async () => {
-    const { database, db } = createDb();
-    databases.push(database);
-    const scheduledFor = "2026-07-23T22:00:00.000Z";
-    database
-      .prepare(
-        `UPDATE sync_jobs
-         SET enabled = 1, schedule_mode = 'inherit', next_run_at = ?, last_status = NULL`,
-      )
-      .run(scheduledFor);
-    const jobs = database
-      .prepare("SELECT * FROM sync_jobs ORDER BY id")
-      .all() as unknown as SyncJobRow<ConnectorId>[];
-    const batchId = await ensureDefaultScheduleBatch(db, jobs[0]!);
-
-    for (const job of jobs) {
-      await recordDefaultScheduleBatchResult(db, {
-        batchId,
-        jobId: job.id,
-        notification: { connectorId: job.connector_id, status: "success" },
-      });
-    }
-    database
-      .prepare(
-        "DELETE FROM scheduled_sync_batch_results WHERE batch_id = ? AND job_id = ?",
-      )
-      .run(batchId, jobs[0]!.id);
-
-    await expect(
-      claimCompletedDefaultScheduleBatch(db, batchId),
-    ).resolves.toBeNull();
-  });
-
-  it("keeps a recovered completed failure in the summary", async () => {
-    const { database, db } = createDb();
-    databases.push(database);
-    const scheduledFor = "2026-07-23T22:00:00.000Z";
-    database
-      .prepare(
-        `UPDATE sync_jobs
-         SET enabled = 1, schedule_mode = 'inherit', next_run_at = ?, last_status = NULL`,
-      )
-      .run(scheduledFor);
-    const jobs = database
-      .prepare("SELECT * FROM sync_jobs ORDER BY id")
-      .all() as unknown as SyncJobRow<ConnectorId>[];
-    const batchId = await ensureDefaultScheduleBatch(db, jobs[0]!);
-
-    for (const job of jobs.slice(1)) {
-      await recordDefaultScheduleBatchResult(db, {
-        batchId,
-        jobId: job.id,
-        notification: { connectorId: job.connector_id, status: "success" },
-      });
-    }
-
-    const batch = database
-      .prepare("SELECT created_at FROM scheduled_sync_batches WHERE id = ?")
-      .get(batchId) as { created_at: string };
-    const completedAt = new Date(
-      new Date(batch.created_at).getTime() + 1_000,
-    ).toISOString();
-    const nextRunAt = new Date(
-      new Date(scheduledFor).getTime() + 60_000,
-    ).toISOString();
-    database
-      .prepare(
-        `UPDATE sync_jobs
-         SET last_status = 'failed', last_run_at = ?, last_run_trigger = 'scheduled', next_run_at = ?, updated_at = ?, locked_until = NULL
-         WHERE id = ?`,
-      )
-      .run(completedAt, nextRunAt, completedAt, jobs[0]!.id);
-
-    const summary = await claimCompletedDefaultScheduleBatch(db, batchId);
-    expect(summary).toContainEqual({
-      connectorId: jobs[0]!.connector_id,
-      status: "failed",
-    });
-  });
-
-  it("does not complete a batch from a manual failure", async () => {
-    const { database, db } = createDb();
-    databases.push(database);
-    const scheduledFor = "2026-07-23T22:00:00.000Z";
-    database
-      .prepare(
-        `UPDATE sync_jobs
-         SET enabled = 1, schedule_mode = 'inherit', next_run_at = ?, last_status = NULL`,
-      )
-      .run(scheduledFor);
-    const jobs = database
-      .prepare("SELECT * FROM sync_jobs ORDER BY id")
-      .all() as unknown as SyncJobRow<ConnectorId>[];
-    const batchId = await ensureDefaultScheduleBatch(db, jobs[0]!);
-
-    for (const job of jobs.slice(1)) {
-      await recordDefaultScheduleBatchResult(db, {
-        batchId,
-        jobId: job.id,
-        notification: { connectorId: job.connector_id, status: "success" },
-      });
-    }
-
-    const batch = database
-      .prepare("SELECT created_at FROM scheduled_sync_batches WHERE id = ?")
-      .get(batchId) as { created_at: string };
-    const manualAt = new Date(
-      new Date(batch.created_at).getTime() + 1_000,
-    ).toISOString();
-    database
-      .prepare(
-        `UPDATE sync_jobs
-         SET last_status = 'failed', last_run_at = ?, last_run_trigger = 'manual', updated_at = ?, locked_until = NULL
-         WHERE id = ?`,
-      )
-      .run(manualAt, manualAt, jobs[0]!.id);
-
-    await expect(
-      claimCompletedDefaultScheduleBatch(db, batchId),
-    ).resolves.toBeNull();
-
-    const scheduledAt = new Date(
-      new Date(manualAt).getTime() + 1_000,
-    ).toISOString();
-    const scheduledNextRunAt = new Date(
-      new Date(scheduledFor).getTime() + 60_000,
-    ).toISOString();
-    database
-      .prepare(
-        `UPDATE sync_jobs
-         SET last_status = 'success', last_run_at = ?, last_run_trigger = 'scheduled', next_run_at = ?, updated_at = ?, locked_until = NULL
-         WHERE id = ?`,
-      )
-      .run(scheduledAt, scheduledNextRunAt, scheduledAt, jobs[0]!.id);
-
-    const summary = await claimCompletedDefaultScheduleBatch(db, batchId);
-    expect(summary).toContainEqual({
-      connectorId: jobs[0]!.connector_id,
+    expect(summary).not.toContainEqual({
+      connectorId: skipped.connector_id,
       status: "success",
     });
+  });
+
+  it("does not skip a disabled member while its scheduled run is active", async () => {
+    const { database, db } = createDb();
+    databases.push(database);
+    enableInheritedJobs(database);
+    const jobs = listJobs(database);
+    const running = jobs[0]!;
+    const batchId = await createBatch(db);
+    const futureLock = new Date(Date.now() + 60_000).toISOString();
+    database
+      .prepare(
+        `UPDATE sync_jobs
+         SET enabled = 0,
+             locked_until = ?,
+             lock_trigger = 'scheduled'
+         WHERE id = ?`,
+      )
+      .run(futureLock, running.id);
+    for (const job of jobs.slice(1)) {
+      await completeMember(db, batchId, job);
+    }
+
+    await expect(
+      claimCompletedDefaultScheduleBatch(db, batchId),
+    ).resolves.toBeNull();
+    await expect(completeMember(db, batchId, running)).resolves.toBe(true);
+    await expect(
+      claimCompletedDefaultScheduleBatch(db, batchId),
+    ).resolves.toContainEqual({
+      connectorId: running.connector_id,
+      status: "success",
+    });
+  });
+
+  it("starts the next round only after the current round is claimed", async () => {
+    const { database, db } = createDb();
+    databases.push(database);
+    enableInheritedJobs(database);
+    const jobs = listJobs(database);
+    const firstBatchId = await createBatch(db);
+    await expect(ensureDefaultScheduleBatch(db)).resolves.toBe(firstBatchId);
+
+    for (const job of jobs) await completeMember(db, firstBatchId, job);
+    await expect(
+      claimCompletedDefaultScheduleBatch(db, firstBatchId),
+    ).resolves.toHaveLength(jobs.length);
+    await expect(findOpenDefaultScheduleBatchId(db)).resolves.toBeNull();
+
+    const secondBatchId = await createBatch(db);
+    expect(secondBatchId).not.toBe(firstBatchId);
   });
 });

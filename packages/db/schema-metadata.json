@@ -299,28 +299,23 @@
     },
     "scheduled_sync_batch_results": {
       "description": "預設排程同步批次中各工作的完成結果。",
-      "notes": "每個 batch_id 與 job_id 只保存一筆成員狀態；pending、completed 與 skipped 成員共同決定整批是否完成。",
+      "notes": "每個 batch_id 與 job_id 只保存一筆結果；completed_at 為 NULL 表示等待排程執行，status 為 NULL 且已完成表示成員被略過。",
       "columns": {
         "batch_id": "所屬的預設排程同步批次。",
         "job_id": "批次成員的同步工作識別碼。",
         "connector_id": "此次結果所屬的連接器。",
-        "status": "工作結果；pending 或 skipped 成員為 NULL。",
-        "state": "批次成員狀態，例如 pending、completed 或 skipped。",
-        "completed_at": "工作結果或成員略過狀態寫入批次的時間。",
-        "scheduled_for": "建立批次成員時，該同步工作的預定執行時間；用於辨識排程是否在執行前被調整。"
+        "status": "排程執行結果；等待執行或被略過的成員為 NULL。",
+        "completed_at": "排程結果或略過決定寫入批次的時間；NULL 表示仍在等待。"
       }
     },
     "scheduled_sync_batches": {
       "description": "追蹤預設排程中需彙總推播的一輪同步工作。",
-      "notes": "同一 schedule_key 同時只保留一個未 claim 批次；所有成員完成或被 reconciliation 略過後，只允許一個 scheduler claim 推播。",
+      "notes": "同一 schedule_key 同時只保留一個未 claim 批次；建立時固定整輪成員，所有成員完成或略過後只允許一個 scheduler claim 推播。",
       "columns": {
         "id": "批次識別碼，由 default 與 UUID 組成。",
         "schedule_key": "排程類型識別碼，目前固定為 default。",
-        "scheduled_for": "此輪預設排程原定執行時間。",
-        "expected_jobs": "此輪預期完成的同步工作數。",
         "notification_claimed_at": "彙總推播被 scheduler 取得發送權的時間。",
-        "created_at": "批次建立時間。",
-        "updated_at": "批次最後更新時間。"
+        "created_at": "批次建立時間。"
       }
     },
     "sync_jobs": {
@@ -338,7 +333,6 @@
         "lock_trigger": "取得鎖定的觸發來源，例如 manual 或 scheduled。",
         "lock_scope": "此次執行實際鎖定的細部範圍。",
         "last_run_at": "最近一次開始執行的時間。",
-        "last_run_trigger": "最近一次同步的觸發來源，例如 manual 或 scheduled；用於區分是否消耗預設排程批次。",
         "last_success_at": "最近一次成功完成的時間。",
         "last_status": "最近一次結果，例如 success、failed 或 needs_user_action。",
         "last_error": "最近一次失敗或需要使用者處理的錯誤訊息。",

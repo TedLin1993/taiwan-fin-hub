@@ -36,9 +36,9 @@
 | [`net_worth_history`](#net_worth_history) | 按日期保存的淨資產或資產類別歷史數值，用於圖表與歷史查詢。 | 6 | 0 | 2 |
 | [`notification_preferences`](#notification_preferences) | 此單一部署的同步推播偏好設定。 | 5 | 0 | 0 |
 | [`push_subscriptions`](#push_subscriptions) | 瀏覽器 Web Push 裝置訂閱資料。 | 6 | 0 | 0 |
-| [`scheduled_sync_batch_results`](#scheduled_sync_batch_results) | 預設排程同步批次中各工作的完成結果。 | 7 | 1 | 0 |
-| [`scheduled_sync_batches`](#scheduled_sync_batches) | 追蹤預設排程中需彙總推播的一輪同步工作。 | 7 | 0 | 1 |
-| [`sync_jobs`](#sync_jobs) | 每個連接器與同步範圍的排程、鎖定狀態與最近執行結果。 | 20 | 0 | 1 |
+| [`scheduled_sync_batch_results`](#scheduled_sync_batch_results) | 預設排程同步批次中各工作的完成結果。 | 5 | 1 | 0 |
+| [`scheduled_sync_batches`](#scheduled_sync_batches) | 追蹤預設排程中需彙總推播的一輪同步工作。 | 4 | 0 | 1 |
+| [`sync_jobs`](#sync_jobs) | 每個連接器與同步範圍的排程、鎖定狀態與最近執行結果。 | 19 | 0 | 1 |
 | [`sync_schedule_settings`](#sync_schedule_settings) | 所有使用 inherit 模式之同步工作的全域預設排程。 | 6 | 0 | 0 |
 | [`sync_write_staging`](#sync_write_staging) | 同步流程寫入正式資料表前的暫存資料。 | 5 | 0 | 1 |
 
@@ -957,7 +957,7 @@ CREATE TABLE push_subscriptions (
 ### `scheduled_sync_batch_results`
 
 > 用途：預設排程同步批次中各工作的完成結果。
-> 注意：每個 batch_id 與 job_id 只保存一筆成員狀態；pending、completed 與 skipped 成員共同決定整批是否完成。
+> 注意：每個 batch_id 與 job_id 只保存一筆結果；completed_at 為 NULL 表示等待排程執行，status 為 NULL 且已完成表示成員被略過。
 
 #### Columns
 
@@ -966,10 +966,8 @@ CREATE TABLE push_subscriptions (
 | 1 | `batch_id` | 所屬的預設排程同步批次。 | TEXT | NO | — | 1 | — |
 | 2 | `job_id` | 批次成員的同步工作識別碼。 | TEXT | NO | — | 2 | — |
 | 3 | `connector_id` | 此次結果所屬的連接器。 | TEXT | NO | — | — | — |
-| 4 | `status` | 工作結果；pending 或 skipped 成員為 NULL。 | TEXT | YES | — | — | — |
-| 5 | `state` | 批次成員狀態，例如 pending、completed 或 skipped。 | TEXT | NO | 'pending' | — | — |
-| 6 | `completed_at` | 工作結果或成員略過狀態寫入批次的時間。 | TEXT | YES | — | — | — |
-| 7 | `scheduled_for` | 建立批次成員時，該同步工作的預定執行時間；用於辨識排程是否在執行前被調整。 | TEXT | YES | — | — | — |
+| 4 | `status` | 排程執行結果；等待執行或被略過的成員為 NULL。 | TEXT | YES | — | — | — |
+| 5 | `completed_at` | 排程結果或略過決定寫入批次的時間；NULL 表示仍在等待。 | TEXT | YES | — | — | — |
 
 #### Foreign keys
 
@@ -989,9 +987,7 @@ CREATE TABLE scheduled_sync_batch_results (
   job_id TEXT NOT NULL,
   connector_id TEXT NOT NULL,
   status TEXT CHECK (status IN ('success', 'failed', 'needs_user_action')),
-  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'completed', 'skipped')),
   completed_at TEXT,
-  scheduled_for TEXT,
   PRIMARY KEY (batch_id, job_id),
   FOREIGN KEY (batch_id) REFERENCES scheduled_sync_batches(id) ON DELETE CASCADE
 )
@@ -1000,7 +996,7 @@ CREATE TABLE scheduled_sync_batch_results (
 ### `scheduled_sync_batches`
 
 > 用途：追蹤預設排程中需彙總推播的一輪同步工作。
-> 注意：同一 schedule_key 同時只保留一個未 claim 批次；所有成員完成或被 reconciliation 略過後，只允許一個 scheduler claim 推播。
+> 注意：同一 schedule_key 同時只保留一個未 claim 批次；建立時固定整輪成員，所有成員完成或略過後只允許一個 scheduler claim 推播。
 
 #### Columns
 
@@ -1008,11 +1004,8 @@ CREATE TABLE scheduled_sync_batch_results (
 | ---: | --- | --- | --- | :---: | --- | ---: | --- |
 | 1 | `id` | 批次識別碼，由 default 與 UUID 組成。 | TEXT | YES | — | 1 | — |
 | 2 | `schedule_key` | 排程類型識別碼，目前固定為 default。 | TEXT | NO | 'default' | — | — |
-| 3 | `scheduled_for` | 此輪預設排程原定執行時間。 | TEXT | NO | — | — | — |
-| 4 | `expected_jobs` | 此輪預期完成的同步工作數。 | INTEGER | NO | — | — | — |
-| 5 | `notification_claimed_at` | 彙總推播被 scheduler 取得發送權的時間。 | TEXT | YES | — | — | — |
-| 6 | `created_at` | 批次建立時間。 | TEXT | NO | — | — | — |
-| 7 | `updated_at` | 批次最後更新時間。 | TEXT | NO | — | — | — |
+| 3 | `notification_claimed_at` | 彙總推播被 scheduler 取得發送權的時間。 | TEXT | YES | — | — | — |
+| 4 | `created_at` | 批次建立時間。 | TEXT | NO | — | — | — |
 
 #### Foreign keys
 
@@ -1029,12 +1022,9 @@ CREATE TABLE scheduled_sync_batch_results (
 ```sql
 CREATE TABLE scheduled_sync_batches (
   id TEXT PRIMARY KEY,
-  schedule_key TEXT NOT NULL DEFAULT 'default',
-  scheduled_for TEXT NOT NULL,
-  expected_jobs INTEGER NOT NULL CHECK (expected_jobs > 0),
+  schedule_key TEXT NOT NULL DEFAULT 'default' CHECK (schedule_key = 'default'),
   notification_claimed_at TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  created_at TEXT NOT NULL
 )
 ```
 
@@ -1066,7 +1056,6 @@ CREATE TABLE scheduled_sync_batches (
 | 17 | `schedule_mode` | 排程模式；inherit 使用全域設定，custom 使用工作自己的設定。 | TEXT | NO | 'inherit' | — | — |
 | 18 | `preferred_time` | 每日或每週排程偏好的台北時間。 | TEXT | NO | '06:00' | — | — |
 | 19 | `preferred_weekday` | 每週排程的星期，0 代表週日、6 代表週六。 | INTEGER | NO | 1 | — | — |
-| 20 | `last_run_trigger` | 最近一次同步的觸發來源，例如 manual 或 scheduled；用於區分是否消耗預設排程批次。 | TEXT | YES | — | — | — |
 
 #### Foreign keys
 
@@ -1099,8 +1088,7 @@ CREATE TABLE sync_jobs (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL, schedule_mode TEXT NOT NULL DEFAULT 'inherit'
   CHECK (schedule_mode IN ('inherit', 'custom')), preferred_time TEXT NOT NULL DEFAULT '06:00', preferred_weekday INTEGER NOT NULL DEFAULT 1
-  CHECK (preferred_weekday BETWEEN 0 AND 6), last_run_trigger TEXT
-  CHECK (last_run_trigger IS NULL OR last_run_trigger IN ('manual', 'scheduled')),
+  CHECK (preferred_weekday BETWEEN 0 AND 6),
   UNIQUE (connector_id, scope)
 )
 ```

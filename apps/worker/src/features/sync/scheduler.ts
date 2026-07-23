@@ -31,10 +31,10 @@ import {
   claimCompletedDefaultScheduleBatch,
   ensureDefaultScheduleBatch,
   finalizeOpenDefaultScheduleBatch,
+  findNextDefaultScheduleBatchJob,
+  findOpenDefaultScheduleBatchId,
   recordDefaultScheduleBatchResult,
 } from "./notification-batch-repository";
-
-const MAX_SCHEDULED_JOBS_PER_TICK = 1;
 
 export async function runSchedulerTick(
   env: Env,
@@ -45,35 +45,91 @@ export async function runSchedulerTick(
     await safelySendScheduledSyncSummary(env, pendingSummary);
   }
 
-  for (let index = 0; index < MAX_SCHEDULED_JOBS_PER_TICK; index += 1) {
-    const due = await findNextDueSyncJob<ConnectorId>(env.DB);
-    if (!due) return;
-    const batchId =
-      due.schedule_mode === "inherit"
-        ? await ensureDefaultScheduleBatch(env.DB, due)
-        : null;
-    const notification = await runScheduledJob(env, controller, due);
-    if (!notification) continue;
-
-    if (!batchId) {
-      await safelySendSyncNotification(env, notification);
-      continue;
+  const openBatchId = await findOpenDefaultScheduleBatchId(env.DB);
+  if (openBatchId) {
+    const batchJob = await findNextDefaultScheduleBatchJob(
+      env.DB,
+      openBatchId,
+    );
+    if (batchJob) {
+      await runDefaultScheduleBatchJob(
+        env,
+        controller,
+        openBatchId,
+        batchJob,
+      );
+      return;
     }
 
-    await recordDefaultScheduleBatchResult(env.DB, {
-      batchId,
-      jobId: due.id,
-      notification,
-    });
-    const summary = await claimCompletedDefaultScheduleBatch(env.DB, batchId);
-    if (summary) await safelySendScheduledSyncSummary(env, summary);
+    // A locked batch member should not prevent an unrelated custom schedule
+    // from using this invocation.
+    const customDue = await findNextDueSyncJob<ConnectorId>(
+      env.DB,
+      new Date(),
+      "custom",
+    );
+    if (customDue) await runCustomScheduleJob(env, controller, customDue);
+    return;
   }
+
+  const due = await findNextDueSyncJob<ConnectorId>(env.DB);
+  if (!due) return;
+  if (due.schedule_mode === "custom") {
+    await runCustomScheduleJob(env, controller, due);
+    return;
+  }
+
+  const batchId = await ensureDefaultScheduleBatch(env.DB);
+  if (!batchId) return;
+  const batchJob = await findNextDefaultScheduleBatchJob(env.DB, batchId);
+  if (batchJob) {
+    await runDefaultScheduleBatchJob(env, controller, batchId, batchJob);
+  }
+}
+
+async function runCustomScheduleJob(
+  env: Env,
+  controller: ScheduledController,
+  job: SyncJobRow<ConnectorId>,
+) {
+  const notification = await runScheduledJob(env, controller, job);
+  if (notification) await safelySendSyncNotification(env, notification);
+}
+
+async function runDefaultScheduleBatchJob(
+  env: Env,
+  controller: ScheduledController,
+  batchId: string,
+  job: SyncJobRow<ConnectorId>,
+) {
+  const notification = await runScheduledJob(
+    env,
+    controller,
+    job,
+    async (result) => {
+      const recorded = await recordDefaultScheduleBatchResult(env.DB, {
+        batchId,
+        jobId: job.id,
+        notification: result,
+      });
+      if (!recorded) {
+        throw new Error(
+          `Default schedule batch member is no longer pending: ${job.id}`,
+        );
+      }
+    },
+  );
+  if (!notification) return;
+
+  const summary = await claimCompletedDefaultScheduleBatch(env.DB, batchId);
+  if (summary) await safelySendScheduledSyncSummary(env, summary);
 }
 
 async function runScheduledJob(
   env: Env,
   controller: ScheduledController,
   due: SyncJobRow<ConnectorId>,
+  beforeRelease?: (notification: SyncNotificationEvent) => Promise<void>,
 ) {
   const runId = crypto.randomUUID();
   const lockRowId = canonicalSyncLockRowId(due.connector_id);
@@ -88,58 +144,61 @@ async function runScheduledJob(
 
   const stopHeartbeat = startSyncLockHeartbeat(env.DB, lockRowId, runId);
   const startedAt = Date.now();
-  let notification: SyncNotificationEvent | undefined;
   try {
-    const outcome = await runDueSyncJob(env, due);
-    await completeSyncJob(env.DB, due);
-    console.log(
-      JSON.stringify({
-        event: "sync_run_finished",
-        runId,
-        cron: controller.cron,
+    let notification: SyncNotificationEvent;
+    try {
+      const outcome = await runDueSyncJob(env, due);
+      await completeSyncJob(env.DB, due);
+      console.log(
+        JSON.stringify({
+          event: "sync_run_finished",
+          runId,
+          cron: controller.cron,
+          connectorId: outcome.connectorId,
+          scope: outcome.scope,
+          trigger: "scheduled",
+          status: "success",
+          records: outcome.records,
+          durationMs: Date.now() - startedAt,
+        }),
+      );
+      notification = {
         connectorId: outcome.connectorId,
-        scope: outcome.scope,
-        trigger: "scheduled",
         status: "success",
-        records: outcome.records,
-        durationMs: Date.now() - startedAt,
-      }),
-    );
-    notification = {
-      connectorId: outcome.connectorId,
-      status: "success",
-    };
-  } catch (error) {
-    const status: SyncStatus = isUserActionError(error)
-      ? "needs_user_action"
-      : "failed";
-    await failSyncJob(env.DB, due, {
-      status,
-      errorMessage: safeErrorMessage(error),
-    });
-    console.error(
-      JSON.stringify({
-        event: "sync_run_failed",
-        runId,
-        cron: controller.cron,
-        connectorId: due.connector_id,
-        scope: due.scope,
-        trigger: "scheduled",
+      };
+    } catch (error) {
+      const status: SyncStatus = isUserActionError(error)
+        ? "needs_user_action"
+        : "failed";
+      await failSyncJob(env.DB, due, {
         status,
-        message: safeErrorMessage(error),
-        durationMs: Date.now() - startedAt,
-      }),
-    );
-    notification = {
-      connectorId: due.connector_id,
-      status,
-    };
+        errorMessage: safeErrorMessage(error),
+      });
+      console.error(
+        JSON.stringify({
+          event: "sync_run_failed",
+          runId,
+          cron: controller.cron,
+          connectorId: due.connector_id,
+          scope: due.scope,
+          trigger: "scheduled",
+          status,
+          message: safeErrorMessage(error),
+          durationMs: Date.now() - startedAt,
+        }),
+      );
+      notification = {
+        connectorId: due.connector_id,
+        status,
+      };
+    }
+
+    if (beforeRelease) await beforeRelease(notification);
+    return notification;
   } finally {
     stopHeartbeat();
     await releaseSyncJobLock(env.DB, lockRowId, runId);
   }
-
-  return notification;
 }
 
 async function runDueSyncJob(env: Env, job: SyncJobRow<ConnectorId>) {

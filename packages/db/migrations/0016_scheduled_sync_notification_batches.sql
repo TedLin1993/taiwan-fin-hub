@@ -1,15 +1,8 @@
-ALTER TABLE sync_jobs
-  ADD COLUMN last_run_trigger TEXT
-  CHECK (last_run_trigger IS NULL OR last_run_trigger IN ('manual', 'scheduled'));
-
 CREATE TABLE IF NOT EXISTS scheduled_sync_batches (
   id TEXT PRIMARY KEY,
-  schedule_key TEXT NOT NULL DEFAULT 'default',
-  scheduled_for TEXT NOT NULL,
-  expected_jobs INTEGER NOT NULL CHECK (expected_jobs > 0),
+  schedule_key TEXT NOT NULL DEFAULT 'default' CHECK (schedule_key = 'default'),
   notification_claimed_at TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS scheduled_sync_batch_results (
@@ -17,9 +10,7 @@ CREATE TABLE IF NOT EXISTS scheduled_sync_batch_results (
   job_id TEXT NOT NULL,
   connector_id TEXT NOT NULL,
   status TEXT CHECK (status IN ('success', 'failed', 'needs_user_action')),
-  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'completed', 'skipped')),
   completed_at TEXT,
-  scheduled_for TEXT,
   PRIMARY KEY (batch_id, job_id),
   FOREIGN KEY (batch_id) REFERENCES scheduled_sync_batches(id) ON DELETE CASCADE
 );
