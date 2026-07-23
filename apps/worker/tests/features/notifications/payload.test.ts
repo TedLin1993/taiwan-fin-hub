@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { NotificationPreferences } from "@taiwan-fin-hub/core";
 import {
+  scheduledSyncSummaryPayload,
+  summaryStatus,
   shouldNotify,
   syncNotificationPayload,
+  type SyncNotificationEvent,
 } from "../../../src/features/notifications/payload";
 
 describe("sync notification payload", () => {
@@ -40,5 +43,52 @@ describe("sync notification payload", () => {
     expect(shouldNotify(preferences, "success")).toBe(false);
     expect(shouldNotify(preferences, "failed")).toBe(true);
     expect(shouldNotify(preferences, "needs_user_action")).toBe(true);
+  });
+
+  it("uses the aggregate status for a mixed summary preference", () => {
+    const preferences: NotificationPreferences = {
+      success: true,
+      failed: false,
+      needsUserAction: false,
+    };
+    const events: SyncNotificationEvent[] = [
+      { connectorId: "einvoice", status: "success" },
+      { connectorId: "tdcc", status: "failed" },
+    ];
+
+    expect(shouldNotify(preferences, summaryStatus(events))).toBe(false);
+  });
+});
+
+describe("scheduled sync summary payload", () => {
+  it("combines successful default-schedule jobs into one notification", () => {
+    const payload = scheduledSyncSummaryPayload([
+      { connectorId: "einvoice", status: "success" },
+      { connectorId: "tdcc", status: "success" },
+      { connectorId: "esun", status: "success" },
+    ]);
+
+    expect(payload).toEqual({
+      title: "同步完成",
+      body: "已完成 3 個資料來源的預設排程同步。",
+      url: "/#/overview",
+      tag: "sync-default-schedule-success",
+    });
+  });
+
+  it("reports mixed results and uses the most actionable status", () => {
+    const events: SyncNotificationEvent[] = [
+      { connectorId: "einvoice", status: "success" },
+      { connectorId: "tdcc", status: "failed" },
+      { connectorId: "esun", status: "needs_user_action" },
+    ];
+
+    expect(summaryStatus(events)).toBe("needs_user_action");
+    expect(scheduledSyncSummaryPayload(events)).toEqual({
+      title: "同步完成，需要你的操作",
+      body: "預設排程同步完成：成功 1、失敗 1、需處理 1。",
+      url: "/#/data-sources",
+      tag: "sync-default-schedule-needs-action",
+    });
   });
 });

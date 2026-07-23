@@ -54,6 +54,55 @@ export function syncNotificationPayload(
   };
 }
 
+export function scheduledSyncSummaryPayload(
+  events: SyncNotificationEvent[],
+): PushNotificationPayload {
+  const success = events.filter((event) => event.status === "success").length;
+  const failed = events.filter((event) => event.status === "failed").length;
+  const needsUserAction = events.filter(
+    (event) => event.status === "needs_user_action",
+  ).length;
+  const status = summaryStatus(events);
+
+  if (status === "success") {
+    return {
+      title: "同步完成",
+      body: `已完成 ${success} 個資料來源的預設排程同步。`,
+      url: "/#/overview",
+      tag: "sync-default-schedule-success",
+    };
+  }
+
+  const counts = [
+    success > 0 ? `成功 ${success}` : null,
+    failed > 0 ? `失敗 ${failed}` : null,
+    needsUserAction > 0 ? `需處理 ${needsUserAction}` : null,
+  ].filter((count): count is string => count !== null);
+
+  return {
+    title:
+      status === "needs_user_action"
+        ? "同步完成，需要你的操作"
+        : "同步完成，部分失敗",
+    body: `預設排程同步完成：${counts.join("、")}。`,
+    url: "/#/data-sources",
+    tag:
+      status === "needs_user_action"
+        ? "sync-default-schedule-needs-action"
+        : "sync-default-schedule-failed",
+  };
+}
+
+export function summaryStatus(
+  events: SyncNotificationEvent[],
+): SyncNotificationStatus {
+  if (events.some((event) => event.status === "needs_user_action")) {
+    return "needs_user_action";
+  }
+  if (events.some((event) => event.status === "failed")) return "failed";
+  return "success";
+}
+
 export function shouldNotify(
   preferences: NotificationPreferences,
   status: SyncNotificationStatus,

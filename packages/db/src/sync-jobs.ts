@@ -67,7 +67,11 @@ export function nextSyncRunAt(
   return new Date(candidate).toISOString();
 }
 
-export async function findNextDueSyncJob<TConnectorId extends string>(db: D1Database, now = new Date()) {
+export async function findNextDueSyncJob<TConnectorId extends string>(
+  db: D1Database,
+  now = new Date(),
+  scheduleMode?: SyncScheduleMode
+) {
   return await db.prepare(
     `SELECT *
      FROM sync_jobs
@@ -75,9 +79,15 @@ export async function findNextDueSyncJob<TConnectorId extends string>(db: D1Data
        AND (last_status IS NULL OR last_status != 'needs_user_action')
        AND next_run_at <= ?
        AND (locked_until IS NULL OR locked_until < ?)
+       AND (? IS NULL OR schedule_mode = ?)
      ORDER BY next_run_at ASC, id ASC
      LIMIT 1`
-  ).bind(now.toISOString(), now.toISOString()).first<SyncJobRow<TConnectorId>>() ?? null;
+  ).bind(
+    now.toISOString(),
+    now.toISOString(),
+    scheduleMode ?? null,
+    scheduleMode ?? null
+  ).first<SyncJobRow<TConnectorId>>() ?? null;
 }
 
 export async function acquireSyncJobLock(
