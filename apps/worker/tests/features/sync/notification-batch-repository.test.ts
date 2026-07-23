@@ -276,6 +276,28 @@ describe("default schedule notification rounds", () => {
     ).resolves.toMatchObject({ id: pending.id });
   });
 
+  it("skips a pending member that now requires user action", async () => {
+    const { database, db } = createDb();
+    databases.push(database);
+    enableInheritedJobs(database);
+    const jobs = listJobs(database);
+    const paused = jobs[0]!;
+    const batchId = await createBatch(db);
+    database
+      .prepare("UPDATE sync_jobs SET last_status = 'needs_user_action' WHERE id = ?")
+      .run(paused.id);
+
+    for (const job of jobs.slice(1)) {
+      await completeMember(db, batchId, job);
+    }
+
+    const summary = await claimCompletedDefaultScheduleBatch(db, batchId);
+    expect(summary).toHaveLength(jobs.length - 1);
+    await expect(
+      findNextDefaultScheduleBatchJob(db, batchId),
+    ).resolves.toBeNull();
+  });
+
   it("skips a member disabled before its turn", async () => {
     const { database, db } = createDb();
     databases.push(database);
@@ -348,5 +370,32 @@ describe("default schedule notification rounds", () => {
 
     const secondBatchId = await createBatch(db);
     expect(secondBatchId).not.toBe(firstBatchId);
+  });
+
+  it("prunes claimed rounds older than the retention window", async () => {
+    const { database, db } = createDb();
+    databases.push(database);
+    enableInheritedJobs(database);
+    const jobs = listJobs(database);
+    const oldBatchId = await createBatch(db);
+    for (const job of jobs) await completeMember(db, oldBatchId, job);
+    await expect(
+      claimCompletedDefaultScheduleBatch(db, oldBatchId),
+    ).resolves.toHaveLength(jobs.length);
+    database
+      .prepare(
+        `UPDATE scheduled_sync_batches
+         SET notification_claimed_at = ?
+         WHERE id = ?`,
+      )
+      .run("2020-01-01T00:00:00.000Z", oldBatchId);
+
+    const newBatchId = await createBatch(db);
+    expect(newBatchId).not.toBe(oldBatchId);
+    expect(
+      database
+        .prepare("SELECT COUNT(*) AS count FROM scheduled_sync_batches")
+        .get(),
+    ).toEqual({ count: 1 });
   });
 });

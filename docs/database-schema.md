@@ -996,7 +996,7 @@ CREATE TABLE scheduled_sync_batch_results (
 ### `scheduled_sync_batches`
 
 > 用途：追蹤預設排程中需彙總推播的一輪同步工作。
-> 注意：同一 schedule_key 同時只保留一個未 claim 批次；建立時固定整輪成員，所有成員完成或略過後只允許一個 scheduler claim 推播。
+> 注意：同一 schedule_key 同時只保留一個未 claim 批次；建立時固定整輪成員，所有成員完成或略過後只允許一個 scheduler claim 推播。建立新輪次時會清理超過 30 天的已結案批次。
 
 #### Columns
 

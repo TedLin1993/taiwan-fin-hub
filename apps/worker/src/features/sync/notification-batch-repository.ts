@@ -13,6 +13,7 @@ type BatchMemberRow = {
   job_id: string;
   enabled: number | null;
   schedule_mode: "inherit" | "custom" | null;
+  last_status: SyncNotificationStatus | null;
   locked_until: string | null;
   lock_trigger: "manual" | "scheduled" | null;
 };
@@ -22,9 +23,13 @@ type BatchResultRow = {
   status: SyncNotificationStatus;
 };
 
+const CLAIMED_BATCH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
 export async function ensureDefaultScheduleBatch(db: D1Database) {
   const openBatchId = await findOpenDefaultScheduleBatchId(db);
   if (openBatchId) return openBatchId;
+
+  await pruneClaimedDefaultScheduleBatches(db);
 
   const jobs = await db
     .prepare(
@@ -94,6 +99,7 @@ export async function findNextDefaultScheduleBatchJob(
            AND r.completed_at IS NULL
            AND j.enabled = 1
            AND j.schedule_mode = 'inherit'
+           AND (j.last_status IS NULL OR j.last_status != 'needs_user_action')
            AND (j.locked_until IS NULL OR j.locked_until < ?)
          ORDER BY j.next_run_at ASC, j.id ASC
          LIMIT 1`,
@@ -187,6 +193,7 @@ async function reconcileDefaultScheduleBatchMembers(
          r.job_id,
          j.enabled,
          j.schedule_mode,
+         j.last_status,
          j.locked_until,
          j.lock_trigger
        FROM scheduled_sync_batch_results r
@@ -203,11 +210,14 @@ async function reconcileDefaultScheduleBatchMembers(
       row.enabled !== 1 ||
       row.schedule_mode === null ||
       row.schedule_mode !== "inherit";
+    const needsUserAction = row.last_status === "needs_user_action";
     const scheduledRunIsActive =
       row.lock_trigger === "scheduled" &&
       row.locked_until !== null &&
       new Date(row.locked_until).getTime() > now;
-    if (!noLongerInherited || scheduledRunIsActive) continue;
+    if ((!noLongerInherited && !needsUserAction) || scheduledRunIsActive) {
+      continue;
+    }
 
     await db
       .prepare(
@@ -218,4 +228,19 @@ async function reconcileDefaultScheduleBatchMembers(
       .bind(new Date().toISOString(), batchId, row.job_id)
       .run();
   }
+}
+
+async function pruneClaimedDefaultScheduleBatches(db: D1Database) {
+  const cutoff = new Date(
+    Date.now() - CLAIMED_BATCH_RETENTION_MS,
+  ).toISOString();
+  await db
+    .prepare(
+      `DELETE FROM scheduled_sync_batches
+       WHERE schedule_key = 'default'
+         AND notification_claimed_at IS NOT NULL
+         AND notification_claimed_at < ?`,
+    )
+    .bind(cutoff)
+    .run();
 }
