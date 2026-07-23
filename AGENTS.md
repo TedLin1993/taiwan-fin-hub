@@ -11,6 +11,10 @@
 - 驗證碼辨識使用 Cloudflare Workers AI。
 - 排程同步使用 Workers Cron Triggers 與 D1 sync jobs。
 
+## 文字與 Review 規範
+
+- Code review、PR review comment、審查摘要與修改建議一律使用正體中文；必要的技術名詞、程式碼與指令可保留英文。
+
 ## 目錄責任
 
 - `apps/web`：Svelte 前端、頁面、元件、資料查詢與前端測試。
