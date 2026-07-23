@@ -17,6 +17,7 @@ export interface SyncJobRow<TConnectorId extends string = string> {
   lock_trigger: SyncTrigger | null;
   lock_scope: string | null;
   last_run_at: string | null;
+  last_run_trigger: SyncTrigger | null;
   last_success_at: string | null;
   last_status: SyncStatus | null;
   last_error: string | null;
@@ -157,6 +158,7 @@ export async function completeSyncJob(db: D1Database, job: SyncJobRow) {
      SET last_status = 'success',
          last_error = NULL,
          last_run_at = ?,
+         last_run_trigger = 'scheduled',
          last_success_at = ?,
          next_run_at = ?,
          updated_at = ?
@@ -184,6 +186,7 @@ export async function failSyncJob(
      SET last_status = ?,
          last_error = ?,
          last_run_at = ?,
+         last_run_trigger = 'scheduled',
          next_run_at = ?,
          updated_at = ?
      WHERE id = ?`
@@ -221,6 +224,7 @@ export async function markManualSyncSuccess(
      SET last_status = 'success',
          last_error = NULL,
          last_run_at = ?,
+         last_run_trigger = 'manual',
          last_success_at = ?,
          next_run_at = ?,
          updated_at = ?
@@ -240,6 +244,7 @@ export async function markManualSyncFailure(
      SET last_status = ?,
          last_error = ?,
          last_run_at = ?,
+         last_run_trigger = 'manual',
          updated_at = ?
      WHERE connector_id = ? AND scope = ?`
   ).bind(input.status, input.errorMessage, now, now, connectorId, scope).run();

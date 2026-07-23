@@ -1,3 +1,7 @@
+ALTER TABLE sync_jobs
+  ADD COLUMN last_run_trigger TEXT
+  CHECK (last_run_trigger IS NULL OR last_run_trigger IN ('manual', 'scheduled'));
+
 CREATE TABLE IF NOT EXISTS scheduled_sync_batches (
   id TEXT PRIMARY KEY,
   schedule_key TEXT NOT NULL DEFAULT 'default',

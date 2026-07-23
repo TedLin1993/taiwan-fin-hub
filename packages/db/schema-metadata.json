@@ -338,6 +338,7 @@
         "lock_trigger": "取得鎖定的觸發來源，例如 manual 或 scheduled。",
         "lock_scope": "此次執行實際鎖定的細部範圍。",
         "last_run_at": "最近一次開始執行的時間。",
+        "last_run_trigger": "最近一次同步的觸發來源，例如 manual 或 scheduled；用於區分是否消耗預設排程批次。",
         "last_success_at": "最近一次成功完成的時間。",
         "last_status": "最近一次結果，例如 success、failed 或 needs_user_action。",
         "last_error": "最近一次失敗或需要使用者處理的錯誤訊息。",

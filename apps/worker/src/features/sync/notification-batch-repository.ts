@@ -20,6 +20,7 @@ type BatchMemberRow = {
   schedule_mode: "inherit" | "custom" | null;
   next_run_at: string | null;
   last_run_at: string | null;
+  last_run_trigger: "manual" | "scheduled" | null;
   last_status: SyncNotificationStatus | null;
   locked_until: string | null;
 };
@@ -244,6 +245,7 @@ async function reconcileDefaultScheduleBatchMembers(
          j.schedule_mode,
          j.next_run_at,
          j.last_run_at,
+         j.last_run_trigger,
          j.last_status,
          j.locked_until
        FROM scheduled_sync_batch_results r
@@ -267,7 +269,8 @@ async function reconcileDefaultScheduleBatchMembers(
     const hasCompletedRun =
       row.last_run_at !== null &&
       row.last_run_at > batch.created_at &&
-      row.last_status !== null;
+      row.last_status !== null &&
+      row.last_run_trigger === "scheduled";
     const scheduleChangedWhilePending =
       row.scheduled_for !== null &&
       row.next_run_at !== null &&
