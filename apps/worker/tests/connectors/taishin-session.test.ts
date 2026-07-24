@@ -204,6 +204,55 @@ describe("Taishin browser session lifecycle", () => {
     expect(browserInstance.disconnect).not.toHaveBeenCalled();
   });
 
+  it("clicks a visible div used as the login button", async () => {
+    const browserPage = page();
+    const loginButton = {
+      tagName: "DIV",
+      innerText: "登入網銀",
+      hidden: false,
+      title: "",
+      dataset: {} as Record<string, string>,
+      getAttribute: vi.fn().mockReturnValue(null),
+      getBoundingClientRect: vi
+        .fn()
+        .mockReturnValue({ width: 300, height: 50 }),
+      matches: vi.fn().mockReturnValue(false),
+    };
+    browserPage.evaluate
+      .mockImplementationOnce(async (callback: () => unknown) => {
+        vi.stubGlobal("document", {
+          querySelectorAll: vi.fn().mockReturnValue([loginButton]),
+        });
+        try {
+          return callback();
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      })
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce("驗證碼錯誤");
+    const browserInstance = browser(browserPage);
+    puppeteerMock.sessions.mockResolvedValue([
+      { sessionId: "taishin-session", startTime: Date.now() },
+    ]);
+    puppeteerMock.connect.mockResolvedValue(browserInstance);
+
+    await expect(
+      createTaishinConnector({} as Fetcher).sync({
+        ...credentials,
+        browserSessionId: "taishin-session",
+        browserSessionExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        captchaDigitCount: 6,
+        captcha: "123456",
+      }),
+    ).rejects.toThrow("圖形驗證碼錯誤");
+
+    expect(loginButton.dataset.taishinLogin).toBe("submit");
+    expect(browserPage.click).toHaveBeenCalledWith(
+      '[data-taishin-login="submit"]',
+    );
+  });
+
   it("stops automatic login immediately when credentials are rejected", async () => {
     const browserPage = page();
     rejectLoginSequence(browserPage, "使用者密碼錯誤");
