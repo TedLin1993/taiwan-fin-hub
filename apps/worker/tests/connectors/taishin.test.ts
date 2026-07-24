@@ -1,4 +1,7 @@
-import { parseTaishinCreditCardData } from "@taiwan-fin-hub/connectors";
+import {
+  parseTaishinCreditCardData,
+  reconcileTaishinTransactionSourceIds,
+} from "@taiwan-fin-hub/connectors";
 import { describe, expect, it } from "vitest";
 
 const summary = {
@@ -122,6 +125,33 @@ describe("Taishin credit-card parser", () => {
     });
   });
 
+  it("uses the newest valid bill when the current month is empty", () => {
+    const previousBill = bill("2026/06", []);
+    Object.assign(previousBill.value, {
+      showCbalance: "8,060",
+      showCdue: "2,060",
+      showPayment: "6,000",
+      showStmtDate: "2026/06/20",
+      showDueDate: "2026/07/05",
+    });
+
+    const result = parseTaishinCreditCardData({
+      summary,
+      bills: [{ value: {}, error: null }, previousBill],
+    });
+
+    expect(result.bankBalanceSnapshots[0]).toMatchObject({
+      balance: -2060,
+      statementBalance: 8060,
+      paymentDueDate: "2026-07-05",
+      statementClosingDate: "2026-06-20",
+      noPaymentNeeded: false,
+    });
+    expect(
+      result.creditCardBills.map(({ billingPeriod }) => billingPeriod),
+    ).toEqual(["2026-06"]);
+  });
+
   it("upgrades merchant-matched pending occurrences and keeps the rest pending", () => {
     const result = parseTaishinCreditCardData({
       summary,
@@ -178,6 +208,76 @@ describe("Taishin credit-card parser", () => {
     ).toBe(2);
   });
 
+  it("preserves duplicate transaction ids across sync subsets and ordering", () => {
+    const first = parseTaishinCreditCardData({
+      summary,
+      bills: [bill("2026/07", [])],
+      realtime: realtime([
+        ["2026/07/08", "12:30:00", "商戶 A", "350", "TW", "成功"],
+        ["2026/07/08", "13:30:00", "商戶 B", "350", "TW", "成功"],
+      ]),
+    });
+    const firstIds = new Map(
+      first.bankTransactions.map(({ description, sourceId }) => [
+        description,
+        sourceId,
+      ]),
+    );
+    const existingBeforeReconciliation = first.bankTransactions.map(
+      (transaction) => {
+        const { lifecycleMatchKey: _lifecycleMatchKey, ...raw } =
+          transaction.raw as Record<string, unknown>;
+        return { ...transaction, raw };
+      },
+    );
+
+    const next = parseTaishinCreditCardData({
+      summary,
+      bills: [bill("2026/07", [transaction("商戶 A", "350")])],
+      realtime: realtime([
+        ["2026/07/08", "13:30:00", "商戶 B", "350", "TW", "成功"],
+      ]),
+    });
+    const reconciled = reconcileTaishinTransactionSourceIds(
+      next.bankTransactions,
+      existingBeforeReconciliation,
+    );
+
+    expect(
+      new Map(
+        reconciled.map(({ description, sourceId }) => [description, sourceId]),
+      ),
+    ).toEqual(firstIds);
+
+    const remainingOnly = parseTaishinCreditCardData({
+      summary,
+      bills: [bill("2026/07", [])],
+      realtime: realtime([
+        ["2026/07/08", "13:30:00", "商戶 B", "350", "TW", "成功"],
+      ]),
+    });
+    expect(
+      reconcileTaishinTransactionSourceIds(
+        remainingOnly.bankTransactions,
+        existingBeforeReconciliation,
+      )[0]?.sourceId,
+    ).toBe(firstIds.get("商戶 B"));
+
+    const newOnly = parseTaishinCreditCardData({
+      summary,
+      bills: [bill("2026/07", [])],
+      realtime: realtime([
+        ["2026/07/08", "14:30:00", "商戶 C", "350", "TW", "成功"],
+      ]),
+    });
+    expect(
+      reconcileTaishinTransactionSourceIds(
+        newOnly.bankTransactions,
+        existingBeforeReconciliation,
+      )[0]?.sourceId,
+    ).toMatch(/:3$/);
+  });
+
   it("keeps cards isolated and preserves refunds and foreign currency", () => {
     const result = parseTaishinCreditCardData({
       summary,
@@ -229,6 +329,12 @@ describe("Taishin credit-card parser", () => {
       parseTaishinCreditCardData({
         summary: { value: {}, error: null },
         bills: [],
+      }),
+    ).toThrow("缺少額度或帳單資料");
+    expect(() =>
+      parseTaishinCreditCardData({
+        summary,
+        bills: [{ value: {}, error: null }],
       }),
     ).toThrow("缺少額度或帳單資料");
     expect(() =>

@@ -1,4 +1,5 @@
-import type { ConnectorId } from "@taiwan-fin-hub/core";
+import type { BankTransactionStatus, ConnectorId } from "@taiwan-fin-hub/core";
+import type { TaishinExistingTransactionIdentity } from "@taiwan-fin-hub/connectors";
 
 export async function updateConnectorEncryptedConfig(
   db: D1Database,
@@ -205,6 +206,51 @@ export function reconcileSinopacLegacyTransactionStatements(db: D1Database) {
   ];
 }
 
+export async function listTaishinTransactionIdentities(
+  db: D1Database,
+): Promise<TaishinExistingTransactionIdentity[]> {
+  const rows = await db
+    .prepare(
+      `SELECT
+        source_id AS sourceId,
+        posted_date AS postedDate,
+        authorized_at AS authorizedAt,
+        amount,
+        currency,
+        description,
+        counterparty,
+        status,
+        raw_payload AS rawPayload
+       FROM bank_transactions
+       WHERE connector_id = 'taishin'
+         AND source_id LIKE 'taishin:card:tx:%'
+       ORDER BY source_id`,
+    )
+    .all<{
+      sourceId: string;
+      postedDate: string | null;
+      authorizedAt: string | null;
+      amount: number;
+      currency: string;
+      description: string | null;
+      counterparty: string | null;
+      status: BankTransactionStatus;
+      rawPayload: string | null;
+    }>();
+
+  return rows.results.map((row) => ({
+    sourceId: row.sourceId,
+    postedDate: row.postedDate ?? undefined,
+    authorizedAt: row.authorizedAt ?? undefined,
+    amount: row.amount,
+    currency: row.currency,
+    description: row.description ?? undefined,
+    counterparty: row.counterparty ?? undefined,
+    status: row.status,
+    raw: parseRawPayload(row.rawPayload),
+  }));
+}
+
 export function linkCanonicalBankAccountsStatement(db: D1Database) {
   return db.prepare(
     `UPDATE bank_accounts
@@ -221,4 +267,13 @@ export function linkCanonicalBankAccountsStatement(db: D1Database) {
       AND bank_code IS NOT NULL
       AND account_last4 IS NOT NULL`,
   );
+}
+
+function parseRawPayload(payload: string | null) {
+  if (!payload) return undefined;
+  try {
+    return JSON.parse(payload) as unknown;
+  } catch {
+    return undefined;
+  }
 }

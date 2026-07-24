@@ -52,6 +52,20 @@ type TransactionCandidate = Omit<
 type TransactionWithOccurrence = TransactionCandidate & {
   occurrence: number;
 };
+type TaishinTransaction = Omit<BankTransaction, "id" | "connectorId">;
+
+export type TaishinExistingTransactionIdentity = Pick<
+  BankTransaction,
+  | "sourceId"
+  | "postedDate"
+  | "authorizedAt"
+  | "amount"
+  | "currency"
+  | "description"
+  | "counterparty"
+  | "status"
+  | "raw"
+>;
 
 const ACCOUNT_SOURCE_ID = "credit:taishin:main";
 
@@ -65,11 +79,22 @@ export function parseTaishinCreditCardData(
   const billValues = payloads.bills
     .map(responseValue)
     .filter((value): value is JsonRecord => Boolean(value));
-  if (!summaryTwd || billValues.length === 0) {
+  const billEntries = billValues
+    .flatMap((value) => {
+      const bill = parseBill(value);
+      return bill ? [{ value, bill }] : [];
+    })
+    .sort((left, right) =>
+      right.bill.billingPeriod.localeCompare(left.bill.billingPeriod),
+    );
+  const currentBillEntry = billEntries.find(
+    ({ value }) => optionalNumber(value.showCdue) != null,
+  );
+  if (!summaryTwd || !currentBillEntry) {
     throw new Error("台新信用卡 API 缺少額度或帳單資料。");
   }
 
-  const currentBill = billValues[0]!;
+  const currentBill = currentBillEntry.value;
   const postedCandidates = billValues.flatMap(postedTransactions);
   const pendingCandidates = realtimeTransactions(
     responseValue(payloads.realtime),
@@ -86,24 +111,18 @@ export function parseTaishinCreditCardData(
     ),
   ).sort();
 
-  const statementAmount = absoluteNumber(
+  const statementAmount = optionalAbsoluteNumber(
     currentBill.showCbalance ?? summaryTwd["OUT-STMT-BALANCE"],
   );
   const availableCredit = optionalNumber(summaryTwd["OUT-AVAIL-CREDIT"]);
   const creditLimit = optionalNumber(summaryTwd["OUT-CRLIMIT-PERM"]);
   const paymentDueDate = normalizeDate(currentBill.showDueDate);
   const statementClosingDate = normalizeDate(currentBill.showStmtDate);
-  const remainingDue = absoluteNumber(currentBill.showCdue);
+  const remainingDue = Math.abs(optionalNumber(currentBill.showCdue)!);
   const asOfAt = now.toISOString();
 
-  const bills = billValues
-    .map(parseBill)
-    .filter(
-      (
-        bill,
-      ): bill is Omit<CreditCardBill, "id" | "connectorId" | "accountId"> =>
-        Boolean(bill),
-    )
+  const bills = billEntries
+    .map(({ bill }) => bill)
     .slice(0, Math.max(1, Math.min(6, lookbackMonths)));
 
   return {
@@ -154,10 +173,10 @@ function parseBill(
 ): Omit<CreditCardBill, "id" | "connectorId" | "accountId"> | undefined {
   const billingPeriod = normalizePeriod(value.showAccoutnYM);
   if (!billingPeriod) return undefined;
-  const statementAmount = absoluteNumber(value.showCbalance);
-  const paidAmount = absoluteNumber(value.showPayment);
-  const remainingDue = absoluteNumber(value.showCdue);
-  const minimumPayment = absoluteNumber(value.showMinPay);
+  const statementAmount = optionalAbsoluteNumber(value.showCbalance);
+  const paidAmount = optionalAbsoluteNumber(value.showPayment);
+  const remainingDue = optionalAbsoluteNumber(value.showCdue);
+  const minimumPayment = optionalAbsoluteNumber(value.showMinPay);
   const paymentDueDate = normalizeDate(value.showDueDate);
   const statementClosingDate = normalizeDate(value.showStmtDate);
   return {
@@ -166,7 +185,7 @@ function parseBill(
     statementAmount,
     minimumPayment,
     paidAmount,
-    isPaid: remainingDue === 0,
+    isPaid: remainingDue == null ? undefined : remainingDue === 0,
     paymentDueDate,
     statementClosingDate,
     currency: "TWD",
@@ -347,6 +366,202 @@ function mergeTransactionLifecycle(
   );
 }
 
+export function reconcileTaishinTransactionSourceIds(
+  transactions: TaishinTransaction[],
+  existingTransactions: TaishinExistingTransactionIdentity[],
+): TaishinTransaction[] {
+  const incoming = transactions.map((transaction, index) => ({
+    index,
+    transaction,
+    identity: taishinTransactionIdentity(transaction),
+  }));
+  const existing = existingTransactions
+    .map((transaction) => ({
+      transaction,
+      identity: taishinTransactionIdentity(transaction),
+    }))
+    .filter(
+      (
+        entry,
+      ): entry is typeof entry & {
+        identity: NonNullable<typeof entry.identity>;
+      } => Boolean(entry.identity),
+    );
+  const assignments = new Map<number, string>();
+  const consumedExisting = new Set<string>();
+
+  assignUniqueIdentityMatches(
+    incoming,
+    existing,
+    assignments,
+    consumedExisting,
+    (left, right) =>
+      Boolean(
+        left.authorizedAt &&
+        right.authorizedAt &&
+        left.authorizedAt === right.authorizedAt &&
+        merchantNamesMatch(left.description, right.description),
+      ),
+  );
+  assignUniqueIdentityMatches(
+    incoming,
+    existing,
+    assignments,
+    consumedExisting,
+    (left, right) => merchantNamesMatch(left.description, right.description),
+  );
+
+  const reservedSourceIds = new Set(
+    existingTransactions.map(({ sourceId }) => sourceId),
+  );
+  const nextOccurrences = new Map<string, number>();
+  for (const entry of existing) {
+    const occurrence = sourceIdOccurrence(entry.transaction.sourceId);
+    if (occurrence == null) continue;
+    nextOccurrences.set(
+      entry.identity.matchKey,
+      Math.max(
+        nextOccurrences.get(entry.identity.matchKey) ?? 1,
+        occurrence + 1,
+      ),
+    );
+  }
+
+  return incoming.map(({ index, transaction, identity }) => {
+    if (!identity) return transaction;
+    const assignedSourceId = assignments.get(index);
+    if (assignedSourceId) {
+      return withTaishinSourceId(
+        transaction,
+        assignedSourceId,
+        identity.matchKey,
+      );
+    }
+
+    if (!reservedSourceIds.has(transaction.sourceId)) {
+      reservedSourceIds.add(transaction.sourceId);
+      return withTaishinSourceId(
+        transaction,
+        transaction.sourceId,
+        identity.matchKey,
+      );
+    }
+
+    let occurrence = nextOccurrences.get(identity.matchKey) ?? 1;
+    let sourceId = taishinTransactionSourceId(identity.matchKey, occurrence);
+    while (reservedSourceIds.has(sourceId)) {
+      occurrence += 1;
+      sourceId = taishinTransactionSourceId(identity.matchKey, occurrence);
+    }
+    nextOccurrences.set(identity.matchKey, occurrence + 1);
+    reservedSourceIds.add(sourceId);
+    return withTaishinSourceId(transaction, sourceId, identity.matchKey);
+  });
+}
+
+type TaishinTransactionIdentity = {
+  matchKey: string;
+  authorizedAt?: string;
+  description?: string;
+};
+
+function assignUniqueIdentityMatches(
+  incoming: Array<{
+    index: number;
+    transaction: TaishinTransaction;
+    identity: TaishinTransactionIdentity | undefined;
+  }>,
+  existing: Array<{
+    transaction: TaishinExistingTransactionIdentity;
+    identity: TaishinTransactionIdentity;
+  }>,
+  assignments: Map<number, string>,
+  consumedExisting: Set<string>,
+  matches: (
+    left: TaishinTransactionIdentity,
+    right: TaishinTransactionIdentity,
+  ) => boolean,
+) {
+  for (const incomingEntry of incoming) {
+    if (assignments.has(incomingEntry.index) || !incomingEntry.identity)
+      continue;
+    const candidates = existing.filter(
+      (existingEntry) =>
+        !consumedExisting.has(existingEntry.transaction.sourceId) &&
+        existingEntry.identity.matchKey === incomingEntry.identity!.matchKey &&
+        matches(incomingEntry.identity!, existingEntry.identity),
+    );
+    if (candidates.length !== 1) continue;
+
+    const [candidate] = candidates;
+    const competingIncoming = incoming.filter(
+      (entry) =>
+        !assignments.has(entry.index) &&
+        entry.identity?.matchKey === candidate!.identity.matchKey &&
+        matches(entry.identity, candidate!.identity),
+    );
+    if (competingIncoming.length !== 1) continue;
+
+    assignments.set(incomingEntry.index, candidate!.transaction.sourceId);
+    consumedExisting.add(candidate!.transaction.sourceId);
+  }
+}
+
+function taishinTransactionIdentity(
+  transaction: TaishinTransaction | TaishinExistingTransactionIdentity,
+): TaishinTransactionIdentity | undefined {
+  const raw = isRecord(transaction.raw) ? transaction.raw : {};
+  const authorizedAt =
+    stringValue(transaction.authorizedAt).trim() ||
+    stringValue(raw.authorizedAt).trim() ||
+    undefined;
+  const transactionDate =
+    normalizeDate(raw.transactionDate) ??
+    normalizeDate(authorizedAt) ??
+    normalizeDate(transaction.postedDate);
+  if (!transactionDate) return undefined;
+  const rawCardLast4 = stringValue(raw.cardLast4).trim();
+  const cardLast4 =
+    (/^\d{4}$/.test(rawCardLast4) ? rawCardLast4 : last4(rawCardLast4)) ??
+    "unknown";
+  const matchKey =
+    stringValue(raw.lifecycleMatchKey).trim() ||
+    transactionMatchKey(
+      transaction.currency,
+      transactionDate,
+      transaction.amount,
+      cardLast4,
+    );
+  return {
+    matchKey,
+    authorizedAt,
+    description: transaction.description,
+  };
+}
+
+function withTaishinSourceId(
+  transaction: TaishinTransaction,
+  sourceId: string,
+  matchKey: string,
+): TaishinTransaction {
+  return {
+    ...transaction,
+    sourceId,
+    raw: {
+      ...(isRecord(transaction.raw) ? transaction.raw : {}),
+      lifecycleMatchKey: matchKey,
+      duplicateOccurrence: sourceIdOccurrence(sourceId),
+    },
+  };
+}
+
+function sourceIdOccurrence(sourceId: string) {
+  const occurrence = Number(sourceId.match(/:(\d+)$/)?.[1]);
+  return Number.isInteger(occurrence) && occurrence > 0
+    ? occurrence
+    : undefined;
+}
+
 function assignOccurrences(
   candidates: TransactionCandidate[],
 ): TransactionWithOccurrence[] {
@@ -364,12 +579,17 @@ function assignOccurrences(
 function assignSourceId(candidate: TransactionCandidate, occurrence: number) {
   return {
     ...candidate,
-    sourceId: `taishin:card:tx:v1:${candidate.matchKey}:${occurrence}`,
+    sourceId: taishinTransactionSourceId(candidate.matchKey, occurrence),
     raw: {
       ...(candidate.raw as JsonRecord),
+      lifecycleMatchKey: candidate.matchKey,
       duplicateOccurrence: occurrence,
     },
   };
+}
+
+function taishinTransactionSourceId(matchKey: string, occurrence: number) {
+  return `taishin:card:tx:v1:${matchKey}:${occurrence}`;
 }
 
 function groupByMatchKey<T extends TransactionCandidate>(candidates: T[]) {
@@ -486,8 +706,9 @@ function optionalNumber(value: unknown) {
   return negative ? -Math.abs(number) : number;
 }
 
-function absoluteNumber(value: unknown) {
-  return Math.abs(optionalNumber(value) ?? 0);
+function optionalAbsoluteNumber(value: unknown) {
+  const number = optionalNumber(value);
+  return number == null ? undefined : Math.abs(number);
 }
 
 function last4(value: string) {
