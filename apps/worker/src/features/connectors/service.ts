@@ -10,6 +10,7 @@ const PUBLIC_FIELDS: Record<string, string[]> = {
   esun: ["lookbackMonths"],
   cathaybk: ["lookbackMonths"],
   sinopac: ["lookbackMonths"],
+  taishin: ["lookbackMonths"],
   einvoice: ["periodsBack", "fetchDetails"],
 };
 
@@ -23,15 +24,19 @@ export async function getConnectorSettingsView(
   const settings = await findConnectorSettings(env.DB, connectorId);
   let sessionAvailable = false;
   let credentialsComplete = Boolean(settings);
-  if (connectorId === "sinopac" && settings) {
+  if ((connectorId === "sinopac" || connectorId === "taishin") && settings) {
     const stored = await decryptJson<Record<string, unknown>>(
       settings.encrypted_config,
       configEncryptionKey(env),
     );
+    credentialsComplete = ["userId", "account", "password"].every(
+      (key) => typeof stored[key] === "string" && stored[key].length > 0,
+    );
     sessionAvailable =
       typeof stored.sessionCookies === "string" &&
       stored.sessionCookies.length > 0 &&
-      stored.protocol === "sinopac-mobile-app-json-v1";
+      (connectorId === "taishin" ||
+        stored.protocol === "sinopac-mobile-app-json-v1");
   }
   if (connectorId === "tdcc" && settings) {
     const stored = await decryptJson<Record<string, unknown>>(
@@ -132,6 +137,20 @@ export async function updateConnectorSettings(
       ])
         delete mergedConfig[key];
     }
+    if (
+      connectorId === "taishin" &&
+      bankCredentialsChanged(storedConfig, rawConfig)
+    ) {
+      for (const key of [
+        "sessionCookies",
+        "sessionCreatedAt",
+        "browserSessionId",
+        "browserSessionExpiresAt",
+        "captchaDigitCount",
+        "captcha",
+      ])
+        delete mergedConfig[key];
+    }
     shouldClearTdccSession =
       connectorId === "tdcc" &&
       Boolean(existing) &&
@@ -172,6 +191,19 @@ function einvoiceCredentialsChanged(
 }
 
 function sinopacCredentialsChanged(
+  stored: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+) {
+  return ["userId", "account", "password"].some(
+    (key) =>
+      key in incoming &&
+      incoming[key] !== undefined &&
+      incoming[key] !== "" &&
+      incoming[key] !== stored[key],
+  );
+}
+
+function bankCredentialsChanged(
   stored: Record<string, unknown>,
   incoming: Record<string, unknown>,
 ) {

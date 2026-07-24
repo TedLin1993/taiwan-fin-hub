@@ -24,6 +24,11 @@ export const connectorDefinitions: ConnectorDefinition[] = [
     title: "永豐行動銀行",
     description: "信用卡帳務、近期帳單與消費",
   },
+  {
+    id: "taishin",
+    title: "台新銀行",
+    description: "信用卡額度、帳單與即時消費",
+  },
 ];
 
 export const connectorFields: Record<ConnectorId, ConnectorField[]> = {
@@ -71,6 +76,17 @@ export const connectorFields: Record<ConnectorId, ConnectorField[]> = {
       label: "帳單往回月份",
       type: "number",
       placeholder: "3",
+    },
+  ],
+  taishin: [
+    { key: "userId", label: "身分證字號／統編", type: "text" },
+    { key: "account", label: "使用者代號", type: "text" },
+    { key: "password", label: "使用者密碼", type: "password" },
+    {
+      key: "lookbackMonths",
+      label: "帳單往回月份（最多 6 期）",
+      type: "number",
+      placeholder: "6",
     },
   ],
 };

@@ -213,7 +213,7 @@ export interface ApiErrorResponse {
   };
 }
 
-export const supportedConnectorIds = ["einvoice", "tdcc", "esun", "cathaybk", "sinopac"] as const;
+export const supportedConnectorIds = ["einvoice", "tdcc", "esun", "cathaybk", "sinopac", "taishin"] as const;
 export type ConnectorId = (typeof supportedConnectorIds)[number];
 
 export function isConnectorId(value: string): value is ConnectorId {

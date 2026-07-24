@@ -14,7 +14,7 @@
     ShieldCheck,
     Smartphone,
   } from "@lucide/svelte";
-  import SinopacConnectionHelp from "./SinopacConnectionHelp.svelte";
+  import BrowserBankConnectionHelp from "./BrowserBankConnectionHelp.svelte";
   import TdccConnectionProgress from "./TdccConnectionProgress.svelte";
   import Card from "@/shared/ui/Card.svelte";
   import Button from "@/shared/ui/Button.svelte";
@@ -36,6 +36,7 @@
     SyncTarget,
   } from "@/data/connectors/types";
   import { formatDateTime } from "@/shared/format/financial";
+  import { browserCaptchaFailure } from "./browser-captcha";
 
   let {
     api,
@@ -64,16 +65,20 @@
   let tdccSetupStep = $state<"credentials" | "email" | "sms" | "complete">(
     "credentials",
   );
-  let sinopacCaptchaImage = $state("");
-  let sinopacCaptcha = $state("");
+  let bankCaptchaImage = $state("");
+  let bankCaptcha = $state("");
+  let bankCaptchaDigitCount = $state(6);
   let pendingSyncTarget = $state<SyncTarget>("default");
   const job = $derived(
     ($jobs.data ?? []).find(
       (j) => j.connectorId === connectorId && j.scope === "all",
     ),
   );
-  const sinopacSessionAvailable = $derived(
-    connectorId === "sinopac" && Boolean($settings.data?.sessionAvailable),
+  const browserBank = $derived(
+    connectorId === "sinopac" || connectorId === "taishin",
+  );
+  const browserBankSessionAvailable = $derived(
+    browserBank && Boolean($settings.data?.sessionAvailable),
   );
   const tdccConnectionReady = $derived(
     connectorId === "tdcc" && Boolean($settings.data?.sessionAvailable),
@@ -155,7 +160,7 @@
         qc.invalidateQueries({ queryKey: queryKeys.invoices });
       else if (connectorId === "esun" || connectorId === "cathaybk")
         qc.invalidateQueries({ queryKey: queryKeys.bank });
-      else if (connectorId === "sinopac") {
+      else if (browserBank) {
         qc.invalidateQueries({
           queryKey: queryKeys.connectorSettings(connectorId),
         });
@@ -176,7 +181,7 @@
     onError: (e) => {
       if (handleTdccVerificationRequired(e)) return;
       error = e instanceof Error ? e.message : "同步失敗";
-      if (connectorId === "sinopac")
+      if (browserBank)
         qc.invalidateQueries({
           queryKey: queryKeys.connectorSettings(connectorId),
         });
@@ -207,33 +212,41 @@
       error = e instanceof Error ? e.message : "集保連線失敗";
     },
   });
-  const prepareSinopac = createMutation({
+  const prepareBrowserBank = createMutation({
     mutationFn: () => {
       if (demoMode) throw new Error("Demo site 已停用連接器同步。");
-      return api.post<{ captchaImage: string; expiresAt: string }>(
-        "/api/connectors/sinopac/captcha",
-      );
+      if (!browserBank) throw new Error("此資料來源不支援圖形驗證。");
+      return api.post<{
+        captchaImage: string;
+        expiresAt: string;
+        digitCount?: number;
+      }>(`/api/connectors/${connectorId}/captcha`);
     },
     onSuccess: (data) => {
       error = "";
-      sinopacCaptcha = "";
-      sinopacCaptchaImage = data.captchaImage;
+      bankCaptcha = "";
+      bankCaptchaImage = data.captchaImage;
+      bankCaptchaDigitCount = data.digitCount ?? 6;
     },
     onError: (e) => (error = e instanceof Error ? e.message : "取得驗證碼失敗"),
   });
-  const verifySinopac = createMutation({
+  const verifyBrowserBank = createMutation({
     mutationFn: () => {
       if (demoMode) throw new Error("Demo site 已停用連接器同步。");
-      if (!/^\d{6}$/.test(sinopacCaptcha.trim()))
-        throw new Error("請輸入圖片中的六位數字驗證碼。");
-      return api.post("/api/connectors/sinopac/sync", {
-        captcha: sinopacCaptcha.trim(),
+      if (
+        !new RegExp(`^\\d{${bankCaptchaDigitCount}}$`).test(bankCaptcha.trim())
+      )
+        throw new Error(
+          `請輸入圖片中的 ${bankCaptchaDigitCount} 位數字驗證碼。`,
+        );
+      return api.post(`/api/connectors/${connectorId}/sync`, {
+        captcha: bankCaptcha.trim(),
       });
     },
     onSuccess: () => {
       error = "";
-      sinopacCaptcha = "";
-      sinopacCaptchaImage = "";
+      bankCaptcha = "";
+      bankCaptchaImage = "";
       qc.invalidateQueries({
         queryKey: queryKeys.connectorSettings(connectorId),
       });
@@ -241,9 +254,20 @@
       qc.invalidateQueries({ queryKey: queryKeys.summary });
       qc.invalidateQueries({ queryKey: queryKeys.bank });
       qc.invalidateQueries({ queryKey: queryKeys.bills });
-      if (job && !job.enabled) $updateJob.mutate({ enabled: true });
+      if (connectorId === "sinopac" && job && !job.enabled)
+        $updateJob.mutate({ enabled: true });
     },
-    onError: (e) => (error = e instanceof Error ? e.message : "驗證或同步失敗"),
+    onError: (e) => {
+      const failure = browserCaptchaFailure(e);
+      error = failure.message;
+      if (failure.sessionInvalidated) {
+        bankCaptcha = "";
+        bankCaptchaImage = "";
+        qc.invalidateQueries({
+          queryKey: queryKeys.connectorSettings(connectorId),
+        });
+      }
+    },
   });
   const verifyOtp = createMutation({
     mutationFn: () => {
@@ -366,11 +390,13 @@
         >
           <ShieldCheck class="size-3.5" />等待完成身分驗證
         </span>
-      {:else if connectorId === "sinopac"}
-        {#if sinopacSessionAvailable}
+      {:else if browserBank}
+        {#if browserBankSessionAvailable}
           <Button
             size="sm"
-            disabled={demoMode || $sync.isPending || $verifySinopac.isPending}
+            disabled={demoMode ||
+              $sync.isPending ||
+              $verifyBrowserBank.isPending}
             onclick={() => {
               error = "";
               $sync.mutate("default");
@@ -383,13 +409,13 @@
             size="sm"
             variant="outline"
             disabled={demoMode ||
-              $prepareSinopac.isPending ||
-              $verifySinopac.isPending}
+              $prepareBrowserBank.isPending ||
+              $verifyBrowserBank.isPending}
             onclick={() => {
               error = "";
-              $prepareSinopac.mutate();
+              $prepareBrowserBank.mutate();
             }}
-            ><KeyRound class="size-4" />{$prepareSinopac.isPending
+            ><KeyRound class="size-4" />{$prepareBrowserBank.isPending
               ? "取得中…"
               : "人工重新驗證"}</Button
           >
@@ -398,8 +424,8 @@
             size="sm"
             disabled={demoMode ||
               $sync.isPending ||
-              $prepareSinopac.isPending ||
-              $verifySinopac.isPending}
+              $prepareBrowserBank.isPending ||
+              $verifyBrowserBank.isPending}
             onclick={() => {
               error = "";
               $sync.mutate("default");
@@ -413,13 +439,13 @@
             variant="outline"
             disabled={demoMode ||
               $sync.isPending ||
-              $prepareSinopac.isPending ||
-              $verifySinopac.isPending}
+              $prepareBrowserBank.isPending ||
+              $verifyBrowserBank.isPending}
             onclick={() => {
               error = "";
-              $prepareSinopac.mutate();
+              $prepareBrowserBank.mutate();
             }}
-            ><KeyRound class="size-4" />{$prepareSinopac.isPending
+            ><KeyRound class="size-4" />{$prepareBrowserBank.isPending
               ? "取得中…"
               : "人工輸入驗證碼"}</Button
           >
@@ -444,17 +470,19 @@
       step={tdccSetupStep}
       connectionReady={tdccConnectionReady}
     />
-  {:else if connectorId === "sinopac"}
-    <SinopacConnectionHelp
-      bind:captcha={sinopacCaptcha}
-      captchaImage={sinopacCaptchaImage}
-      preparing={$prepareSinopac.isPending}
-      verifying={$verifySinopac.isPending}
+  {:else if browserBank}
+    <BrowserBankConnectionHelp
+      bankName={connectorId === "taishin" ? "台新" : "永豐"}
+      bind:captcha={bankCaptcha}
+      captchaImage={bankCaptchaImage}
+      digitCount={bankCaptchaDigitCount}
+      preparing={$prepareBrowserBank.isPending}
+      verifying={$verifyBrowserBank.isPending}
       onVerify={() => {
         error = "";
-        $verifySinopac.mutate();
+        $verifyBrowserBank.mutate();
       }}
-      onRefresh={() => $prepareSinopac.mutate()}
+      onRefresh={() => $prepareBrowserBank.mutate()}
     />
   {/if}
   <div
@@ -466,8 +494,8 @@
           <span class="font-semibold text-ink">
             自動同步：{job?.enabled ? "開" : "關"}
           </span>
-          {#if connectorId === "sinopac"}<span
-              >登入：{sinopacSessionAvailable
+          {#if browserBank}<span
+              >登入：{browserBankSessionAvailable
                 ? "session 可自動續用"
                 : "下次同步會自動驗證"}</span
             >{/if}
@@ -591,7 +619,7 @@
         {/if}
       </div>
     {/if}
-    {#if error || (job?.lastError && !sinopacCaptchaImage)}<p
+    {#if error || (job?.lastError && !bankCaptchaImage)}<p
         class="mt-2 text-xs text-coral"
       >
         {error ? `本次同步：${error}` : `上次同步：${job?.lastError}`}

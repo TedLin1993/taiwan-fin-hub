@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   safelySendSyncNotification: vi.fn(),
   startSyncLockHeartbeat: vi.fn(),
   syncEsun: vi.fn(),
+  syncTaishin: vi.fn(),
 }));
 
 vi.mock("@taiwan-fin-hub/db", () => ({
@@ -39,6 +40,7 @@ vi.mock("../../../src/features/sync/service", () => ({
   syncEinvoice: vi.fn(),
   syncEsun: mocks.syncEsun,
   syncSinopac: vi.fn(),
+  syncTaishin: mocks.syncTaishin,
   syncTdcc: vi.fn(),
   SYNC_LOCK_LEASE_MS: 30 * 60 * 1000,
 }));
@@ -48,20 +50,14 @@ vi.mock("../../../src/features/notifications/service", () => ({
   safelySendSyncNotification: mocks.safelySendSyncNotification,
 }));
 
-vi.mock(
-  "../../../src/features/sync/notification-batch-repository",
-  () => ({
-    claimCompletedDefaultScheduleBatch:
-      mocks.claimCompletedDefaultScheduleBatch,
-    ensureDefaultScheduleBatch: mocks.ensureDefaultScheduleBatch,
-    finalizeOpenDefaultScheduleBatch: mocks.finalizeOpenDefaultScheduleBatch,
-    findNextDefaultScheduleBatchJob:
-      mocks.findNextDefaultScheduleBatchJob,
-    findOpenDefaultScheduleBatchId: mocks.findOpenDefaultScheduleBatchId,
-    recordDefaultScheduleBatchResult:
-      mocks.recordDefaultScheduleBatchResult,
-  }),
-);
+vi.mock("../../../src/features/sync/notification-batch-repository", () => ({
+  claimCompletedDefaultScheduleBatch: mocks.claimCompletedDefaultScheduleBatch,
+  ensureDefaultScheduleBatch: mocks.ensureDefaultScheduleBatch,
+  finalizeOpenDefaultScheduleBatch: mocks.finalizeOpenDefaultScheduleBatch,
+  findNextDefaultScheduleBatchJob: mocks.findNextDefaultScheduleBatchJob,
+  findOpenDefaultScheduleBatchId: mocks.findOpenDefaultScheduleBatchId,
+  recordDefaultScheduleBatchResult: mocks.recordDefaultScheduleBatchResult,
+}));
 
 import { runSchedulerTick } from "../../../src/features/sync/scheduler";
 
@@ -71,10 +67,11 @@ const scheduledController = {
 
 function syncJob(
   scheduleMode: "inherit" | "custom" = "inherit",
+  connectorId: ConnectorId = "esun",
 ): SyncJobRow<ConnectorId> {
   return {
-    id: "esun:all",
-    connector_id: "esun",
+    id: `${connectorId}:all`,
+    connector_id: connectorId,
     scope: "all",
     enabled: 1,
     interval_minutes: 60,
@@ -110,6 +107,11 @@ beforeEach(() => {
     connectorId: "esun",
     scope: "all",
     records: 1,
+  });
+  mocks.syncTaishin.mockResolvedValue({
+    connectorId: "taishin",
+    scope: "all",
+    records: 2,
   });
   mocks.recordDefaultScheduleBatchResult.mockResolvedValue(true);
   mocks.claimCompletedDefaultScheduleBatch.mockResolvedValue([
@@ -181,5 +183,18 @@ describe("scheduled sync rounds", () => {
       { connectorId: "esun", status: "success" },
     );
     expect(mocks.recordDefaultScheduleBatchResult).not.toHaveBeenCalled();
+  });
+
+  it("dispatches a scheduled Taishin job through the connector sync", async () => {
+    const job = syncJob("custom", "taishin");
+    mocks.findOpenDefaultScheduleBatchId.mockResolvedValue(null);
+    mocks.findNextDueSyncJob.mockResolvedValue(job);
+
+    await runSchedulerTick(env(), scheduledController);
+
+    expect(mocks.syncTaishin).toHaveBeenCalledWith(
+      expect.anything(),
+      "scheduled",
+    );
   });
 });

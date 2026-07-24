@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  recognizeNumericCaptcha,
   recognizeValidateNumber,
   VALIDATE_NUMBER_MODEL,
   ValidateNumberOcrError,
@@ -66,5 +67,19 @@ describe("Gemma 4 validation number OCR", () => {
     await expect(
       recognizeValidateNumber(ai, image, "image/jpeg"),
     ).rejects.toBeInstanceOf(ValidateNumberOcrUnavailableError);
+  });
+
+  it("supports a connector-specified numeric captcha length", async () => {
+    const run = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "3842" } }],
+    });
+
+    await expect(
+      recognizeNumericCaptcha({ run } as unknown as Ai, image, "image/jpeg", 4),
+    ).resolves.toMatchObject({ number: "3842" });
+
+    expect(JSON.stringify(run.mock.calls[0]?.[1])).toContain(
+      "exactly 4 digits",
+    );
   });
 });

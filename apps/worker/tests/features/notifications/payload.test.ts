@@ -33,6 +33,15 @@ describe("sync notification payload", () => {
     expect(payload.url).toBe("/#/data-sources");
   });
 
+  it("labels Taishin scheduled sync notifications", () => {
+    expect(
+      syncNotificationPayload({
+        connectorId: "taishin",
+        status: "success",
+      }).body,
+    ).toBe("台新銀行已完成排程同步。");
+  });
+
   it("maps statuses to their preference switches", () => {
     const preferences: NotificationPreferences = {
       success: false,

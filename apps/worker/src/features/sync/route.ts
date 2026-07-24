@@ -7,6 +7,10 @@ import { zValidator } from "@hono/zod-validator";
 import { type Context, type Hono } from "hono";
 import { z } from "zod";
 import { SinopacBrowserCapacityError } from "../../connectors/sinopac";
+import {
+  TaishinBrowserCapacityError,
+  TaishinConnectionError,
+} from "../../connectors/taishin";
 import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
 import { jsonError } from "../../platform/http";
@@ -14,11 +18,13 @@ import { validationHook } from "../../platform/validation";
 import {
   NeedsUserActionError,
   prepareSinopacCaptchaSession,
+  prepareTaishinCaptchaSession,
   safeErrorMessage,
   syncCathaybk,
   syncEinvoice,
   syncEsun,
   syncSinopac,
+  syncTaishin,
   syncTdcc,
   SyncAlreadyRunningError,
   SYNC_SCOPE_ALL,
@@ -42,6 +48,13 @@ const sinopacSyncBodySchema = z.object({
   captcha: z
     .string()
     .regex(/^\d{6}$/)
+    .optional(),
+});
+
+const taishinSyncBodySchema = z.object({
+  captcha: z
+    .string()
+    .regex(/^\d{4,8}$/)
     .optional(),
 });
 
@@ -201,6 +214,51 @@ function registerSyncRoutes(api: Hono<AppBindings>) {
       );
     },
   );
+
+  api.post("/connectors/taishin/captcha", async (c) => {
+    try {
+      return c.json(await prepareTaishinCaptchaSession(c.env));
+    } catch (error) {
+      if (error instanceof SyncAlreadyRunningError) {
+        return jsonError(
+          "SYNC_ALREADY_RUNNING",
+          "台新已有驗證或同步作業正在進行。",
+          409,
+        );
+      }
+      if (error instanceof TaishinBrowserCapacityError) {
+        const response = jsonError("TAISHIN_BROWSER_BUSY", error.message, 429);
+        response.headers.set("Retry-After", String(error.retryAfterSeconds));
+        return response;
+      }
+      if (error instanceof NeedsUserActionError) {
+        return jsonError("USER_ACTION_REQUIRED", error.message, 400);
+      }
+      return jsonError(
+        "TAISHIN_CONNECTION_FAILED",
+        safeErrorMessage(error),
+        502,
+      );
+    }
+  });
+
+  api.post(
+    "/connectors/taishin/sync",
+    zValidator(
+      "json",
+      taishinSyncBodySchema,
+      validationHook("INVALID_REQUEST", "Taishin sync options are invalid."),
+    ),
+    async (c) => {
+      const overrides = c.req.valid("json");
+      return syncRouteResponse(
+        c,
+        withManualSyncLock(c.env, "taishin", SYNC_SCOPE_ALL, () =>
+          syncTaishin(c.env, "manual", overrides),
+        ),
+      );
+    },
+  );
 }
 
 async function syncRouteResponse(
@@ -235,6 +293,14 @@ async function syncRouteResponse(
       const response = jsonError("SINOPAC_BROWSER_BUSY", error.message, 429);
       response.headers.set("Retry-After", String(error.retryAfterSeconds));
       return response;
+    }
+    if (error instanceof TaishinBrowserCapacityError) {
+      const response = jsonError("TAISHIN_BROWSER_BUSY", error.message, 429);
+      response.headers.set("Retry-After", String(error.retryAfterSeconds));
+      return response;
+    }
+    if (error instanceof TaishinConnectionError) {
+      return jsonError("TAISHIN_CONNECTION_FAILED", error.message, 502);
     }
     throw error;
   }
