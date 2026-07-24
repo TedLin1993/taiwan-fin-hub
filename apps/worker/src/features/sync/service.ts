@@ -17,6 +17,7 @@ import { createEsunConnector } from "../../connectors/esun";
 import {
   createTaishinConnector,
   prepareTaishinCaptcha,
+  TaishinConnectionError,
   TaishinVerificationRequiredError,
 } from "../../connectors/taishin";
 import {
@@ -686,6 +687,11 @@ export async function syncTaishin(
     delete cleaned.browserSessionId;
     delete cleaned.browserSessionExpiresAt;
     delete cleaned.captchaDigitCount;
+    if (error instanceof TaishinConnectionError && error.sessionCookies) {
+      cleaned.sessionCookies = error.sessionCookies;
+      cleaned.sessionCreatedAt =
+        error.sessionCreatedAt ?? new Date().toISOString();
+    }
     if (error instanceof TaishinVerificationRequiredError) {
       delete cleaned.sessionCookies;
       delete cleaned.sessionCreatedAt;

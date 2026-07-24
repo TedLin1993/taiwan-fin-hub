@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   activityCashAmountTwd,
   activityCashFlow,
+  activityDisplayAmount,
   buildActivityCategorySlices,
 } from "./chart";
 import type { ActivityItem } from "./types";
@@ -22,12 +23,12 @@ function item(overrides: Partial<ActivityItem>): ActivityItem {
 }
 
 describe("activity category chart", () => {
-  it("converts cash flow to TWD and treats cards and invoices as expenses", () => {
+  it("converts cash flow to TWD and keeps invoices as expenses", () => {
     expect(
       activityCashAmountTwd(item({ amount: 10, currency: "USD" }), { USD: 32 }),
     ).toBe(320);
     expect(
-      activityCashAmountTwd(item({ source: "card", amount: 500 }), {}),
+      activityCashAmountTwd(item({ source: "card", amount: -500 }), {}),
     ).toBe(-500);
     expect(
       activityCashAmountTwd(item({ source: "invoice", amount: 500 }), {}),
@@ -35,6 +36,28 @@ describe("activity category chart", () => {
     expect(activityCashFlow(item({ source: "invoice", amount: 500 }))).toBe(
       "expense",
     );
+  });
+
+  it("treats a positive card discount as income in display and totals", () => {
+    const discount = item({
+      source: "card",
+      amount: 63,
+      category: "購物",
+      title: "信用卡消費折抵_樂購蝦皮－daniel0329",
+    });
+
+    expect(activityDisplayAmount(discount)).toBe(63);
+    expect(activityCashAmountTwd(discount, {})).toBe(63);
+    expect(activityCashFlow(discount)).toBe("income");
+    expect(buildActivityCategorySlices([discount], "expense", {})).toEqual([]);
+    expect(buildActivityCategorySlices([discount], "income", {})).toEqual([
+      {
+        category: "購物",
+        amount: 63,
+        percentage: 100,
+        color: "#3e6f7c",
+      },
+    ]);
   });
 
   it("groups categories and sorts them by amount descending", () => {

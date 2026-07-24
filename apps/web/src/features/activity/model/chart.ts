@@ -20,6 +20,11 @@ export const ACTIVITY_CATEGORY_COLORS = [
   "#68747b",
 ];
 
+export function activityDisplayAmount(item: ActivityItem) {
+  if (item.amount == null) return undefined;
+  return item.source === "invoice" ? -Math.abs(item.amount) : item.amount;
+}
+
 export function activityCashFlow(item: ActivityItem): ActivityFlow | null {
   if (
     item.amount == null ||
@@ -28,9 +33,10 @@ export function activityCashFlow(item: ActivityItem): ActivityFlow | null {
       item.source !== "invoice")
   )
     return null;
-  if (item.source === "card" || item.source === "invoice") return "expense";
-  if (item.amount > 0) return "income";
-  if (item.amount < 0) return "expense";
+  const amount = activityDisplayAmount(item);
+  if (amount == null) return null;
+  if (amount > 0) return "income";
+  if (amount < 0) return "expense";
   return null;
 }
 
@@ -47,10 +53,7 @@ export function activityCashAmountTwd(
   )
     return 0;
   const rate = item.currency === "TWD" ? 1 : (rates[item.currency] ?? 0);
-  const converted = item.amount * rate;
-  return item.source === "card" || item.source === "invoice"
-    ? -Math.abs(converted)
-    : converted;
+  return (activityDisplayAmount(item) ?? 0) * rate;
 }
 
 export function buildActivityCategorySlices(

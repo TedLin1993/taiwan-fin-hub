@@ -9,7 +9,7 @@ const summary = {
       "OUT-CRLIMIT-PERM": "200,000",
     },
   },
-  error: null,
+  error: "",
 };
 
 function bill(period: string) {

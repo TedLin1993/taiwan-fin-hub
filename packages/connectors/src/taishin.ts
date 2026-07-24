@@ -59,7 +59,7 @@ export function parseTaishinCreditCardData(
   now = new Date(),
 ): TaishinCreditCardData {
   const summary = responseValue(payloads.summary);
-  const summaryTwd = firstRecordValue(summary);
+  const summaryTwd = firstRecordValue(summary) ?? {};
   const billValues = payloads.bills
     .map(responseValue)
     .filter((value): value is JsonRecord => Boolean(value));
@@ -71,14 +71,10 @@ export function parseTaishinCreditCardData(
     .sort((left, right) =>
       right.bill.billingPeriod.localeCompare(left.bill.billingPeriod),
     );
-  const currentBillEntry = billEntries.find(
-    ({ value }) => optionalNumber(value.showCdue) != null,
-  );
-  if (!summaryTwd || !currentBillEntry) {
-    throw new Error("台新信用卡 API 缺少額度或帳單資料。");
-  }
-
-  const currentBill = currentBillEntry.value;
+  const currentBillEntry =
+    billEntries.find(({ value }) => optionalNumber(value.showCdue) != null) ??
+    billEntries[0];
+  const currentBill = currentBillEntry?.value;
   const postedCandidates = billValues.flatMap(postedTransactions);
   const pendingCandidates = realtimeTransactions(
     responseValue(payloads.realtime),
@@ -96,13 +92,14 @@ export function parseTaishinCreditCardData(
   ).sort();
 
   const statementAmount = optionalAbsoluteNumber(
-    currentBill.showCbalance ?? summaryTwd["OUT-STMT-BALANCE"],
+    currentBill?.showCbalance ?? summaryTwd["OUT-STMT-BALANCE"],
   );
   const availableCredit = optionalNumber(summaryTwd["OUT-AVAIL-CREDIT"]);
   const creditLimit = optionalNumber(summaryTwd["OUT-CRLIMIT-PERM"]);
-  const paymentDueDate = normalizeDate(currentBill.showDueDate);
-  const statementClosingDate = normalizeDate(currentBill.showStmtDate);
-  const remainingDue = Math.abs(optionalNumber(currentBill.showCdue)!);
+  const paymentDueDate = normalizeDate(currentBill?.showDueDate);
+  const statementClosingDate = normalizeDate(currentBill?.showStmtDate);
+  const parsedRemainingDue = optionalAbsoluteNumber(currentBill?.showCdue);
+  const remainingDue = parsedRemainingDue ?? 0;
   const asOfAt = now.toISOString();
 
   const bills = billEntries
@@ -121,26 +118,29 @@ export function parseTaishinCreditCardData(
         raw: { cardLast4s },
       },
     ],
-    bankBalanceSnapshots: [
-      {
-        accountId: ACCOUNT_SOURCE_ID,
-        sourceId: `${ACCOUNT_SOURCE_ID}:${asOfAt.slice(0, 10)}`,
-        balance: remainingDue > 0 ? -remainingDue : 0,
-        availableBalance: availableCredit,
-        statementBalance: statementAmount,
-        paymentDueDate,
-        statementClosingDate,
-        noPaymentNeeded: remainingDue === 0,
-        currency: "TWD",
-        asOfAt,
-        raw: {
-          statementAmount,
-          availableCredit,
-          paymentDueDate,
-          statementClosingDate,
-        },
-      },
-    ],
+    bankBalanceSnapshots: currentBill
+      ? [
+          {
+            accountId: ACCOUNT_SOURCE_ID,
+            sourceId: `${ACCOUNT_SOURCE_ID}:${asOfAt.slice(0, 10)}`,
+            balance: remainingDue > 0 ? -remainingDue : 0,
+            availableBalance: availableCredit,
+            statementBalance: statementAmount,
+            paymentDueDate,
+            statementClosingDate,
+            noPaymentNeeded:
+              parsedRemainingDue == null ? undefined : parsedRemainingDue === 0,
+            currency: "TWD",
+            asOfAt,
+            raw: {
+              statementAmount,
+              availableCredit,
+              paymentDueDate,
+              statementClosingDate,
+            },
+          },
+        ]
+      : [],
     bankTransactions: transactions.map((transaction) => ({
       ...transaction,
       accountId: ACCOUNT_SOURCE_ID,
@@ -422,10 +422,7 @@ function normalizeMerchantName(value: string | undefined) {
 
 function responseValue(value: unknown): JsonRecord | undefined {
   if (!isRecord(value)) return undefined;
-  if (
-    value.error != null &&
-    (!isRecord(value.error) || Object.keys(value.error).length > 0)
-  ) {
+  if (Boolean(value.error)) {
     throw new Error("台新信用卡 API 回傳錯誤。");
   }
   return isRecord(value.value) ? value.value : undefined;
