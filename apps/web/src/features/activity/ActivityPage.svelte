@@ -53,6 +53,7 @@
     buildActivityCategorySlices,
     activityCashAmountTwd,
     activityCashFlow,
+    activityDisplayAmount,
   } from "./model/chart";
   import {
     deduplicateBankTransactions,
@@ -519,11 +520,6 @@
     if (item.invoiceAmount == null || item.amount == null) return 0;
     return Math.abs(item.invoiceAmount - Math.abs(item.amount));
   }
-  function renderedAmount(item: ActivityItem) {
-    return item.source === "card" || item.source === "invoice"
-      ? -Math.abs(item.amount ?? 0)
-      : item.amount;
-  }
   function countMatches() {
     if (!pending) return 0;
     return activityBankTransactions.filter((t) =>
@@ -733,7 +729,7 @@
             >
               沒有符合條件的活動。
             </p>{:else}{#each filtered.slice(0, 100) as item (item.source + "-" + item.id)}{@const amount =
-                renderedAmount(item)}
+                activityDisplayAmount(item)}
               <button
                 aria-label={`查看 ${item.title} 活動詳情`}
                 class={`flex w-full min-w-0 items-center gap-3 px-4 py-3 text-left transition hover:bg-paper ${item.excludedFromCalculation ? "bg-ink/[0.025]" : ""}`}
@@ -785,7 +781,7 @@
                     >沒有符合條件的活動。</td
                   ></tr
                 >{:else}{#each filtered.slice(0, 100) as item (item.source + "-" + item.id)}{@const amount =
-                    renderedAmount(item)}<tr
+                    activityDisplayAmount(item)}<tr
                     aria-label={`查看 ${item.title} 活動詳情`}
                     class={`cursor-pointer transition hover:bg-paper focus-visible:outline-2 focus-visible:outline-steel ${item.excludedFromCalculation ? "bg-ink/[0.025]" : ""}`}
                     onclick={() => openDetail(item)}
@@ -836,7 +832,7 @@
       >
     </div>
     {#if detailItem}
-      {@const amount = renderedAmount(detailItem)}
+      {@const amount = activityDisplayAmount(detailItem)}
       {@const transaction = transactionForItem(detailItem)}
       {@const invoice = invoiceForItem(detailItem)}
       <div class="fixed inset-0 z-[60] bg-ink/40 md:flex md:justify-end">

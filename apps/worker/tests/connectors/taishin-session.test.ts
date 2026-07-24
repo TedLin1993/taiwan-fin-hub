@@ -13,6 +13,7 @@ import {
   createTaishinConnector,
   prepareTaishinCaptcha,
   TaishinBrowserCapacityError,
+  TaishinConnectionError,
   TaishinCredentialRejectedError,
 } from "../../src/connectors/taishin";
 
@@ -75,7 +76,6 @@ function rejectLoginSequence(
     .mockResolvedValueOnce(selectors)
     .mockResolvedValueOnce(captchaTarget)
     .mockResolvedValueOnce(true)
-    .mockResolvedValueOnce(false)
     .mockResolvedValueOnce(detail);
 }
 
@@ -93,11 +93,11 @@ beforeEach(() => {
 describe("Taishin browser session lifecycle", () => {
   it("reuses valid encrypted cookies without running OCR", async () => {
     const browserPage = page();
-    const response = (value: unknown) => ({
+    const response = (value: unknown, error: unknown = null) => ({
       ok: true,
       status: 200,
       contentType: "application/json",
-      text: JSON.stringify({ value, error: null }),
+      text: JSON.stringify({ value, error }),
     });
     const activeSession = {
       ok: true,
@@ -110,17 +110,20 @@ describe("Taishin browser session lifecycle", () => {
     };
     browserPage.evaluate
       .mockResolvedValueOnce(activeSession)
-      .mockResolvedValueOnce(activeSession)
-      .mockResolvedValueOnce(
-        response({
-          "001": {
-            "OUT-AVAIL-CREDIT": "100000",
-            "OUT-STMT-BALANCE": "1200",
-            "OUT-CRLIMIT-PERM": "200000",
-          },
-        }),
-      )
       .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }))
+      .mockResolvedValueOnce(
+        response(
+          {
+            "001": {
+              "OUT-AVAIL-CREDIT": "100000",
+              "OUT-STMT-BALANCE": "1200",
+              "OUT-CRLIMIT-PERM": "200000",
+              "OUT-DTE-LST-STMT": "20260720",
+            },
+          },
+          "",
+        ),
+      )
       .mockResolvedValueOnce(
         response({
           showAccoutnYM: "2026/07",
@@ -148,6 +151,231 @@ describe("Taishin browser session lifecycle", () => {
     expect(browserPage.setCookie).toHaveBeenCalledOnce();
     expect(recognize).not.toHaveBeenCalled();
     expect(result.bankAccounts).toHaveLength(1);
+    expect(browserPage.evaluate).toHaveBeenCalledWith(expect.any(Function), {
+      path: "/TIBNetBank/svc/web4/rb0708rwd/qryRealTime",
+      body: "",
+      timeoutMs: 8_000,
+    });
+    expect(browserPage.evaluate).toHaveBeenCalledWith(expect.any(Function), {
+      path: "/TIBNetBank/svc/web4/rb0708rwd/doXTPA",
+      body: {},
+      timeoutMs: 4_000,
+    });
+    expect(browserPage.evaluate).toHaveBeenCalledWith(expect.any(Function), {
+      path: "/TIBNetBank/svc/web4/rb0708rwd/init",
+      body: {
+        org: "001",
+        byear: "2026",
+        bmonth: "07",
+        cardHolderFlagSelected: "1",
+        cardNo: "",
+      },
+      timeoutMs: 4_000,
+    });
+    expect(browserInstance.close).toHaveBeenCalledOnce();
+  });
+
+  it("re-authenticates once and skips history when no current bill exists", async () => {
+    const browserPage = page();
+    const response = (value: unknown) => ({
+      ok: true,
+      status: 200,
+      contentType: "application/json",
+      text: JSON.stringify({ value, error: null }),
+    });
+    const activeSession = {
+      ok: true,
+      status: 200,
+      contentType: "application/json",
+      text: JSON.stringify({
+        RESULT: "SUCCESS",
+        DBSESSIONID: "database-session",
+      }),
+    };
+    browserPage.evaluate
+      .mockResolvedValueOnce(activeSession)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        contentType: "text/html",
+        text: "登入",
+      })
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(selectors)
+      .mockResolvedValueOnce(captchaTarget)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce("登入成功")
+      .mockResolvedValueOnce(activeSession)
+      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }))
+      .mockResolvedValueOnce(
+        response({
+          "001": { "OUT-DTE-LST-STMT": "20260720" },
+        }),
+      )
+      .mockResolvedValueOnce(response({}));
+    const browserInstance = browser(browserPage);
+    puppeteerMock.launch.mockResolvedValue(browserInstance);
+    const recognize = vi.fn().mockResolvedValue("123456");
+
+    const result = await createTaishinConnector({} as Fetcher, recognize).sync({
+      ...credentials,
+      sessionCookies: JSON.stringify([
+        {
+          name: "SESSION",
+          value: "expired-during-fetch",
+          domain: "my.taishinbank.com.tw",
+        },
+      ]),
+    });
+
+    const billCalls = browserPage.evaluate.mock.calls.filter(
+      ([, input]) =>
+        typeof input === "object" &&
+        input !== null &&
+        "path" in input &&
+        input.path === "/TIBNetBank/svc/web4/rb0708rwd/init",
+    );
+    expect(recognize).toHaveBeenCalledOnce();
+    expect(billCalls).toHaveLength(1);
+    expect(result.bankBalanceSnapshots).toEqual([]);
+    expect(result.creditCardBills).toEqual([]);
+    expect(browserInstance.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps realtime transactions when the optional bill API fails", async () => {
+    const browserPage = page();
+    const response = (value: unknown, error: unknown = null) => ({
+      ok: true,
+      status: 200,
+      contentType: "application/json",
+      text: JSON.stringify({ value, error }),
+    });
+    browserPage.evaluate
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        contentType: "application/json",
+        text: JSON.stringify({
+          RESULT: "SUCCESS",
+          DBSESSIONID: "database-session",
+        }),
+      })
+      .mockResolvedValueOnce(response({}, "系統忙碌中，無法取得資料。"))
+      .mockResolvedValueOnce(response({}, "系統忙碌中，無法取得資料。"))
+      .mockResolvedValueOnce(
+        response({
+          fmtRealTxListMap: [
+            {
+              cardname: "信用卡 (卡號末四碼:3108)",
+              txlist: [
+                ["2026/07/24", "12:30:00", "即時消費", "350", "TW", "成功"],
+              ],
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          "001": { "OUT-DTE-LST-STMT": "20260720" },
+        }),
+      )
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 504,
+        contentType: "application/json",
+        text: "{}",
+      });
+    const browserInstance = browser(browserPage);
+    puppeteerMock.launch.mockResolvedValue(browserInstance);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const result = await createTaishinConnector({} as Fetcher).sync({
+      ...credentials,
+      sessionCookies: JSON.stringify([
+        {
+          name: "SESSION",
+          value: "valid",
+          domain: "my.taishinbank.com.tw",
+        },
+      ]),
+    });
+
+    const transactions = result.bankTransactions ?? [];
+    const realtimeCalls = browserPage.evaluate.mock.calls.filter(
+      ([, input]) =>
+        typeof input === "object" &&
+        input !== null &&
+        "path" in input &&
+        input.path === "/TIBNetBank/svc/web4/rb0708rwd/qryRealTime",
+    );
+    expect(realtimeCalls).toHaveLength(3);
+    expect(realtimeCalls.map(([, input]) => input)).toEqual(
+      Array.from({ length: 3 }, () => ({
+        path: "/TIBNetBank/svc/web4/rb0708rwd/qryRealTime",
+        body: "",
+        timeoutMs: 8_000,
+      })),
+    );
+    expect(transactions).toHaveLength(1);
+    expect(transactions[0]).toMatchObject({
+      description: "即時消費",
+      status: "pending",
+    });
+    expect(result.creditCardBills).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("optional bill sync skipped"),
+    );
+    warn.mockRestore();
+  });
+
+  it("returns fresh session cookies when an API fails after login", async () => {
+    const browserPage = page();
+    const activeSession = {
+      ok: true,
+      status: 200,
+      contentType: "application/json",
+      text: JSON.stringify({
+        RESULT: "SUCCESS",
+        DBSESSIONID: "database-session",
+      }),
+    };
+    browserPage.evaluate
+      .mockResolvedValueOnce(activeSession)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 502,
+        contentType: "application/json",
+        text: "{}",
+      });
+    const browserInstance = browser(browserPage);
+    puppeteerMock.launch.mockResolvedValue(browserInstance);
+
+    const error = await createTaishinConnector({} as Fetcher)
+      .sync({
+        ...credentials,
+        lookbackMonths: 1,
+        sessionCookies: JSON.stringify([
+          {
+            name: "SESSION",
+            value: "expired",
+            domain: "my.taishinbank.com.tw",
+          },
+        ]),
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(TaishinConnectionError);
+    expect(error).toMatchObject({
+      message: "台新信用卡 API qryRealTime 回應 HTTP 502。",
+      sessionCookies: JSON.stringify([
+        {
+          name: "SESSION",
+          value: "fresh",
+          domain: "my.taishinbank.com.tw",
+        },
+      ]),
+      sessionCreatedAt: expect.any(String),
+    });
     expect(browserInstance.close).toHaveBeenCalledOnce();
   });
 
@@ -182,7 +410,6 @@ describe("Taishin browser session lifecycle", () => {
     const browserPage = page();
     browserPage.evaluate
       .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(false)
       .mockResolvedValueOnce("驗證碼錯誤");
     const browserInstance = browser(browserPage);
     puppeteerMock.sessions.mockResolvedValue([
@@ -217,6 +444,7 @@ describe("Taishin browser session lifecycle", () => {
         .fn()
         .mockReturnValue({ width: 300, height: 50 }),
       matches: vi.fn().mockReturnValue(false),
+      click: vi.fn(),
     };
     browserPage.evaluate
       .mockImplementationOnce(async (callback: () => unknown) => {
@@ -229,7 +457,6 @@ describe("Taishin browser session lifecycle", () => {
           vi.unstubAllGlobals();
         }
       })
-      .mockResolvedValueOnce(false)
       .mockResolvedValueOnce("驗證碼錯誤");
     const browserInstance = browser(browserPage);
     puppeteerMock.sessions.mockResolvedValue([
@@ -248,9 +475,65 @@ describe("Taishin browser session lifecycle", () => {
     ).rejects.toThrow("圖形驗證碼錯誤");
 
     expect(loginButton.dataset.taishinLogin).toBe("submit");
-    expect(browserPage.click).toHaveBeenCalledWith(
-      '[data-taishin-login="submit"]',
-    );
+    expect(loginButton.click).toHaveBeenCalledOnce();
+    expect(browserPage.click).not.toHaveBeenCalled();
+  });
+
+  it("accepts a valid bank session without relying on account overview text", async () => {
+    const browserPage = page();
+    const activeSession = {
+      ok: true,
+      status: 200,
+      contentType: "application/json",
+      text: JSON.stringify({
+        RESULT: "SUCCESS",
+        DBSESSIONID: "database-session",
+      }),
+    };
+    const response = (value: unknown) => ({
+      ok: true,
+      status: 200,
+      contentType: "application/json",
+      text: JSON.stringify({ value, error: null }),
+    });
+    browserPage.evaluate
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(selectors)
+      .mockResolvedValueOnce(captchaTarget)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce("登入成功")
+      .mockResolvedValueOnce(activeSession)
+      .mockResolvedValueOnce(response({ fmtRealTxListMap: [] }))
+      .mockResolvedValueOnce(
+        response({
+          "001": {
+            "OUT-AVAIL-CREDIT": "100000",
+            "OUT-STMT-BALANCE": "1200",
+            "OUT-CRLIMIT-PERM": "200000",
+            "OUT-DTE-LST-STMT": "20260720",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          showAccoutnYM: "2026/07",
+          showCbalance: "1200",
+          showCdue: "1200",
+          newAcctDetailList: [],
+        }),
+      );
+    const browserInstance = browser(browserPage);
+    puppeteerMock.launch.mockResolvedValue(browserInstance);
+    const recognize = vi.fn().mockResolvedValue("123456");
+
+    const result = await createTaishinConnector({} as Fetcher, recognize).sync({
+      ...credentials,
+      lookbackMonths: 1,
+    });
+
+    expect(result.bankAccounts).toHaveLength(1);
+    expect(recognize).toHaveBeenCalledOnce();
+    expect(browserInstance.close).toHaveBeenCalledOnce();
   });
 
   it("stops automatic login immediately when credentials are rejected", async () => {

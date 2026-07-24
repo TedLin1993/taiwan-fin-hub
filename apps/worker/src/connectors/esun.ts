@@ -457,15 +457,16 @@ export function normalizeEsunTimelineTransactions(
         const postedDate = lifecycle === "未入帳"
           ? undefined
           : normalizeEsunMonthDay(year, txn.postingDt ?? txn.consumerDt ?? "");
-        const amount = parseTwd(txn.payAmt ?? txn.consumerAmt ?? "0");
+        const rawAmount = parseTwd(txn.payAmt ?? txn.consumerAmt ?? "0");
         const currency = txn.payCur?.trim() || txn.consumerCur?.trim() || "TWD";
         const description = txn.storeName?.trim() || "玉山信用卡交易";
+        const amount = signedCreditCardAmount(rawAmount, description);
         const accountId = creditCardSourceId(txn.cardNo);
         const sourceKey = [
           authorizedAt,
           accountId,
           description,
-          amount,
+          rawAmount,
           currency,
         ].join(":");
         candidates.push({
@@ -817,6 +818,15 @@ function normalizeEsunTxDateTime(txDate: string | null | undefined, txTime: stri
 function parseTwd(text: string): number {
   const n = Number(text.replace(/[^0-9.-]/g, ""));
   return Number.isFinite(n) ? Math.round(n) : 0;
+}
+
+function signedCreditCardAmount(rawAmount: number, description: string) {
+  const isCredit =
+    rawAmount < 0 ||
+    /退款|退貨|折抵|折讓|回饋|沖銷|貸方|繳款|自動轉帳扣繳|refund|credit|payment/i.test(
+      description,
+    );
+  return isCredit ? Math.abs(rawAmount) : -Math.abs(rawAmount);
 }
 
 // Format "0YYYMMDD" where YYY = 民國 year (e.g. "01150629" → "2026/06/29")

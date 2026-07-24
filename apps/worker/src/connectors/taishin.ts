@@ -18,6 +18,11 @@ const REALTIME_PATH = `${API_ROOT}/web4/rb0708rwd/qryRealTime`;
 export const TAISHIN_AUTO_LOGIN_ATTEMPTS = 3;
 const CAPTCHA_KEEP_ALIVE_MS = 150_000;
 const CAPTCHA_VALIDITY_MS = 120_000;
+const LOGIN_RESULT_ATTEMPTS = 10;
+const LOGIN_RESULT_POLL_MS = 500;
+const REQUIRED_API_TIMEOUT_MS = 8_000;
+const OPTIONAL_API_TIMEOUT_MS = 4_000;
+const REALTIME_BUSY_RETRY_ATTEMPTS = 3;
 const USER_AGENT =
   "Mozilla/5.0 (Linux; Android 14; Pixel 7 Build/UP1A.231105.003) " +
   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
@@ -46,8 +51,19 @@ export class TaishinCaptchaRejectedError extends TaishinVerificationRequiredErro
   }
 }
 
-export class TaishinConnectionError extends Error {
+class TaishinLoginOutcomeUnknownError extends TaishinVerificationRequiredError {
   constructor(message: string) {
+    super(message);
+    this.name = "TaishinLoginOutcomeUnknownError";
+  }
+}
+
+export class TaishinConnectionError extends Error {
+  constructor(
+    message: string,
+    readonly sessionCookies?: string,
+    readonly sessionCreatedAt?: string,
+  ) {
     super(message);
     this.name = "TaishinConnectionError";
   }
@@ -87,6 +103,7 @@ export function createTaishinConnector(
       );
       const pages = await browserInstance.pages();
       const page = pages[0] ?? (await browserInstance.newPage());
+      let authenticated = false;
       try {
         await configurePage(page);
         let loggedIn = false;
@@ -123,15 +140,40 @@ export function createTaishinConnector(
           }
           pageContext = await loginWithOcr(page, config, recognizeCaptcha);
         }
+        authenticated = true;
 
-        const payloads = await fetchCreditCardPayloads(
-          pageContext,
-          config.lookbackMonths,
-        );
-        const data = parseTaishinCreditCardData(
-          payloads,
-          config.lookbackMonths,
-        );
+        let payloads;
+        try {
+          payloads = await fetchCreditCardPayloads(
+            pageContext,
+            config.lookbackMonths,
+          );
+        } catch (error) {
+          if (
+            !(error instanceof TaishinVerificationRequiredError) ||
+            !recognizeCaptcha
+          ) {
+            throw error;
+          }
+          pageContext = await loginWithOcr(page, config, recognizeCaptcha);
+          authenticated = true;
+          payloads = await fetchCreditCardPayloads(
+            pageContext,
+            config.lookbackMonths,
+          );
+        }
+        let data;
+        try {
+          data = parseTaishinCreditCardData(payloads, config.lookbackMonths);
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message.startsWith("台新信用卡 API")
+          ) {
+            throw new TaishinConnectionError(error.message);
+          }
+          throw error;
+        }
         const now = new Date();
         return {
           records: [],
@@ -142,6 +184,21 @@ export function createTaishinConnector(
             syncedAt: now.toISOString(),
           }),
         };
+      } catch (error) {
+        if (authenticated && error instanceof TaishinConnectionError) {
+          const sessionCookies = await page
+            .cookies()
+            .then((cookies) => JSON.stringify(cookies))
+            .catch(() => undefined);
+          if (sessionCookies) {
+            throw new TaishinConnectionError(
+              error.message,
+              sessionCookies,
+              new Date().toISOString(),
+            );
+          }
+        }
+        throw error;
       } finally {
         await browserInstance.close();
       }
@@ -204,7 +261,12 @@ async function loginWithOcr(
       return frame;
     } catch (error) {
       if (error instanceof TaishinCredentialRejectedError) throw error;
-      if (!(error instanceof TaishinCaptchaRejectedError)) throw error;
+      if (
+        !(error instanceof TaishinCaptchaRejectedError) &&
+        !(error instanceof TaishinLoginOutcomeUnknownError)
+      ) {
+        throw error;
+      }
     }
   }
   throw new TaishinVerificationRequiredError(
@@ -216,28 +278,77 @@ async function fetchCreditCardPayloads(
   page: BrowserPage,
   lookbackMonths: number,
 ) {
-  if (!(await hasValidSession(page))) {
-    throw new TaishinVerificationRequiredError(
-      "台新銀行 session 已失效，需要重新登入。",
+  const realtime = await fetchRealtimeTransactions(page);
+  let summary: unknown = { value: {}, error: null };
+  try {
+    summary = await postJson(page, SUMMARY_PATH, {}, OPTIONAL_API_TIMEOUT_MS);
+    const billingContext = taishinBillingContext(summary);
+    const months = recentMonths(
+      Math.max(1, Math.min(6, lookbackMonths)),
+      billingContext.anchor,
     );
+    const fetchBill = ({ year, month }: (typeof months)[number]) =>
+      postJson(
+        page,
+        BILL_PATH,
+        {
+          org: billingContext.org,
+          byear: String(year),
+          bmonth: String(month).padStart(2, "0"),
+          cardHolderFlagSelected: "1",
+          cardNo: "",
+        },
+        OPTIONAL_API_TIMEOUT_MS,
+      );
+    const currentBill = await fetchBill(months[0]!);
+    if (!hasBillPayload(currentBill)) {
+      return { summary, bills: [], realtime };
+    }
+    const historicalBills = (
+      await Promise.all(
+        months.slice(1).map((month) => fetchBill(month).catch(() => undefined)),
+      )
+    ).filter((bill) => bill !== undefined);
+    return {
+      summary,
+      bills: [currentBill, ...historicalBills],
+      realtime,
+    };
+  } catch (error) {
+    if (error instanceof TaishinVerificationRequiredError) throw error;
+    if (!(error instanceof TaishinConnectionError)) throw error;
+    console.warn(`[taishin] optional bill sync skipped: ${error.message}`);
+    return { summary, bills: [], realtime };
   }
+}
 
-  const summary = await postJson(page, SUMMARY_PATH);
-  const realtime = await postJson(page, REALTIME_PATH);
-  const months = recentMonths(Math.max(1, Math.min(6, lookbackMonths)));
-  const bills = [];
-  for (const { year, month } of months) {
-    bills.push(
-      await postJson(page, BILL_PATH, {
-        org: "001",
-        byear: String(year),
-        bmonth: String(month).padStart(2, "0"),
-        cardHolderFlagSelected: "1",
-        cardNo: "",
-      }),
-    );
+async function fetchRealtimeTransactions(page: BrowserPage) {
+  for (let attempt = 1; attempt <= REALTIME_BUSY_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await postJson(page, REALTIME_PATH, "", REQUIRED_API_TIMEOUT_MS);
+    } catch (error) {
+      const isBusy =
+        error instanceof TaishinConnectionError &&
+        /系統忙碌|無法取得資料/.test(error.message);
+      if (!isBusy) throw error;
+      if (attempt < REALTIME_BUSY_RETRY_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+      } else {
+        console.warn(
+          `[taishin] realtime sync skipped after ${attempt} busy responses`,
+        );
+      }
+    }
   }
-  return { summary, bills, realtime };
+  return { value: { fmtRealTxListMap: [] }, error: null };
+}
+
+function hasBillPayload(payload: unknown) {
+  if (!isRecord(payload) || !isRecord(payload.value)) return false;
+  return (
+    typeof payload.value.showAccoutnYM === "string" &&
+    payload.value.showAccoutnYM.trim().length > 0
+  );
 }
 
 async function hasValidSession(page: BrowserPage) {
@@ -254,30 +365,68 @@ async function hasValidSession(page: BrowserPage) {
   }
 }
 
-async function postJson(page: BrowserPage, path: string, body?: JsonRecord) {
+async function postJson(
+  page: BrowserPage,
+  path: string,
+  body?: JsonRecord | string,
+  timeoutMs = REQUIRED_API_TIMEOUT_MS,
+) {
   const response = await page.evaluate(
-    async (input: { path: string; body?: JsonRecord }) => {
-      const response = await fetch(input.path, {
-        method: "POST",
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/json",
-        },
-        body: input.body ? JSON.stringify(input.body) : undefined,
-        credentials: "same-origin",
-      });
-      return {
-        ok: response.ok,
-        status: response.status,
-        contentType: response.headers.get("content-type") ?? "",
-        text: await response.text(),
-      };
+    async (input: {
+      path: string;
+      body?: JsonRecord | string;
+      timeoutMs: number;
+    }) => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), input.timeoutMs);
+      try {
+        const response = await fetch(input.path, {
+          method: "POST",
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            "Content-Type":
+              typeof input.body === "string"
+                ? "application/x-www-form-urlencoded"
+                : "application/json",
+          },
+          body:
+            typeof input.body === "string"
+              ? input.body
+              : input.body
+                ? JSON.stringify(input.body)
+                : undefined,
+          credentials: "same-origin",
+          signal: controller.signal,
+        });
+        return {
+          ok: response.ok,
+          status: response.status,
+          contentType: response.headers.get("content-type") ?? "",
+          text: await response.text(),
+          timedOut: false,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          status: 0,
+          contentType: "",
+          text: "",
+          timedOut:
+            error instanceof DOMException && error.name === "AbortError",
+        };
+      } finally {
+        clearTimeout(timeout);
+      }
     },
-    { path, body },
+    { path, body, timeoutMs },
   );
+  const endpoint = path.split("/").at(-1) ?? path;
+  if (response.timedOut) {
+    throw new TaishinConnectionError(`台新信用卡 API ${endpoint} 請求逾時。`);
+  }
   if (!response.ok) {
     throw new TaishinConnectionError(
-      `台新信用卡 API 回應 HTTP ${response.status}。`,
+      `台新信用卡 API ${endpoint} 回應 HTTP ${response.status}。`,
     );
   }
   if (!response.contentType.includes("application/json")) {
@@ -290,12 +439,12 @@ async function postJson(page: BrowserPage, path: string, body?: JsonRecord) {
   }
   try {
     const payload = JSON.parse(response.text) as unknown;
-    if (
-      isRecord(payload) &&
-      payload.error != null &&
-      !isEmptyObject(payload.error)
-    ) {
-      throw new TaishinConnectionError("台新信用卡 API 回傳錯誤。");
+    if (isRecord(payload) && Boolean(payload.error)) {
+      const endpoint = path.split("/").at(-1) ?? path;
+      const detail = summarizeApiError(payload.error);
+      throw new TaishinConnectionError(
+        `台新信用卡 API ${endpoint} 回傳錯誤${detail ? `：${detail}` : ""}。`,
+      );
     }
     return payload;
   } catch (error) {
@@ -407,18 +556,13 @@ async function openLoginAndFill(page: Page, config: TaishinConfig) {
   ) {
     throw new TaishinConnectionError("台新登入頁欄位結構已變更。");
   }
-  await replaceInput(frame, selectors.userId, config.userId!);
-  await replaceInput(frame, selectors.account, config.account!);
-  await replaceInput(frame, selectors.password, config.password!);
+  await typeInput(frame, selectors.userId, config.userId!);
+  await typeInput(frame, selectors.account, config.account!);
+  await typeInput(frame, selectors.password, config.password!);
   return frame;
 }
 
-async function replaceInput(
-  page: BrowserPage,
-  selector: string,
-  value: string,
-) {
-  await page.click(selector, { clickCount: 3 });
+async function typeInput(page: BrowserPage, selector: string, value: string) {
   await page.type(selector, value);
 }
 
@@ -472,7 +616,7 @@ async function captureCaptcha(page: BrowserPage) {
 async function submitLogin(page: BrowserPage, captcha: string) {
   const captchaInput =
     'input[data-taishin-field="captcha"], input[placeholder*="驗證碼"]';
-  await replaceInput(page, captchaInput, captcha);
+  await typeInput(page, captchaInput, captcha);
   const loginButton = await page.evaluate(() => {
     const normalize = (value: string | null | undefined) =>
       value?.replace(/\s+/g, "").trim() ?? "";
@@ -503,46 +647,64 @@ async function submitLogin(page: BrowserPage, captcha: string) {
       ) ?? candidates.at(-1);
     if (!target) return false;
     target.dataset.taishinLogin = "submit";
+    target.click();
     return true;
   });
   if (!loginButton) {
     throw new TaishinConnectionError("台新登入按鈕結構已變更。");
   }
-  await page.click('[data-taishin-login="submit"]');
 
-  await page
-    .waitForFunction(
-      () =>
-        document.body.innerText.includes("帳戶總覽") ||
-        /驗證碼.*(?:錯誤|有誤)|密碼.*(?:錯誤|有誤)|登入失敗|使用者代(?:號|碼).*(?:錯誤|有誤)/.test(
-          document.body.innerText,
-        ),
-      { timeout: 30_000 },
-    )
-    .catch(() => undefined);
-
-  if (!(await isLoggedIn(page))) {
-    const detail = await page
-      .evaluate(() =>
-        document.body.innerText.replace(/\s+/g, " ").trim().slice(0, 500),
-      )
-      .catch(() => "");
-    if (/驗證碼.*(?:錯誤|有誤)/.test(detail)) {
+  for (let attempt = 0; attempt < LOGIN_RESULT_ATTEMPTS; attempt += 1) {
+    const detail = await readLoginDetail(page);
+    if (isCaptchaRejected(detail)) {
       throw new TaishinCaptchaRejectedError("台新圖形驗證碼錯誤。");
     }
-    if (
-      /密碼.*(?:錯誤|有誤)|使用者代(?:號|碼).*(?:錯誤|有誤)|身分證.*(?:錯誤|有誤)/.test(
-        detail,
-      )
-    ) {
+    if (isCredentialRejected(detail)) {
       throw new TaishinCredentialRejectedError(
         "台新登入資料遭銀行拒絕，請確認設定。",
       );
     }
-    throw new TaishinVerificationRequiredError(
-      "台新銀行登入失敗，請改用人工驗證。",
-    );
+    if (/USER\s*正在線上.*無法登入/i.test(detail)) {
+      throw new TaishinVerificationRequiredError(
+        "台新網銀已有使用中連線，請先登出後再試。",
+      );
+    }
+    if (await hasValidSession(page)) return;
+    if (attempt < LOGIN_RESULT_ATTEMPTS - 1) {
+      await new Promise((resolve) => setTimeout(resolve, LOGIN_RESULT_POLL_MS));
+    }
   }
+
+  throw new TaishinLoginOutcomeUnknownError(
+    "台新銀行登入失敗，請改用人工驗證。",
+  );
+}
+
+async function readLoginDetail(page: BrowserPage) {
+  return page
+    .evaluate(() =>
+      (document.body?.innerText ?? "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 1_000),
+    )
+    .catch(() => "");
+}
+
+function isCaptchaRejected(detail: string) {
+  return (
+    /驗證碼.{0,30}(?:錯誤|有誤|不正確|無效)/.test(detail) ||
+    /(?:錯誤|有誤|不正確|無效).{0,30}驗證碼/.test(detail)
+  );
+}
+
+function isCredentialRejected(detail: string) {
+  const field = "(?:密碼|使用者代(?:號|碼)|身分證(?:字號)?|統一編號)";
+  const failure = "(?:錯誤|有誤|不正確|無效)";
+  return (
+    new RegExp(`${field}.{0,30}${failure}`).test(detail) ||
+    new RegExp(`${failure}.{0,30}${field}`).test(detail)
+  );
 }
 
 async function isLoggedIn(page: BrowserPage) {
@@ -575,14 +737,35 @@ async function findLoginFrame(page: Page): Promise<BrowserPage> {
   return page.mainFrame();
 }
 
-function recentMonths(count: number) {
-  const now = new Date();
+function recentMonths(count: number, anchor = new Date()) {
   return Array.from({ length: count }, (_, index) => {
     const date = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - index, 1),
+      Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() - index, 1),
     );
     return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1 };
   });
+}
+
+function taishinBillingContext(summary: unknown) {
+  const value =
+    isRecord(summary) && isRecord(summary.value) ? summary.value : undefined;
+  const knownOrganizations = ["001", "055", "100"];
+  const org =
+    knownOrganizations.find((candidate) => isRecord(value?.[candidate])) ??
+    "001";
+  const account = isRecord(value?.[org]) ? value[org] : undefined;
+  const statementDate =
+    typeof account?.["OUT-DTE-LST-STMT"] === "string"
+      ? account["OUT-DTE-LST-STMT"]
+      : "";
+  const match = /^(\d{4})(\d{2})\d{2}$/.exec(statementDate);
+  const year = Number(match?.[1]);
+  const month = Number(match?.[2]);
+  const anchor =
+    year >= 2000 && month >= 1 && month <= 12
+      ? new Date(Date.UTC(year, month - 1, 1))
+      : new Date();
+  return { org, anchor };
 }
 
 async function importCookies(page: Page, serialized: string) {
@@ -721,6 +904,20 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isEmptyObject(value: unknown) {
-  return isRecord(value) && Object.keys(value).length === 0;
+function summarizeApiError(value: unknown) {
+  const serialized =
+    typeof value === "string"
+      ? value
+      : (() => {
+          try {
+            return JSON.stringify(value);
+          } catch {
+            return String(value);
+          }
+        })();
+  return serialized
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[。.!！]+$/, "")
+    .slice(0, 300);
 }

@@ -149,6 +149,25 @@ describe("Taishin credit-card parser", () => {
     ).toEqual(["2026-06"]);
   });
 
+  it("keeps a valid bill when the bank leaves the remaining due blank", () => {
+    const noPaymentBill = bill();
+    Object.assign(noPaymentBill.value, {
+      showCdue: "",
+      showCbalance: "",
+    });
+
+    const result = parseTaishinCreditCardData({
+      summary: { value: {}, error: null },
+      bills: [noPaymentBill],
+    });
+
+    expect(result.creditCardBills).toHaveLength(1);
+    expect(result.bankBalanceSnapshots[0]).toMatchObject({
+      balance: 0,
+      noPaymentNeeded: undefined,
+    });
+  });
+
   it("upgrades merchant-matched pending occurrences and keeps the rest pending", () => {
     const result = parseTaishinCreditCardData({
       summary,
@@ -328,6 +347,31 @@ describe("Taishin credit-card parser", () => {
     ).toHaveLength(2);
   });
 
+  it("records a negative consumption discount as a positive credit", () => {
+    const result = parseTaishinCreditCardData({
+      summary,
+      bills: [
+        bill("2026/07", [
+          transaction("樂購蝦皮－daniel0329TAIPEI", "350"),
+          transaction("信用卡消費折抵_樂購蝦皮－daniel0329", "-63"),
+        ]),
+      ],
+    });
+
+    expect(result.bankTransactions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          description: "樂購蝦皮－daniel0329TAIPEI",
+          amount: -350,
+        }),
+        expect.objectContaining({
+          description: "信用卡消費折抵_樂購蝦皮－daniel0329",
+          amount: 63,
+        }),
+      ]),
+    );
+  });
+
   it("persists only masked, whitelisted raw fields", () => {
     const payload = bill();
     Object.assign(payload.value, {
@@ -349,19 +393,22 @@ describe("Taishin credit-card parser", () => {
     expect(serialized).toContain("3108");
   });
 
-  it("fails explicitly on empty or error payloads", () => {
-    expect(() =>
-      parseTaishinCreditCardData({
-        summary: { value: {}, error: null },
-        bills: [],
-      }),
-    ).toThrow("缺少額度或帳單資料");
-    expect(() =>
-      parseTaishinCreditCardData({
-        summary,
-        bills: [{ value: {}, error: null }],
-      }),
-    ).toThrow("缺少額度或帳單資料");
+  it("returns a partial result when no statement is available", () => {
+    const result = parseTaishinCreditCardData({
+      summary: { value: {}, error: null },
+      bills: [],
+      realtime: realtime([
+        ["2026/07/08", "12:30:00", "尚未入帳", "350", "TW", "成功"],
+      ]),
+    });
+
+    expect(result.bankAccounts).toHaveLength(1);
+    expect(result.bankBalanceSnapshots).toEqual([]);
+    expect(result.creditCardBills).toEqual([]);
+    expect(result.bankTransactions).toHaveLength(1);
+  });
+
+  it("fails explicitly on error payloads", () => {
     expect(() =>
       parseTaishinCreditCardData({
         summary: { value: {}, error: { code: "DRIFT" } },

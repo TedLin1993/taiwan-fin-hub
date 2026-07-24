@@ -43,6 +43,7 @@ describe("E.SUN credit card timeline normalization", () => {
       "2026-07-05T00:00:00.000Z:credit:esun:1204:全支付﹘全聯:252:TWD:1",
     );
     expect(rows[0]).toMatchObject({
+      amount: -252,
       status: "posted",
       authorizedAt: "2026-07-05T00:00:00.000Z",
       postedDate: "2026-07-05T00:00:00.000Z",
@@ -79,6 +80,32 @@ describe("E.SUN credit card timeline normalization", () => {
     expect(rows).toEqual([
       expect.objectContaining({ status: "pending", postedDate: undefined }),
       expect.objectContaining({ status: "pending", postedDate: undefined }),
+    ]);
+  });
+
+  it("records purchases as expenses and discounts as positive credits", () => {
+    const rows = normalizeEsunTimelineTransactions([
+      page([
+        transaction("已入帳", {
+          payAmt: "350",
+          storeName: "樂購蝦皮－daniel0329TAIPEI",
+        }),
+        transaction("已入帳", {
+          payAmt: "-63",
+          storeName: "信用卡消費折抵_樂購蝦皮－daniel0329",
+        }),
+      ]),
+    ]);
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        description: "樂購蝦皮－daniel0329TAIPEI",
+        amount: -350,
+      }),
+      expect.objectContaining({
+        description: "信用卡消費折抵_樂購蝦皮－daniel0329",
+        amount: 63,
+      }),
     ]);
   });
 
