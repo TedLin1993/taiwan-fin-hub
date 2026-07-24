@@ -473,14 +473,42 @@ async function submitLogin(page: BrowserPage, captcha: string) {
   const captchaInput =
     'input[data-taishin-field="captcha"], input[placeholder*="驗證碼"]';
   await replaceInput(page, captchaInput, captcha);
-  const clicked = await page.evaluate(() => {
-    const target = Array.from(
-      document.querySelectorAll<HTMLElement>("button, a"),
-    ).find((element) => element.innerText.trim() === "登入網銀");
-    target?.click();
-    return Boolean(target);
+  const loginButton = await page.evaluate(() => {
+    const normalize = (value: string | null | undefined) =>
+      value?.replace(/\s+/g, "").trim() ?? "";
+    const candidates = Array.from(
+      document.querySelectorAll<HTMLElement>("body *"),
+    ).filter((element) => {
+      const rect = element.getBoundingClientRect();
+      const label =
+        element.tagName === "INPUT"
+          ? (element as HTMLInputElement).value
+          : element.innerText;
+      return (
+        !element.hidden &&
+        !("disabled" in element && Boolean(element.disabled)) &&
+        element.getAttribute("aria-disabled") !== "true" &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        [label, element.getAttribute("aria-label"), element.title].some(
+          (value) => normalize(value) === "登入網銀",
+        )
+      );
+    });
+    const target =
+      candidates.find((element) =>
+        element.matches(
+          'button, a, input[type="button"], input[type="submit"], [role="button"], [class*="btn"], [class*="button"]',
+        ),
+      ) ?? candidates.at(-1);
+    if (!target) return false;
+    target.dataset.taishinLogin = "submit";
+    return true;
   });
-  if (!clicked) throw new TaishinConnectionError("台新登入按鈕結構已變更。");
+  if (!loginButton) {
+    throw new TaishinConnectionError("台新登入按鈕結構已變更。");
+  }
+  await page.click('[data-taishin-login="submit"]');
 
   await page
     .waitForFunction(
