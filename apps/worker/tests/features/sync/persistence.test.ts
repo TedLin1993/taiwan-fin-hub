@@ -7,7 +7,6 @@ import {
   type SyncWriteRecord,
 } from "../../../src/features/sync/persistence";
 import {
-  listTaishinTransactionIdentities,
   reconcileEsunLifecycleShadowStatements,
   reconcileSinopacLegacyTransactionStatements,
 } from "../../../src/features/sync/repository";
@@ -27,17 +26,6 @@ class SqliteStatement {
 
   async run() {
     return this.execute();
-  }
-
-  async all<T>() {
-    this.owner.executedSql.push(this.sql);
-    return {
-      success: true,
-      meta: {},
-      results: this.owner.database
-        .prepare(this.sql)
-        .all(...(this.values as never[])) as T[],
-    };
   }
 
   execute() {
@@ -258,50 +246,6 @@ describe("staged sync persistence", () => {
         .prepare("SELECT target_id AS targetId FROM classification_overrides")
         .get(),
     ).toEqual({ targetId: "sinopac-canonical" });
-  });
-
-  it("loads existing Taishin transaction identities for reconciliation", async () => {
-    const db = createDb();
-    db.database.exec(`
-      INSERT INTO bank_accounts
-        (id, connector_id, source_id, account_type, currency, raw_payload, created_at, updated_at)
-      VALUES
-        ('taishin:credit:taishin:main', 'taishin', 'credit:taishin:main', 'credit', 'TWD', '{}', '2026-07-01', '2026-07-01');
-
-      INSERT INTO bank_transactions
-        (id, connector_id, account_id, source_id, authorized_at, amount, currency, description, status, raw_payload, created_at, updated_at)
-      VALUES
-        (
-          'taishin:credit:taishin:main:transaction-1',
-          'taishin',
-          'taishin:credit:taishin:main',
-          'taishin:card:tx:v1:TWD:2026-07-08:-350:3108:1',
-          '2026-07-08T12:30:00+08:00',
-          -350,
-          'TWD',
-          '商戶 A',
-          'pending',
-          '{"cardLast4":"3108","lifecycleMatchKey":"TWD:2026-07-08:-350:3108"}',
-          '2026-07-08',
-          '2026-07-08'
-        );
-    `);
-
-    await expect(
-      listTaishinTransactionIdentities(db as unknown as D1Database),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        sourceId: "taishin:card:tx:v1:TWD:2026-07-08:-350:3108:1",
-        authorizedAt: "2026-07-08T12:30:00+08:00",
-        amount: -350,
-        description: "商戶 A",
-        status: "pending",
-        raw: {
-          cardLast4: "3108",
-          lifecycleMatchKey: "TWD:2026-07-08:-350:3108",
-        },
-      }),
-    ]);
   });
 
   it("stages records in bounded JSON chunks and advances the cursor only after promotion", async () => {

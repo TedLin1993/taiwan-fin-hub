@@ -1,7 +1,4 @@
-import {
-  parseTaishinCreditCardData,
-  reconcileTaishinTransactionSourceIds,
-} from "@taiwan-fin-hub/connectors";
+import { parseTaishinCreditCardData } from "@taiwan-fin-hub/connectors";
 import { describe, expect, it } from "vitest";
 
 const summary = {
@@ -170,9 +167,9 @@ describe("Taishin credit-card parser", () => {
 
     expect(result.bankTransactions).toHaveLength(3);
     expect(result.bankTransactions.map(({ sourceId }) => sourceId)).toEqual([
-      expect.stringContaining(":1"),
-      expect.stringContaining(":2"),
-      expect.stringContaining(":3"),
+      expect.stringMatching(/第一商店:1$/),
+      expect.stringMatching(/第二商店:1$/),
+      expect.stringMatching(/尚未入帳:1$/),
     ]);
     expect(result.bankTransactions.map(({ status }) => status)).toEqual([
       "posted",
@@ -195,12 +192,12 @@ describe("Taishin credit-card parser", () => {
       expect.objectContaining({
         description: "商戶 B",
         status: "posted",
-        sourceId: expect.stringContaining(":2"),
+        sourceId: expect.stringMatching(/:1$/),
       }),
       expect.objectContaining({
         description: "商戶 A",
         status: "pending",
-        sourceId: expect.stringContaining(":1"),
+        sourceId: expect.stringMatching(/:1$/),
       }),
     ]);
     expect(
@@ -208,7 +205,7 @@ describe("Taishin credit-card parser", () => {
     ).toBe(2);
   });
 
-  it("preserves duplicate transaction ids across sync subsets and ordering", () => {
+  it("keeps different merchants stable across lifecycle subsets", () => {
     const first = parseTaishinCreditCardData({
       summary,
       bills: [bill("2026/07", [])],
@@ -223,13 +220,6 @@ describe("Taishin credit-card parser", () => {
         sourceId,
       ]),
     );
-    const existingBeforeReconciliation = first.bankTransactions.map(
-      (transaction) => {
-        const { lifecycleMatchKey: _lifecycleMatchKey, ...raw } =
-          transaction.raw as Record<string, unknown>;
-        return { ...transaction, raw };
-      },
-    );
 
     const next = parseTaishinCreditCardData({
       summary,
@@ -238,44 +228,79 @@ describe("Taishin credit-card parser", () => {
         ["2026/07/08", "13:30:00", "商戶 B", "350", "TW", "成功"],
       ]),
     });
-    const reconciled = reconcileTaishinTransactionSourceIds(
-      next.bankTransactions,
-      existingBeforeReconciliation,
-    );
 
     expect(
       new Map(
-        reconciled.map(({ description, sourceId }) => [description, sourceId]),
+        next.bankTransactions.map(({ description, sourceId }) => [
+          description,
+          sourceId,
+        ]),
       ),
     ).toEqual(firstIds);
+  });
 
-    const remainingOnly = parseTaishinCreditCardData({
+  it("reuses occurrence ids for indistinguishable posted transactions", () => {
+    const parsePosted = (count: number) =>
+      parseTaishinCreditCardData({
+        summary,
+        bills: [
+          bill(
+            "2026/07",
+            Array.from({ length: count }, () => transaction("同一商戶", "350")),
+          ),
+        ],
+      }).bankTransactions.map(({ sourceId }) => sourceId);
+
+    const first = parsePosted(2);
+    const second = parsePosted(2);
+    const third = parsePosted(3);
+
+    expect(first).toEqual(second);
+    expect(first).toEqual([
+      expect.stringMatching(/:1$/),
+      expect.stringMatching(/:2$/),
+    ]);
+    expect(third.slice(0, 2)).toEqual(first);
+    expect(third[2]).toMatch(/:3$/);
+    expect(new Set(third).size).toBe(3);
+  });
+
+  it("pairs indistinguishable pending and posted transactions by count", () => {
+    const result = parseTaishinCreditCardData({
+      summary,
+      bills: [
+        bill("2026/07", [
+          transaction("同一商戶", "350"),
+          transaction("同一商戶", "350"),
+        ]),
+      ],
+      realtime: realtime([
+        ["2026/07/08", "12:30:00", "同一商戶", "350", "TW", "成功"],
+        ["2026/07/08", "13:30:00", "同一商戶", "350", "TW", "成功"],
+      ]),
+    });
+
+    expect(result.bankTransactions).toHaveLength(2);
+    expect(result.bankTransactions.map(({ status }) => status)).toEqual([
+      "posted",
+      "posted",
+    ]);
+    expect(result.bankTransactions.map(({ sourceId }) => sourceId)).toEqual([
+      expect.stringMatching(/同一商戶:1$/),
+      expect.stringMatching(/同一商戶:2$/),
+    ]);
+  });
+
+  it("keeps a remaining merchant in its own identity bucket", () => {
+    const result = parseTaishinCreditCardData({
       summary,
       bills: [bill("2026/07", [])],
       realtime: realtime([
         ["2026/07/08", "13:30:00", "商戶 B", "350", "TW", "成功"],
       ]),
     });
-    expect(
-      reconcileTaishinTransactionSourceIds(
-        remainingOnly.bankTransactions,
-        existingBeforeReconciliation,
-      )[0]?.sourceId,
-    ).toBe(firstIds.get("商戶 B"));
 
-    const newOnly = parseTaishinCreditCardData({
-      summary,
-      bills: [bill("2026/07", [])],
-      realtime: realtime([
-        ["2026/07/08", "14:30:00", "商戶 C", "350", "TW", "成功"],
-      ]),
-    });
-    expect(
-      reconcileTaishinTransactionSourceIds(
-        newOnly.bankTransactions,
-        existingBeforeReconciliation,
-      )[0]?.sourceId,
-    ).toMatch(/:3$/);
+    expect(result.bankTransactions[0]?.sourceId).toMatch(/商戶b:1$/);
   });
 
   it("keeps cards isolated and preserves refunds and foreign currency", () => {

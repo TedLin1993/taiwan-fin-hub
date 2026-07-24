@@ -7,7 +7,6 @@ import {
   parseSinopacConfig,
   parseTaishinConfig,
   parseTdccConfig,
-  reconcileTaishinTransactionSourceIds,
   syncTdccTradeHistory,
   tdccConnector,
   TdccOtpExpiredError,
@@ -53,7 +52,6 @@ import {
   connectorEncryptedConfigStatement,
   connectorStateStatement,
   linkCanonicalBankAccountsStatement,
-  listTaishinTransactionIdentities,
   reconcileEsunLifecycleShadowStatements,
   reconcileSinopacLegacyTransactionStatements,
   updateConnectorEncryptedConfig,
@@ -705,14 +703,7 @@ export async function syncTaishin(
 
   const bankAccounts = result.bankAccounts ?? [];
   const bankBalanceSnapshots = result.bankBalanceSnapshots ?? [];
-  const parsedBankTransactions = result.bankTransactions ?? [];
-  const bankTransactions =
-    parsedBankTransactions.length === 0
-      ? []
-      : reconcileTaishinTransactionSourceIds(
-          parsedBankTransactions,
-          await listTaishinTransactionIdentities(env.DB),
-        );
+  const bankTransactions = result.bankTransactions ?? [];
   const creditCardBills = result.creditCardBills ?? [];
   const now = new Date().toISOString();
   const records: SyncWriteRecord[] = [

@@ -23,8 +23,8 @@ export { sinopacConfigSchema, parseSinopacConfig } from "./sinopac";
 export type { SinopacConfig } from "./sinopac";
 import { sinopacConfigSchema } from "./sinopac";
 
-export { parseTaishinConfig, parseTaishinCreditCardData, reconcileTaishinTransactionSourceIds, taishinConfigSchema } from "./taishin";
-export type { TaishinConfig, TaishinCreditCardData, TaishinCreditCardPayloads, TaishinExistingTransactionIdentity } from "./taishin";
+export { parseTaishinConfig, parseTaishinCreditCardData, taishinConfigSchema } from "./taishin";
+export type { TaishinConfig, TaishinCreditCardData, TaishinCreditCardPayloads } from "./taishin";
 import { taishinConfigSchema } from "./taishin";
 
 const invoiceRecordSchema = z.object({
